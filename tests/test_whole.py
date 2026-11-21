@@ -25,7 +25,8 @@ try:
     server.init_db()
     now = time.time()
     queued = []
-    server.queue_job = lambda job: queued.append(job)
+    real_queue = server.queue_job
+    server.queue_job = lambda job: (queued.append(job), real_queue(job))
     leaf = json.dumps(["CA", "JT", "Rock Boulder"])
     for cid in ("c1", "c2", "c3"):
         server.q("INSERT INTO climbs(id,source,source_id,name,area_path) VALUES(?,?,?,?,?)", cid, "mountainproject", cid, cid, leaf, write=True)
@@ -42,6 +43,19 @@ try:
     # ---- outside an area: harvested, then its boulder meshed
     r, code = server.reprocess_whole("c2", "harvest")
     assert code == 202 and queued[-1]["type"] == "harvest" and queued[-1]["then_boulder"] == leaf and not queued[-1]["reconstruct"], queued
+    # kept with its project, so a restart runs it again as it was, its boulder meshed after (init_db(), requeue_waiting())
+    assert json.loads(server.q("SELECT job FROM projects WHERE id=?", queued[-1]["pid"], one=True)["job"])["then_boulder"] == leaf
+    # and a Retry after it failed keeps it; its boulder is meshed only once the harvest gets through (then_boulder())
+    hp = queued[-1]["pid"]
+    server.q("UPDATE projects SET status='failed' WHERE id=?", hp, write=True)
+    assert server.retry_project(hp)[1] == 202 and queued[-1] == {"type": "retry", "pid": hp, "then_boulder": leaf}, queued[-1]
+    meshed = []
+    server.mesh_boulder = lambda b: (meshed.append(b), ({"queued": True}, 202))[1]
+    server.then_boulder(queued[-1])
+    assert not meshed, "not while it's queued"
+    server.q("UPDATE projects SET status='harvested' WHERE id=?", hp, write=True)
+    server.then_boulder(queued[-1])
+    assert meshed == [leaf]
     # ---- a group, outside an area: not here
     server.leaf_kind = lambda b, kinds=None: "group"
     assert server.reprocess_whole("c3", "rebuild")[1] == 409

@@ -5340,6 +5340,18 @@ def reprocess_whole(climb_id: str, what: str, sources: list[str] | None = None) 
     return {"project_id": pid, "queued": True, "how": "harvested, then its boulder meshed from every climb's photos"}, 202
 
 
+def then_boulder(job: dict) -> None:
+    """After a climb's harvest for reprocess_whole() (its job's then_boulder, kept with it over restarts and retries):
+    its boulder meshed from every climb's photos, if the harvest got through."""
+    if not job.get("then_boulder"):
+        return
+    if (q("SELECT status FROM projects WHERE id=?", job["pid"], one=True) or {}).get("status") not in ("harvested", "done"):
+        return append_log(job["pid"], "its boulder isn't meshed, as this harvest didn't get through: Retry does both")
+    said, _ = mesh_boulder(job["then_boulder"])
+    append_log(job["pid"], "its boulder queued to be meshed from every climb's photos" if said.get("queued") else
+               f"its boulder wasn't meshed: {said.get('error')}")
+
+
 def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False, add_to: str | None = None) -> None:
     """Mesh a whole boulder from every photo its climbs' harvests found, in a project and mesh of its own, which
     take nothing from any climb's own; then work out where on it each climb is seen from (viewpoints.py), by the
@@ -6895,7 +6907,9 @@ def retry_project(pid: str) -> tuple[dict, int]:
         queue_retry(item["campaign_id"], item["source_id"], pid)
     else:
         q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-        queue_job(json.loads(proj["job"]) if proj["status"] in ("interrupted", "stopped") and proj["job"] else {"type": "retry", "pid": pid})
+        was = json.loads(proj["job"]) if proj["job"] else {}
+        queue_job(was if proj["status"] in ("interrupted", "stopped") and was else
+                  {"type": "retry", "pid": pid, **({"then_boulder": was["then_boulder"]} if was.get("then_boulder") else {})})
     return {"queued": True}, 202
 
 
@@ -7115,16 +7129,17 @@ def delete_project(pid: str) -> tuple[dict, int]:
     return {"deleted": pid}, 200
 
 
-def run_retry(pid: str) -> None:
-    """Try a project that isn't part of an area again."""
+def run_retry(pid: str, then_boulder: str | None = None) -> None:
+    """Try a project that isn't part of an area again: with then_boulder, a climb's harvest that its boulder's mesh is
+    to be made after (reprocess_whole()), and not meshed on its own."""
     proj = q("SELECT kind,harvest FROM projects WHERE id=?", pid, one=True)
     if not proj:
         return
     append_log(pid, "-- trying again")
     if proj["kind"] == "boulder":
         run_boulder(pid, resume=True)
-    elif proj["kind"] == "harvest" and not proj["harvest"]:
-        run_harvest(pid, set(HARVEST_SOURCES), True, resume=True)
+    elif proj["kind"] == "harvest" and (not proj["harvest"] or then_boulder):
+        run_harvest(pid, set(HARVEST_SOURCES), not then_boulder, resume=True)
     else:
         run_reconstruct(pid, internet=proj["kind"] == "harvest", resume=True)
 
@@ -9325,12 +9340,10 @@ def _run_job(job: dict, low: bool) -> None:
     elif job["type"] == "harvest":
         run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
                     again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
-        if job.get("then_boulder"):     # reprocess_whole(): its boulder's mesh made again with it
-            said, _ = mesh_boulder(job["then_boulder"])
-            append_log(job["pid"], "its boulder queued to be meshed from every climb's photos" if said.get("queued") else
-                       f"its boulder wasn't meshed: {said.get('error')}")
+        then_boulder(job)
     elif job["type"] == "retry":
-        run_retry(job["pid"])
+        run_retry(job["pid"], job.get("then_boulder"))
+        then_boulder(job)
     elif job["type"] == "boulder":
         run_boulder(job["pid"], resume=job.get("resume", False))
 
