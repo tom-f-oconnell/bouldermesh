@@ -284,6 +284,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   hr.bsep{border:0;border-top:1px solid var(--line);margin:6px 0}
   #vbetavids .bvclimb{font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:8px 4px 2px}
   #vbetavids .bvclimb:first-of-type{margin-top:2px}
+  #vbetavids .climball{cursor:pointer} #vbetavids .climball .hiderest{margin-left:8px}
   #vbetavids .bv.set .who{font-weight:600;white-space:nowrap} #vbetavids .go{width:100%;margin-top:6px}
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
@@ -5238,9 +5239,13 @@ function renderBetaVids(){
       <span class="who">${esc(labelOf(b, x))}</span><span class="t">${esc(x.name)}</span><small>${n(x.holds.length)}${x.draft ? ' · not sent' : ''}</small></div>`;
   // on a boulder's or a group's mesh, under each of its climbs with beta: its hand-made sets, a line, then its videos'
   const groups = betaByClimb(b, sets, vids);
+  const groupId = gi => groups[gi][3];
+  const hidesRest = gi => { const mine = new Set(groups[gi][2].map(v => v.tag)); return vids.some(v => !mine.has(v.tag)) && vids.every(v => mine.has(v.tag) === b.shown.has(v.tag)); };
   if (betaVidsOpen) el.innerHTML += (vids.length > 1 && !ch ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all from videos</span></label>` : '')
     + groups.map(([climb, gs, gv], gi) => (climb !== null ? `<div class="bvclimb">${esc(climb)}</div>` : '')
-      + (climb !== null && gv.length && !ch ? `<label class="bv all climball" data-group="${gi}"><input type="checkbox" ${gv.every(v => b.shown.has(v.tag)) ? 'checked' : ''}><span class="t">Show all</span></label>` : '')
+      + (climb !== null && gv.length && !ch ? `<div class="bv all climball${b.climbFocus === groupId(gi) ? ' on' : ''}" data-group="${gi}" title="Pick to see this climb's beta alone (the rest faint); again to undo">
+          <input type="checkbox" class="showall" ${gv.every(v => b.shown.has(v.tag)) ? 'checked' : ''} aria-label="Show all of its videos' holds"><span class="t">Show all</span>
+          <input type="checkbox" class="hiderest" ${hidesRest(gi) ? 'checked' : ''} aria-label="Hide the other climbs' videos' holds"><small>Hide rest</small></div>` : '')
       + gs.map(setRow).join('')
       + (gs.length && gv.length ? '<hr class="bsep">' : '') + gv.map(vidRow).join('')).join('');
   function vidRow(v){ return [v].map(v =>
@@ -5255,14 +5260,27 @@ function renderBetaVids(){
     el.querySelector('.go').onclick = () => appCapture(b.mid, { sets: [...ch.sets], left: chosenHolds(b).filter(h => ch.left.has(h.id)).map(h => h.id) });
   }
   el.querySelector('.bvhead').onclick = () => { betaVidsOpen = !betaVidsOpen; renderBetaVids(); };
-  // each climb's: its videos' holds, all of them or none
+  // each climb's: its videos' holds, all of them or none; the other climbs' videos' hidden (and back as they were); and
+  // picked (anywhere but its boxes), its beta alone, the rest faint, until picked again
   el.querySelectorAll('.climball').forEach(row => {
-    const box = row.querySelector('input'), tags = groups[+row.dataset.group][2].map(v => v.tag);
+    const gi = +row.dataset.group, tags = groups[gi][2].map(v => v.tag), box = row.querySelector('.showall'), rest = row.querySelector('.hiderest');
     box.indeterminate = tags.some(t => b.shown.has(t)) && !tags.every(t => b.shown.has(t));
     box.onchange = () => {
       for (const t of tags) box.checked ? b.shown.add(t) : b.shown.delete(t);
       if (!box.checked && tags.includes(b.focus)) b.focus = null;
       drawBeta(); renderBetaPanel();
+    };
+    rest.onchange = () => {
+      if (rest.checked) { b.beforeHide = new Set(b.shown); b.shown = new Set(tags); }
+      else b.shown = new Set([...(b.beforeHide || vids.map(v => v.tag)), ...tags]);
+      b.focus = null; drawBeta(); renderBetaPanel();
+    };
+    row.onclick = ev => {
+      if (ev.target.tagName === 'INPUT') return;
+      b.climbFocus = b.climbFocus === groupId(gi) ? null : groupId(gi);
+      const own = groups[gi][1];      // and its hand-made set shown, if the one shown isn't of it
+      if (b.climbFocus != null && own.length && !own.some(x => x.id === b.sid)) chooseSet(own[0].id);
+      b.focus = null; drawBeta(); renderBetaPanel();
     };
   });
   const every = el.querySelector('.bv.all:not(.climball) input');
@@ -5304,8 +5322,8 @@ function renderBetaVids(){
 function betaByClimb(b, sets, vids){
   const names = b.climbs || {}, ids = Object.keys(names);
   if (ids.length < 2) return [[null, sets, vids]];
-  const out = ids.map(id => [names[id], sets.filter(x => x.climb === id), vids.filter(v => (v.climbs || []).includes(id))]);
-  out.push(['Not tied to one climb', sets.filter(x => !names[x.climb]), vids.filter(v => !(v.climbs || []).some(id => names[id]))]);
+  const out = ids.map(id => [names[id], sets.filter(x => x.climb === id), vids.filter(v => (v.climbs || []).includes(id)), id]);
+  out.push(['Not tied to one climb', sets.filter(x => !names[x.climb]), vids.filter(v => !(v.climbs || []).some(id => names[id])), '']);
   return out.filter(([, gs, gv]) => gs.length || gv.length);
 }
 // ---- choosing holds for a capture of them in detail, in the apps (?choose, from Home's Capture hold closeups): the sets
@@ -5728,7 +5746,8 @@ function drawBeta(){
       line.userData.beta = true; g.add(line);
     }
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
-    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', !!betaState.focus && betaState.focus !== v.tag).userData.hold = `${v.tag}/${h.id}`;
+    const cf = betaState.climbFocus, outside = cf != null && !(cf === '' ? !(v.climbs || []).some(id => betaState.climbs?.[id]) : (v.climbs || []).includes(cf));
+    for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', outside || (!!betaState.focus && betaState.focus !== v.tag)).userData.hold = `${v.tag}/${h.id}`;
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
   // where the mesh's size is known: the selected hold's, and those given a size
