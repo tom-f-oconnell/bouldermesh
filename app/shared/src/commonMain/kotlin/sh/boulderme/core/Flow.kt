@@ -181,6 +181,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var meshTap: Vec3? = null
     /** Whether the app can place frames against the mesh (Locator: on the phone with its pack, or on the server). */
     var canLocate = false
+    /** The owner's test of lining up by itself (Settings' debug tools): it keeps trying, and asks for no taps. */
+    var locateTest = false
     private val locFrames = ArrayList<LocateFrame>()    // frames grabbed to place against the mesh, and those placed
     private val locFound = ArrayList<Located>()
     private var lastLocGrab = -1e9
@@ -514,7 +516,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     /** Whether to grab a frame to place against the mesh now: every LOCATE_EVERY_S while steady, from a new view, up to LOCATE_MOST. */
     private fun wantsLocate(pose: CameraPose, tracking: Boolean, t: Double, steady: Boolean): Boolean {
-        if (!canLocate || grabbing || !tracking || !steady || t - lastLocGrab < LOCATE_EVERY_S || locFrames.size >= LOCATE_MOST) return false
+        if (!canLocate || grabbing || !tracking || !steady || t - lastLocGrab < LOCATE_EVERY_S || locFrames.size >= (if (locateTest) LOCATE_TEST_MOST else LOCATE_MOST)) return false
         val f = locFrames.lastOrNull()?.world
         if (f != null && f.centre.distance(pose.centre) < LOCATE_MOVED_M && angleDeg(f.forward, pose.forward) < LOCATE_TURNED_DEG) return false
         lastLocGrab = t
@@ -838,7 +840,9 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val n = session.taps.size
                 val auto = if (!canLocate) "" else if (locFrames.size >= LOCATE_MOST && locTried >= locFrames.size) "\n\nIt couldn't line itself up from what it saw: tap to line it up."
                     else "\n\nOr hold the phone still pointing at the rock, from a step or two away: it's trying to line itself up (${locFrames.size} view${if (locFrames.size == 1) "" else "s"} so far)."
-                ui = base.copy(turnX = 0.0, turnY = 0.0, text = (if (phase == Phase.ROCK) "Now tap the same spot on the real rock"
+                ui = if (locateTest) base.copy(turnX = 0.0, turnY = 0.0, text = "Line-up test: point the phone at the rock from a step or two away and hold " +
+                    "still, then from other places. It keeps trying by itself: no taps needed (${locFrames.size} view${if (locFrames.size == 1) "" else "s"} " +
+                    "tried, ${locFound.size} placed).") else base.copy(turnX = 0.0, turnY = 0.0, text = (if (phase == Phase.ROCK) "Now tap the same spot on the real rock"
                     else if (n >= 2) "Tap another spot on the small model that you can find on the rock, well to one side of the others"
                     else "Tap a spot on the small model that you can find on the rock (${n + 1} of 2). Pick two far apart, and not one above the other. " +
                         "Drag to turn it, pinch to zoom, two fingers to move it.") + auto)
@@ -995,6 +999,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         const val STEADY_SCENERY_PX = 1.5   // a scenery frame is kept only with the phone turning less than smears it this much
         const val LOCATE_EVERY_S = 1.5      // frames to place against the mesh are grabbed at most this often,
         const val LOCATE_MOST = 8           // this many at most before it's left to taps,
+        const val LOCATE_TEST_MOST = 200    // (the owner's line-up test: far more, as it's left to nothing else)
         const val LOCATE_MOVED_M = 0.15     // each from at least this far from the last, or turned this far from it
         const val LOCATE_TURNED_DEG = 8.0
         const val ORBIT_ROCK_M = 2.0        // how far a rock with no mesh is taken to reach from its middle, for the walk round it

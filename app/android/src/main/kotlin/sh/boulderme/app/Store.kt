@@ -190,6 +190,10 @@ class Store(context: Context) {
     fun saveUpload(id: String, u: Upload) = File(captureDir(id), "upload.json").writeText(json.encodeToString(Upload.serializer(), u))
     fun captureIds(): List<String> = (captures.listFiles { f -> f.isDirectory && File(f, "upload.json").exists() } ?: emptyArray()).sortedByDescending { it.lastModified() }.map { it.name }
     fun deleteCapture(id: String) { File(captures, id).deleteRecursively() }
+    /** The owner's line-up tests, kept apart from captures (never uploaded as one): files/lineup/<id>/, newest first. */
+    val lineups = File(root, "lineup")
+    fun keepLineupTest(id: String) { lineups.mkdirs(); File(captures, id).renameTo(File(lineups, id)) }
+    fun lineupTests(): List<File> = (lineups.listFiles { f -> f.isDirectory } ?: emptyArray()).sortedByDescending { it.lastModified() }
 
     /** What a capture holds, grouped by what each part was for (CaptureContents), with its record if it can be read. */
     fun contents(id: String): Pair<List<ContentGroup>, CaptureRecord?> {

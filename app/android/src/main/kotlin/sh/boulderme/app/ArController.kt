@@ -69,6 +69,7 @@ class ArController(
     reopen: String? = null,         // the id of a capture finished earlier, to carry on (Reopen)
     private val locators: List<Pair<String, Locator>> = emptyList(),   // what places frames against the mesh, by name ("phone", "server")
     gym: Boolean = false,           // a gym climb: its holds found by their colour (CaptureFlow's gym)
+    locateTest: Boolean = false,    // the owner's test of lining up by itself: no turn on the spot, no taps asked for
     private val onUi: (CaptureUi) -> Unit,
 ) : GLSurfaceView.Renderer {
     val id: String = reopen ?: (java.lang.Long.toString(System.currentTimeMillis() / 1000, 36) + (100..999).random())
@@ -83,7 +84,7 @@ class ArController(
         if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
             File(dir, "points.bin").takeIf { it.exists() }?.readBytes(), File(dir, "capture-log.jsonl").takeIf { it.exists() }?.readText() ?: "")
     }
-    init { flow.canLocate = plan != null && locators.isNotEmpty() }
+    init { flow.canLocate = plan != null && locators.isNotEmpty(); if (locateTest) { flow.locateTest = true; flow.skipLevel() } }
     private val locating = locators.map { Executors.newSingleThreadExecutor() }      // one thread each, and a frame only to one that's free
     private val locBusy = locators.map { java.util.concurrent.atomic.AtomicBoolean(false) }
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another

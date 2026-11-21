@@ -103,8 +103,9 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
 ## More
 
 - **The site owner's debug tools** (Android; at the top of *Settings* when the phone is signed in as the owner):
-  *Line up: phone only* / *Server only* on a kept mesh lines up as a capture does by that way alone (kept on the phone
-  as a "line-up test" capture, with its log, sent only if uploaded), and *Hold finding* shows each finder's patches
+  *Line up: phone only* / *Server only* on a kept mesh lines up by itself, that way alone, with no turn on the spot and
+  no taps (it keeps trying); *Leave* keeps the test apart from captures, listed there with *Upload for debugging*
+  (to the server's data/debug/lineup/), and *Hold finding* shows each finder's patches
   (colour, A; the model, B) in a photo taken then or one of a capture's, or *Live* over the camera, with the colour's
   tolerance, the model's margin (and mask, in a photo); a tap starts again from that hold. Live keeps each tap's frame
   (and *Keep frame*'s) with what was found in it, in the app's files under `holdlive/`, listed as photos to look at again.

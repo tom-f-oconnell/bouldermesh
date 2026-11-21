@@ -51,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import sh.boulderme.core.HoldReview
 import sh.boulderme.core.CaptureGuide
 import sh.boulderme.core.GpsAverager
@@ -761,8 +762,14 @@ private fun DebugTools(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "phone")) }) { Text("Line up: phone only") }
         OutlinedButton(onClick = { go(Screen.Capture(m.mesh, m.name.ifEmpty { m.mesh }, locateOnly = "server")) }) { Text("Server only") }
     }
-    Text("Lines up as a capture does, by that way alone. Leave keeps it on the phone, with its log and any photos, named as a line-up test: it's sent only if you upload it.", style = MaterialTheme.typography.bodySmall,
+    Text("Lines up by itself, that way alone: no turn on the spot and no taps. Leave keeps the test here, apart from captures, to upload for debugging below.", style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val tests = remember { a.store.lineupTests() }
+    for (d in tests.take(10)) Row(verticalAlignment = Alignment.CenterVertically) {
+        val name = remember(d) { runCatching { Store.json.decodeFromString(Store.Upload.serializer(), File(d, "upload.json").readText()).name }.getOrNull() ?: d.name }
+        Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 2)
+        DebugUpload(a, d, "lineup")
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(onClick = { go(Screen.HoldLab) }) { Text("Hold finding in a photo…") }
         OutlinedButton(onClick = { go(Screen.HoldLive) }) { Text("Live") }

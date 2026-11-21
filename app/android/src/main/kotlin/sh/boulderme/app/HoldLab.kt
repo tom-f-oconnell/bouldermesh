@@ -171,7 +171,7 @@ fun HoldLabScreen(a: MainActivity, go: (Screen) -> Unit) {
  * not sent before (each noted in its .sent): for looking at there, without finding them on the phone.
  */
 @Composable
-fun DebugUpload(a: MainActivity, d: File) {
+fun DebugUpload(a: MainActivity, d: File, kind: String = "holdlive") {
     var said by remember(d) { mutableStateOf<String?>(null) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val sentFile = File(d, ".sent")
@@ -181,13 +181,16 @@ fun DebugUpload(a: MainActivity, d: File) {
             said = withContext(Dispatchers.IO) {
                 runCatching {
                     val sent = sentFile.takeIf { it.exists() }?.readLines()?.toMutableSet() ?: mutableSetOf()
-                    val todo = (d.listFiles() ?: emptyArray()).filter { it.isFile && !it.name.startsWith(".") && it.name !in sent }.sortedBy { it.name }
-                    for ((i, f) in todo.withIndex()) {
+                    // its files, those in folders (a capture's photos/) named by their path, with __ for each /
+                    val todo = d.walkTopDown().filter { it.isFile && !it.name.startsWith(".") }
+                        .map { it to it.relativeTo(d).path.replace(File.separator, "__") }.filter { it.second !in sent }.sortedBy { it.second }.toList()
+                    for ((i, pair) in todo.withIndex()) {
+                        val (f, name) = pair
                         said = "Sending ${i + 1} of ${todo.size}…"
-                        a.api.debugFile("holdlive", d.name, f.name, f.readBytes())
-                        sent += f.name; sentFile.appendText(f.name + "\n")
+                        a.api.debugFile(kind, d.name, name, f.readBytes())
+                        sent += name; sentFile.appendText(name + "\n")
                     }
-                    "Sent: ${sent.size} files, in the server's debug/holdlive/${d.name}"
+                    "Sent: ${sent.size} files, in the server's debug/$kind/${d.name}"
                 }.getOrElse { "Failed: ${it.message}" }
             }
         }
