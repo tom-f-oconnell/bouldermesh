@@ -301,7 +301,8 @@ placed or meshed, and `TEXTURE_VERSION` with any change to texturing alone.
 **A/B tests of COLMAP.** *Queue A/B tests of COLMAP* on the admin page meshes projects' photos with COLMAP 3.9.1 and
 4.2.1, one after the other on one machine (which goes first alternates from test to test), as machines' work after
 everyone's own and before meshes made again as theirs are old; nothing is meshed for the site. Empty, it queues the
-usual set: Drifter/Smoking Boulder, 9f3b, Double Orifice and a 39-photo climb whose 4.2.1 model just failed its check.
+usual set: Drifter/Smoking Boulder, 9f3b, Double Orifice, a 39-photo climb whose 4.2.1 model just failed its check, and
+Caveman Boulder, whose global-mapper mesh had ghost sheets (experiments/mapper/global-mapper-issues.md).
 Results (each run's tool time, photos placed, faces, its check, and whether it was placed twice) show beside the button;
 each test's folder in `data/abtests/` keeps both meshes, their logs and `summary.json`. Machines do them from script
 version 30 on.

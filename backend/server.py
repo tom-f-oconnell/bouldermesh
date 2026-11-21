@@ -14346,7 +14346,9 @@ AB_VERSION = 30                 # the oldest machines' script that does one
 AB_DEFAULT = (("ce7571e0a4a3", "Drifter/Smoking Boulder: 240 photos, the benchmark's largest"),
               ("9f3b4b740847", "9f3b: 150 photos no method placed alike"),
               ("9fc4f1472128", "Double Orifice: 44 photos both COLMAPs placed wrong (Nov 20)"),
-              ("d917abd870b7", "39 photos 4.2.1's model of failed its check at 5.6 degrees, 3.9.1's passed at 4.9 (Nov 20)"))
+              ("d917abd870b7", "39 photos 4.2.1's model of failed its check at 5.6 degrees, 3.9.1's passed at 4.9 (Nov 20)"),
+              ("cf58448c395a", "Caveman Boulder: 191 photos the global mapper placed as ghost sheets (eb199a55d8a2), "
+                               "3.9.1's incremental mapper without (Nov 12)"))
 _ab_wake = threading.Event()
 
 
