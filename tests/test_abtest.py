@@ -72,6 +72,9 @@ try:
     assert made == ["colmap391", "colmap4"] and s["order"] == ["3.9.1", "4.2.1"]
     assert "mapper failed" in s["runs"]["3.9.1"]["failed"] and s["runs"]["4.2.1"]["placed"] == 9 and s["runs"]["4.2.1"]["check"]["ok"]
     assert s["runs"]["4.2.1"]["tools_seconds"] == 30 and (job / "out" / "4.2.1" / "job.log").exists()
+    import compute
+    assert compute.follow('@@result {"mesh": "", "abtest": true}', None, lambda s: None), "the server takes it as a result"
+    assert compute.follow('@@result {"abtest": true}', None, lambda s: None), "and the older image's"
     print("a machine's job OK")
 
     # ---- the server: queued in turns of which goes first, kept as it comes back

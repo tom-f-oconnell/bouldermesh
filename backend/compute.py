@@ -165,8 +165,8 @@ def follow(line: str, tracker, log: Log) -> dict | None:
             return None
         if line.startswith("@@result "):
             result = json.loads(line[len("@@result "):])
-            if isinstance(result, dict) and isinstance(result.get("mesh"), str):
-                return result
+            if isinstance(result, dict) and (isinstance(result.get("mesh"), str) or result.get("abtest")):
+                return result       # an A/B test's (remote_job.py --task abtest) has no mesh before image 44b4a9e's next
     except (ValueError, TypeError, KeyError):
         pass
     log(line)

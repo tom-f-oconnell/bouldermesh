@@ -111,7 +111,8 @@ from pathlib import Path
 # 27: takes a scenery job's frames (scenery/), which before it refused as something a job shouldn't hold
 # 29: takes a mesh's kept reconstruction and features (kept/), for adding photos to its model (incremental.py)
 # 30: does A/B tests of meshing (remote_job.py --task abtest), with a GPU
-# 31: sends an A/B test's results even if it exits non-zero after them
+# 31: sends an A/B test's results even if it exits non-zero after them (not what lost them: compute.follow() didn't
+#     take their result line as one)
 VERSION = 31
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
