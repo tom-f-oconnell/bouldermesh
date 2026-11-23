@@ -489,6 +489,9 @@ def init_db() -> None:
         con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun>=1")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
+        # an area that finished with climbs still to add what volunteers fetched, past its limit, which it now takes (following())
+        con.execute("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE status='done' AND EXISTS (SELECT 1 FROM "
+                    "campaign_items i WHERE i.campaign_id=campaigns.id AND i.status='pending' AND i.redo LIKE 'more%' AND i.paused IS NULL)")
         started = con.execute("SELECT id, job FROM projects WHERE status IN ('running','harvesting') AND job IS NOT NULL "
                               "AND job_started IS NOT NULL").fetchall()     # not an area's climb's, run as part of it
         for r in started:
@@ -5754,8 +5757,12 @@ def in_scope(camp: dict) -> set[str] | None:
 
 
 def following(item: dict) -> bool:
-    """Whether an area's climb is queued for what follows from work done (ordered_pending())."""
-    return item.get("redo") in ("own", "cluster") or (item.get("redo") == "rebuild" and item.get("was") == "harvested")
+    """Whether an area's climb is queued for what follows from work done (ordered_pending()), past the area's limit too:
+    meshing on its own or in a pool; and adding what volunteers fetched for it (more, more+rebuild), as a climb
+    harvested for a boulder in the limit can be past it (until Nov 23, such climbs waited for ever, Hueco Tanks' and
+    Fontainebleau's)."""
+    return (item.get("redo") in ("own", "cluster") or (item.get("redo") == "rebuild" and item.get("was") == "harvested")
+            or (item.get("redo") or "").split("+")[0] == "more")
 
 
 def ordered_pending(camp: dict, old: bool = False) -> list[dict]:
@@ -13870,6 +13877,8 @@ def reharvest_with_videos(pid: str) -> bool:
         elif item["status"] == "harvested":     # harvested for its boulder's mesh, which isn't made yet: added to first
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more", was="harvested",
                      redo_started=0, note="volunteers have fetched more for it: adding it to its photos for its boulder's mesh")
+        if item["status"] in ("waiting", "harvested"):     # its area may have finished meanwhile (following())
+            q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
         elif item["status"] in ("done", "skipped", "failed"):
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was=item["status"],
                      redo_started=0, note="queued to add the videos volunteers fetched to its photos")

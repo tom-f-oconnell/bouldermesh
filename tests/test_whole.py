@@ -64,6 +64,16 @@ try:
         raise AssertionError("an unknown what")
     except ValueError:
         pass
+    # ---- a climb past its area's limit, queued to add what volunteers fetched for it, is taken all the same, and an area
+    # that finished with one is taken up again as the server starts
+    server.q("INSERT INTO campaigns(id,name,created,status,max_meshes) VALUES('lim','Limited',?,'done',1)", now, write=True)
+    for sid, rank, status, redo in (("1", 1, "done", None), ("2", 2, "pending", None), ("3", 3, "pending", "more+rebuild")):
+        server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,redo) VALUES('lim',?,?,?,?,?)",
+                 sid, rank, sid, status, redo, write=True)
+    camp = server.q("SELECT * FROM campaigns WHERE id='lim'", one=True)
+    assert [i["source_id"] for i in server.ordered_pending(camp)] == ["3"], server.ordered_pending(camp)
+    server.init_db()
+    assert server.q("SELECT status, only_retries FROM campaigns WHERE id='lim'", one=True) == {"status": "running", "only_retries": 1}
     print("ALL WHOLE TESTS PASSED")
 finally:
     import shutil
