@@ -31,7 +31,8 @@ A machine says which kinds of job it takes (worker script 13 on): one without a 
 default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.9 GB, x86-64 and ARM64) where built.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
 whose memory is short only for a climb says which kinds it takes meanwhile (short_tasks: filtering, beta and size,
-script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
+script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too, but one whose GPU is smaller than
+any waiting job's need is idle, as nothing waiting is for it. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
 and logged, for the admin page's share of time in each.
 """
@@ -109,6 +110,8 @@ TOP = ("out", "masks")      # what a job's results may hold
 RULES = {"provisional_work": False, "registrations_per_address": 5, "max_waiting": 30}
 
 
+TASK_NAMES = {"reconstruct": "meshing", "abtest": "meshing tests", "filter": "filtering", "beta": "beta",
+              "scale": "sizes", "splat": "scenery"}     # each kind of job, as said to whoever reads why a machine waits
 DRAIN_TASKS = ("filter",)    # what machines still take while paused: short, and a running harvest waits on it, here otherwise
 
 
@@ -602,9 +605,14 @@ class Board:
                 mine = min((j for j in could if free is None or j.gpu_mb <= free), key=rank, default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
                     least, total = min(j.gpu_mb for j in could), _number(client.get("gpu_total_mb"))
-                    why = (f"its GPU ({total / 1024:.1f} GB in all) is too small for any job waiting: the least needs {least / 1024:.1f} GB"
-                           if total is not None and total < least else
-                           f"its GPU has {free / 1024:.1f} GB free, and the next job may need {least / 1024:.1f} GB")
+                    if total is not None and total < least:     # nothing for it: not its owner's use, as held back is
+                        kinds = " and ".join(sorted({TASK_NAMES.get(j.task, j.task) for j in could}))
+                        kinds += " is" if len({j.task for j in could}) == 1 else " are"
+                        why = (f"only {kinds} waiting, which may need {least / 1024:.1f} GB of GPU memory, "
+                               f"more than its GPU has ({total / 1024:.1f} GB in all)")
+                        self._state(m, "idle", why)
+                        return {"wait": POLL, "why": f"nothing for it: {why}"}
+                    why = f"its GPU has {free / 1024:.1f} GB free, and the next job may need {least / 1024:.1f} GB"
                     self._state(m, "held back", why)
                     return {"wait": POLL, "why": f"held back: {why}", "held": True}
                 if not mine:

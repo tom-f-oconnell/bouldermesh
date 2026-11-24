@@ -601,7 +601,8 @@ assert big.gpu_mb == 6300 + 1000 + 100 * 20 == pullwork.gpu_need_mb("reconstruct
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000})
 assert r["held"] and "its GPU has 4.9 GB free, and the next job may need 9.1 GB" in r["why"] and big.state == "queued", r
 small = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 1500, "gpu_total_mb": 3072})     # a card no job fits on, however free: said as that
-assert small["held"] and "its GPU (3.0 GB in all) is too small for any job waiting: the least needs 9.1 GB" in small["why"], small
+assert not small.get("held") and small["why"] == "nothing for it: only meshing is waiting, which may need 9.1 GB of GPU memory, more than its GPU has (3.0 GB in all)", small
+assert board.current(box["id"])["state"] == "idle", "not held back: nothing waiting fits it, rather than its owner's use"
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000, "gpu_total_mb": 24576})
 assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the same state: only the reason replaced"
 # a script that watches its GPU but couldn't say its memory (16, asking as it started: given a 9.3 GB job on an 8 GB
@@ -609,7 +610,7 @@ assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the sa
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": None})
 assert r["held"] and "its GPU's memory isn't known yet" in r["why"] and big.state == "queued", r
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": 8192})
-assert r["held"] and "its GPU (8.0 GB in all) is too small for any job waiting" in r["why"] and big.state == "queued", r
+assert not r.get("held") and "more than its GPU has (8.0 GB in all)" in r["why"] and big.state == "queued", r
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
 assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
 del board.jobs[big.id]
@@ -637,7 +638,7 @@ board.sweep()
 assert board.current(box["id"])["state"] == "offline" and abs(board.current(box["id"])["start"] - (time.time() - 600 + pullwork.CONNECTED)) < 5
 assert board.work(mb(), "10.0.0.9", asks) == {"wait": pullwork.POLL} and board.current(box["id"])["state"] == "idle"
 states = [c["state"] for c in board.changes(200) if c["name"] == "gpu-box"]
-assert states[0] == "idle" and "offline" in states and states.count("held back") == 2, states
+assert states[0] == "idle" and "offline" in states and states.count("held back") == 3, states   # around the idles of cards too small
 # its shares of a day: as recorded, with an open record of one gone quiet counted as offline
 quiet = board.add("quiet-box")
 now = time.time()
