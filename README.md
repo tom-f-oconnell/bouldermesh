@@ -51,7 +51,9 @@ Terms: the Adventure Projects (Mountain Project) terms disallow automated/bulk s
 so that adapter is deliberately low-volume — one page per import, disk cache, robots.txt
 honoured including its `Crawl-delay` (60 s on MP, so each further MP page or photo takes a
 minute; documented APIs like Commons and Flickr are exempt from robots rules, which address
-crawlers). The Climbs tab's *Import* takes one climb's link; a whole area is an area's job
+crawlers). The server downloads ahead in the minutes no harvest is waiting for (`DOWNLOAD_AHEAD`, on unless 0): the
+Mountain Project pages and photos of each running area's next 8 climbs, which their harvests would ask for anyway, so
+the same requests at the same pace, but done by the time a harvest gets there. The Climbs tab's *Import* takes one climb's link; a whole area is an area's job
 (the Areas tab), whose list of climbs comes from Mountain Project in one request. A climb
 imported on its own counts as the area's that lists it, and an area's job that comes to it
 uses its mesh, or carries on from its harvest, rather than doing them again. KAYA's terms

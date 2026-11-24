@@ -47,7 +47,7 @@ class Server:
     def __init__(self, tmp: Path, **env: str):
         self.port, self.admin_port = free_port(), free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        full = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
+        full = dict(os.environ, DOWNLOAD_AHEAD="0", DATA_DIR=str(tmp / "data"), PORT=str(self.port), HOST="127.0.0.1", ADMIN_PORT=str(self.admin_port),
                     HTTP_MIN_INTERVAL="0", STOP_WAIT_MINUTES="0.1", **env)
         for k in ("EDIT_TOKEN", "READ_ONLY", "CSP", "CLIENT_IP_HEADER", "BOULDERMESH_COMMIT", "BOULDERMESH_IMAGE", "ADMIN_SSH",
                   "BOULDERMESH_WORKER_IMAGE", "ADMIN_BIND", "ADMIN_PUBLISHED_PORT", "ADMIN_URL", "ADMIN_PASSWORD", "ADMIN_HOST",

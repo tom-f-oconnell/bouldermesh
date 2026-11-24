@@ -699,7 +699,8 @@ def through_the_server() -> None:
     data = TMP / "server"
     port, admin_port, vport = free_port(), free_port(), free_port()
     env = {**os.environ, "DATA_DIR": str(data), "PORT": str(port), "HOST": "127.0.0.1", "ADMIN_PORT": str(admin_port),
-           "VOLUNTEER_PORT": str(vport), "VOLUNTEER_URL": "https://rocks.example", "HTTP_MIN_INTERVAL": "0", "STOP_WAIT_MINUTES": "0.1"}
+           "VOLUNTEER_PORT": str(vport), "VOLUNTEER_URL": "https://rocks.example", "HTTP_MIN_INTERVAL": "0", "STOP_WAIT_MINUTES": "0.1",
+           "DOWNLOAD_AHEAD": "0"}
     for k in ("EDIT_TOKEN", "READ_ONLY", "YOUTUBE_VIA"):
         env.pop(k, None)
     proc = subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env, stdout=subprocess.PIPE,

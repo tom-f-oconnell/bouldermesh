@@ -412,6 +412,36 @@ def _sharpest(frames: list[Path], keep: int, log: Log, sharpness: dict[Path, flo
 
 
 # ----------------------------------------------------------------------------- download
+def _missing_mark(url: str) -> Path:
+    """Where it's kept that a Mountain Project photo's _large_ size isn't there (a 404), so it isn't asked for again."""
+    return http._cache_path(url + "|404", kept=True)
+
+
+def fetch_photo(m: Media) -> bytes:
+    """A photo's bytes, kept in the cache for good: a Mountain Project one's _large_ size, or where that isn't there
+    (asked once, and remembered: _missing_mark()) its _medium_ (m.url then says which)."""
+    large = m.source == "mountainproject" and "_large_" in m.url
+    if not (large and _missing_mark(m.url).exists()):
+        try:
+            return http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
+        except HttpError as e:
+            # mountainproject.resolve_image() picks _large_ without probing that it exists
+            if not (large and e.status == 404):
+                raise
+            mark = _missing_mark(m.url)
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.touch()
+    m.url = m.url.replace("_large_", "_medium_")
+    return http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
+
+
+def photo_cached(m: Media) -> bool:
+    """Whether fetch_photo(m) would be answered from the cache, asking Mountain Project for nothing."""
+    if http.cached(m.url, keep=True):
+        return True
+    return "_large_" in m.url and _missing_mark(m.url).exists() and http.cached(m.url.replace("_large_", "_medium_"), keep=True)
+
+
 def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 20_000, max_total: int = 200,
                  progress: Callable[..., None] | None = None, skip: set[str] = frozenset()) -> list[dict]:
     """Download each photo (each URL once, none in skip: those a harvest here had already), up to max_total."""
@@ -425,14 +455,7 @@ def download_all(media: list[Media], out_dir: Path, log: Log, min_bytes: int = 2
             continue
         seen_urls.add(m.url)
         try:
-            try:
-                data = http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
-            except HttpError as e:
-                # mountainproject.resolve_image() picks _large_ without probing that it exists
-                if not (m.source == "mountainproject" and "_large_" in m.url and e.status == 404):
-                    raise
-                m.url = m.url.replace("_large_", "_medium_")
-                data = http.get(m.url, binary=True, keep=True, headers={"Referer": m.page or ""})
+            data = fetch_photo(m)
         except Exception as e:
             log(f"  skip {m.url[:90]}: {e}")
             continue

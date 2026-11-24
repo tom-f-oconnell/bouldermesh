@@ -106,6 +106,7 @@ from climbs import kaya as kaya_mod  # noqa: E402
 from climbs import mountainproject as mp_mod  # noqa: E402
 from climbs.common import Cancelled, Climb, JobControl, jobctl, use_control  # noqa: E402
 from climbs.common import _shared_control as shared_control  # noqa: E402
+from climbs.common import http as climbs_http  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
@@ -6261,6 +6262,95 @@ def read_ahead(camp: dict) -> None:
             known += 1
         except Exception as e:
             set_item(camp["id"], it["source_id"], status="failed", note=f"couldn't read its page: {e}")
+
+
+# Mountain Project asks crawlers for 60 s between requests (robots.txt Crawl-delay), photos included. Climbs mesh at
+# about 5 an hour and each needs 1.5 of its photos on average, so most of those turns go unused while a harvest waits
+# for its own. Downloading ahead takes the turns nothing is waiting for: the pages and photos of each running area's
+# next climbs, kept in the HTTP cache as a harvest keeps them, so that its harvest finds them there. The same requests,
+# at the same pace, sooner: nothing is fetched that the climb's harvest wouldn't fetch.
+DOWNLOAD_AHEAD = os.environ.get("DOWNLOAD_AHEAD", "1") == "1"    # 0: never (tests that start a server)
+AHEAD_CLIMBS = 8        # of each running area's next climbs, in its order
+AHEAD_EVERY = 10.0      # seconds between looks for a turn going spare
+AHEAD_IDLE = 60.0       # and between looks once there's nothing to fetch
+MP_HOST = "https://www.mountainproject.com/"
+_ahead = {"pages": 0, "photos": 0, "since": time.time()}    # what it's fetched since the server started
+_ahead_failed: dict[str, float] = {}     # URLs a request ahead failed for, and when: not asked again for AHEAD_RETRY
+AHEAD_RETRY = 86400.0
+
+
+def ahead_next() -> tuple[str, Callable[[], object]] | None:
+    """The next request downloading ahead would make, and what makes it: of each running area's next AHEAD_CLIMBS climbs,
+    in its order, its Mountain Project page where its climb is only known from its area's list (read as a harvest
+    would, and kept), else the page of a photo its own page doesn't link to directly, else a photo not yet kept."""
+    for camp in q("SELECT * FROM campaigns WHERE status='running' ORDER BY priority, created"):
+        for it in ordered_pending(camp)[:AHEAD_CLIMBS]:
+            row = q("SELECT climb_id FROM campaign_items WHERE campaign_id=? AND source_id=?", camp["id"], it["source_id"], one=True)
+            try:
+                c = climb_obj(row["climb_id"]) if row and row["climb_id"] else None
+            except KeyError:
+                c = None
+            if (c is None or c.raw.get("stub")) and (it["url"] or "").startswith(MP_HOST) and not failed_ahead(it["url"]):
+                def read_page(camp=camp, it=it):
+                    rec = climbs_mod.fetch_climb_url(it["url"], include_children=False)[0]
+                    set_item(camp["id"], it["source_id"], climb_id=upsert_climb(rec), media=len(rec.images) + VIDEO_WORTH * len(rec.videos))
+                    _ahead["pages"] += 1
+                return it["url"], read_page
+            for m in (c.images if c else []):
+                if m.source != "mountainproject":
+                    continue
+                if not m.url and m.page:
+                    if failed_ahead(m.page):
+                        continue
+                    if not climbs_http.cached(m.page):
+                        def photo_page(m=m):
+                            climbs_http.get_text(m.page)
+                            _ahead["pages"] += 1
+                        return m.page, photo_page
+                mp_mod.resolve_image(m, prefer_large=True)      # from its photo page, now in the cache
+                if m.url and not harvest_mod.photo_cached(m) and not failed_ahead(m.url):
+                    def photo(m=m):
+                        harvest_mod.fetch_photo(m)
+                        _ahead["photos"] += 1
+                    return m.url, photo
+    return None
+
+
+def download_ahead() -> str:
+    """Make the next request ahead_next() has, if Mountain Project's next turn is going spare now (nothing waiting
+    for it), and the server isn't stopping, about to restart or out of room: "fetched", "waiting" (for a spare turn)
+    or "nothing" (to fetch)."""
+    if _stopping or _draining or full():
+        return "nothing"
+    nxt = ahead_next()
+    if not nxt:
+        return "nothing"
+    if not climbs_http.slot_free(nxt[0]):
+        return "waiting"
+    try:
+        nxt[1]()
+    except Exception as e:  # noqa: BLE001 - its harvest tries again, and says why
+        _ahead_failed[nxt[0]] = time.time()
+        print(f"downloading ahead: {nxt[0][:120]} failed ({type(e).__name__}: {e}); not asked for again ahead today", flush=True)
+    return "fetched"
+
+
+def failed_ahead(url: str) -> bool:
+    """Whether a request ahead for url failed in the last AHEAD_RETRY seconds (then left to its harvest)."""
+    t = _ahead_failed.get(url)
+    return t is not None and time.time() - t < AHEAD_RETRY
+
+
+def download_ahead_worker() -> None:
+    """Downloading ahead (download_ahead()), on a thread of its own, at low priority, for as long as the server runs."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    while True:
+        try:
+            state = download_ahead()
+        except Exception as e:  # noqa: BLE001 - never let the thread die
+            print(f"downloading ahead: {type(e).__name__}: {e}", flush=True)
+            state = "nothing"
+        time.sleep(AHEAD_IDLE if state == "nothing" else AHEAD_EVERY)
 
 
 def last_failure(pid: str, prefix: str = "FAILED: ") -> str:
@@ -15508,6 +15598,8 @@ def main() -> None:
     threading.Thread(target=frames_worker, daemon=True).start()
     threading.Thread(target=prune_worker, daemon=True).start()
     threading.Thread(target=research_worker, daemon=True, name="youtube-research").start()
+    if DOWNLOAD_AHEAD:
+        threading.Thread(target=download_ahead_worker, daemon=True, name="download-ahead").start()
     threading.Thread(target=pack_worker, daemon=True).start()
     threading.Thread(target=texture_check_worker, daemon=True, name="texture-check").start()
     if thumbs_mod.available():

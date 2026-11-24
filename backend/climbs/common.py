@@ -302,6 +302,28 @@ class _Http:
         delay = rp.crawl_delay(USER_AGENT) if rp is not None else None
         return max(MIN_INTERVAL, float(delay or 0))
 
+    def cached(self, url: str, keep: bool = False, ttl: float | None = None) -> bool:
+        """Whether a GET of url would be answered from the cache (kept for good with keep, else within ttl)."""
+        cp = self._cache_path(url, kept=keep)
+        if keep and not cp.exists():
+            cp = self._cache_path(url)      # cached before it was kept: get() moves it
+        ttl = CACHE_TTL if ttl is None else ttl
+        return cp.exists() and (keep or time.time() - cp.stat().st_mtime < ttl)
+
+    def slot_free(self, url: str) -> bool:
+        """Whether a request to url's host would go now without waiting, nothing having reserved its next turn (as a
+        request waiting for it has): for work done ahead, which takes only turns nothing else is waiting for."""
+        host = urllib.parse.urlparse(url).netloc
+        gap = self.interval(url)
+        with self._lock:
+            last = self._last.get(host, 0.0)
+        if gap >= SHARED_GAP:
+            try:
+                last = max(last, float((CACHE_DIR.parent / "throttle" / re.sub(r"[^A-Za-z0-9.-]", "_", host)).read_text().strip() or 0))
+            except (OSError, ValueError):
+                pass
+        return time.time() >= last + gap
+
     def _throttle(self, url: str):
         host = urllib.parse.urlparse(url).netloc
         gap = self.interval(url)

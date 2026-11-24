@@ -1753,6 +1753,21 @@ took 76 s at 3.3 GB, with the same 480,184 features. A photo's SIFT and an OpenM
 so the threads change nothing of what's made. The script's need fell to 12 GB (the rest of a climb stayed under it in
 all but 3 of 489), and a machine short of that for a climb takes filtering, beta and size jobs meanwhile.
 
+## Downloading ahead (`server.download_ahead()`)
+
+Mountain Project asks crawlers for 60 s between requests, photos included (robots.txt `Crawl-delay`), and climbs
+mesh at about 5 an hour, each needing 1.5 of its photos on average (Nov 24, over 2,011 areas' climbs): most of those
+turns go unused while a harvest waits for its own, more so with a boulder's climbs harvested side by side. A thread
+takes the turns nothing is waiting for (`_Http.slot_free()`: no request has reserved the host's next one): of each
+running area's next `AHEAD_CLIMBS` climbs in its order, the page of one known only from the area's list (read and kept
+as a harvest would, `read_ahead()`'s way), the photo pages its page doesn't link directly, and its photos, kept for good
+in the HTTP cache as `download_all()` keeps them (`fetch_photo()`, shared with it). A photo's `_large_` size that isn't
+there is asked for once and remembered (`_missing_mark()`), so neither the harvest nor this asks again. Nothing is
+fetched that the climb's harvest wouldn't fetch, a request that fails isn't asked again ahead for a day (left to the
+harvest), and nothing goes while the server is stopping, draining for a deploy, or out of room. A harvest that comes
+just after a turn taken ahead waits for that one turn at most. Not asked of volunteers: spreading the requests over
+their addresses would get round the site's limit rather than keep to it.
+
 ## Made again from its cameras (`server.run_kept()`, `pipeline._use_kept()`)
 
 The user's rule (Nov 24, 2026): remake only the meshes a change would actually change, and only what it changes. A
