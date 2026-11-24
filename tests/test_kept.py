@@ -163,6 +163,13 @@ try:
     pid = mesh("worse")
     rec = meshinputs.load(server.MESHES / "worse")
     meshinputs.save(server.MESHES / "worse", {**rec, "roi": {**rec["roi"], "share": 0.9}})
+    try:
+        server.admin_remake_tier({"tier": "roi"})
+        raise AssertionError("not before the server has worked out what's out of date")
+    except ValueError as e:
+        assert "still working out what's out of date" in str(e)
+    server.startup_records()
+    assert server._records_state["state"] == "done"
     said = server.admin_remake_tier({"tier": "roi"})["result"]
     assert said.startswith("queued 1 to be made again from their cameras") and "1 that kept no cameras to be made from scratch" in said, said
     assert server.take_job(True)["mid"] == "worse"

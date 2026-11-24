@@ -69,6 +69,7 @@ try:
     # ---- queued as its boulder's mesh, at low priority
     (server.MESHES / "m1").mkdir(parents=True)
     server.meshinputs.save(server.MESHES / "m1", {"kind": "climb", "project": "h1"})
+    server._records_state["state"] = "done"     # as once the server has worked out what's out of date (startup_records())
     got = server.admin_remake_tier({"tier": "grouping"})
     row = server.q("SELECT * FROM campaign_items WHERE source_id='1'", one=True)
     assert (row["status"], row["redo"], row["was"], row["old_rerun"]) == ("pending", "boulder", "done", server.REMAKE_RANKS["grouping"]), row

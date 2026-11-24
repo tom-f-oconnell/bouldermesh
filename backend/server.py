@@ -4099,6 +4099,23 @@ def roi_existing_meshes() -> int:
 
 COLLAPSED_CHECK = 1     # the version of the look for cameras placed collapsed kept in inputs.json ("collapsed")
 _collapsed_scan = {"state": "waiting", "done": 0, "of": None}    # collapsed_existing_meshes() as it goes, for the admin page
+_records_state = {"state": "waiting"}   # startup_records(): the admin page's tiers wait for it
+
+
+def startup_records() -> None:
+    """What the server works out of the meshes as it starts, one after another, each only for those it hasn't yet: what
+    they were made from, what made them, whether OpenMVS cropped them, whether they placed photos collapsed. The admin
+    page's out-of-date counts, and their buttons, wait for all of it (_records_state)."""
+    _records_state["state"] = "running"
+    try:
+        for step in (inputs_existing_meshes, pipeline_existing_meshes, roi_existing_meshes, collapsed_existing_meshes):
+            try:
+                step()
+            except Exception as e:  # noqa: BLE001 - the others still go
+                print(f"{step.__name__} failed ({type(e).__name__}: {e})", flush=True)
+    finally:
+        _records_state["state"] = "done"
+        tiers_changed()
 
 
 def collapsed_existing_meshes() -> int:
@@ -14955,7 +14972,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "abtests": abtests_state(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"], "collapsed_scan": dict(_collapsed_scan)}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "abtests": abtests_state(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"], "collapsed_scan": dict(_collapsed_scan), "records": dict(_records_state)}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -15264,6 +15281,8 @@ def admin_remake_tier(body: dict) -> dict:
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
         raise ValueError(f"tier must be one of {', '.join(REMAKE_RANKS)}")
+    if _records_state["state"] != "done":
+        raise ValueError("the server is still working out what's out of date, as it does when it starts: try again in a few minutes")
     if tier == "roi":   # only their dense steps on, from their cameras as they were; from scratch those that kept none
         ids = mesh_tiers(fresh=True)["ids"]["roi"]
         kept = queue_kept(ids, "OpenMVS cropped it to a region it guessed")
@@ -15336,8 +15355,7 @@ def main() -> None:
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
-    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes(), roi_existing_meshes(),
-                                     collapsed_existing_meshes()), daemon=True, name="inputs-backfill").start()
+    threading.Thread(target=startup_records, daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     carried = carry_sets_existing()
     if carried:
