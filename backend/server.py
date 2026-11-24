@@ -489,9 +489,10 @@ def init_db() -> None:
         con.execute("UPDATE campaign_items SET retry=1 WHERE status='running' AND old_rerun>=1")
         con.execute("UPDATE campaign_items SET status='pending', note='interrupted by a restart: carrying on from where it got to' WHERE status='running'")
         con.execute("UPDATE campaigns SET status='stopped', note=NULL WHERE status='stopping'")
-        # an area that finished with climbs still to add what volunteers fetched, past its limit, which it now takes (following())
+        # an area that finished with climbs queued again past its limit, which it now takes (following())
         con.execute("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE status='done' AND EXISTS (SELECT 1 FROM "
-                    "campaign_items i WHERE i.campaign_id=campaigns.id AND i.status='pending' AND i.redo LIKE 'more%' AND i.paused IS NULL)")
+                    "campaign_items i WHERE i.campaign_id=campaigns.id AND i.status='pending' AND i.redo IS NOT NULL "
+                    "AND COALESCE(i.old_rerun, 0)=0 AND i.paused IS NULL)")
         started = con.execute("SELECT id, job FROM projects WHERE status IN ('running','harvesting') AND job IS NOT NULL "
                               "AND job_started IS NOT NULL").fetchall()     # not an area's climb's, run as part of it
         for r in started:
@@ -5757,12 +5758,13 @@ def in_scope(camp: dict) -> set[str] | None:
 
 
 def following(item: dict) -> bool:
-    """Whether an area's climb is queued for what follows from work done (ordered_pending()), past the area's limit too:
-    meshing on its own or in a pool; and adding what volunteers fetched for it (more, more+rebuild), as a climb
-    harvested for a boulder in the limit can be past it (until Nov 23, such climbs waited for ever, Hueco Tanks' and
-    Fontainebleau's)."""
-    return (item.get("redo") in ("own", "cluster") or (item.get("redo") == "rebuild" and item.get("was") == "harvested")
-            or (item.get("redo") or "").split("+")[0] == "more")
+    """Whether an area's climb is queued for something done again or following from work done, which it takes past
+    the area's limit too (ordered_pending()): any redo, as only climbs that have been through are queued so (the area
+    buttons' harvests and rebuilds, adding what volunteers fetched, meshing on its own or in a pool, remaking old
+    meshes). The limit is for which climbs go through at all: until Nov 23, such climbs past it, as the skipped ones
+    are, waited for ever (Fontainebleau's 15 skipped asked to check for new photos and rebuild, its 2 old meshes since
+    Nov 15, its and Hueco Tanks' climbs with volunteers' videos)."""
+    return bool(item.get("redo"))
 
 
 def ordered_pending(camp: dict, old: bool = False) -> list[dict]:
