@@ -166,6 +166,9 @@ DATA_WINDOW = 8         # "data" order: how many waiting climbs' pages to have r
 VIDEO_WORTH = 20        # "data" order: roughly how many usable photos a beta video gives
 OUTAGE_LIMIT = 5        # stop a campaign after this many climbs in a row fail before finishing a harvest
 CAMPAIGN_MIN_FREE = float(os.environ.get("CAMPAIGN_MIN_FREE_GB", "50")) * 2**30   # stop rather than fill a shared disk
+# part of DATA_DIR on another disk (a folder mounted there, as the public server's data/cache from its system disk): under
+# this much free on that disk, volunteers and areas wait, as at the cap, so that it keeps room for what else it holds
+OTHER_DISK_FLOOR = float(os.environ.get("OTHER_DISK_FLOOR_GB", "15")) * 2**30
 # the most DATA_DIR may hold is the admin page's storage.cap_gb (DATA_CAP_GB starts it; 0: no limit): over it, volunteers
 # are given nothing and areas take no new climb, until room is made (the admin page shows what takes it, and can delete
 # photos the filter rejected)
@@ -6719,6 +6722,7 @@ def measure_usage() -> dict:
     meshes = sum(1 for d in MESHES.iterdir() if d.is_dir()) if MESHES.exists() else 0
     disk = shutil.disk_usage(DATA)
     _usage.update(total=sum(by.values()), by=by, checked=time.time(), free=disk.free, disk=disk.total,
+                  disks={p: {"free": du.free, "disk": du.total} for p, du in other_disks().items()},
                   counts={"climbs": len(climbs), "projects": len(projects), "meshes": meshes, "photos": len(counted["photos"]),
                           "rejected photos": len(counted["rejected"]), "videos": len(counted["videos"]) + len(fetched)},
                   # a climb's data: its projects' folders (photos, rejected, masks, videos, work), over the climbs that have any
@@ -6732,12 +6736,36 @@ def data_cap() -> float:
     return settings().get("storage.cap_gb") * 2**30
 
 
+def other_disks() -> dict[str, tuple]:
+    """The disks other than DATA_DIR's own that parts of it are mounted from: {mount point: its disk_usage()}."""
+    try:
+        top, dev = DATA.resolve(), os.stat(DATA).st_dev
+        points = [Path(line.split()[1].encode().decode("unicode_escape")) for line in Path("/proc/self/mounts").read_text().splitlines()]
+    except (OSError, IndexError, UnicodeDecodeError):
+        return {}
+    out, seen = {}, {dev}
+    for m in sorted(points, key=lambda m: len(m.parts)):
+        try:
+            if top in m.parents and (d := os.stat(m).st_dev) not in seen:
+                seen.add(d)
+                if (du := shutil.disk_usage(m)).total:     # not /proc and the like
+                    out[str(m.relative_to(top))] = du
+        except OSError:
+            continue
+    return out
+
+
 def full() -> str | None:
-    """Why no more is fetched (the cap is reached), or None."""
+    """Why no more is fetched (the cap is reached, or a disk part of the data is on is under OTHER_DISK_FLOOR), or
+    None."""
     cap = data_cap()
     if cap and _usage.get("total", 0) > cap:
         return (f"the server is out of room ({_usage['total'] / 2**30:.1f} of {cap / 2**30:g} GB): "
                 "waiting for some to be made")
+    for path, du in (_usage.get("disks") or {}).items():
+        if du["free"] < OTHER_DISK_FLOOR:
+            return (f"the disk data/{path} is on has {du['free'] / 2**30:.1f} GB free, under the "
+                    f"{OTHER_DISK_FLOOR / 2**30:g} GB kept free there: waiting for room")
     return None
 
 
@@ -6762,6 +6790,7 @@ _room_warned = False    # told of: not again until there's room again (half as m
 
 
 DISK_WARN_TIMES = 2     # the disk's free space is told of under this many times CAMPAIGN_MIN_FREE, ahead of areas stopping
+_other_told: set[str] = set()     # other disks (other_disks()) told of as under OTHER_DISK_FLOOR
 _disk_level = 0         # told of: 1 under DISK_WARN_TIMES x CAMPAIGN_MIN_FREE, 2 under CAMPAIGN_MIN_FREE (areas can't start)
 
 
@@ -6786,6 +6815,15 @@ def check_disk() -> None:
         _disk_level = level
     elif level == 0 and free > 1.25 * DISK_WARN_TIMES * floor:
         _disk_level = 0
+    for path, du in (_usage.get("disks") or {}).items():     # other disks the data is partly on: told once under their floor
+        under = du["free"] < OTHER_DISK_FLOOR
+        if under and path not in _other_told:
+            NOTIFIER.send("BoulderMesh's other disk is full",
+                          f"{gb(du['free'])} free on the disk data/{path} is on, under the {gb(OTHER_DISK_FLOOR)} kept free there: "
+                          "areas and volunteers wait until there's room.", priority=4, tags=["floppy_disk"])
+            _other_told.add(path)
+        elif not under and du["free"] > 1.25 * OTHER_DISK_FLOOR:
+            _other_told.discard(path)
 
 
 def check_room() -> None:
@@ -9584,6 +9622,24 @@ def pause_item(camp_id: str, source_id: str, on: bool = True) -> None:
             w.control.stop()
 
 
+def area_idle_why(cid: str) -> str | None:
+    """Why a running area has none of its climbs going, for its card, where that can be told: the server about to
+    restart (a deploy taking no new work until what's in progress finishes) or stopping, or every worker busy with
+    other areas' climbs or jobs. None where none of those (a machine being waited for says so itself: machine_wait())."""
+    if _stopping:
+        return "the server is stopping: its climbs carry on once it has started again"
+    if _draining:
+        return ("the server is about to restart (a deploy), and takes no new work until what's in progress has finished: "
+                "its climbs start once it's back")
+    takers = [w for w in _workers if not w.retired and (w.remote or _local_meshing)]
+    busy = [w for w in takers if w.job or (w.campaign and w.campaign != cid)]
+    if takers and len(busy) == len(takers):
+        names = {c["id"]: c["name"] for c in q("SELECT id, name FROM campaigns")}
+        what = collections.Counter("jobs people asked for" if w.job else names.get(w.campaign, "another area") for w in busy)
+        return f"all {plural(len(takers), 'worker')} are busy, with " + ", ".join(f"{k} ({n})" for k, n in what.most_common())
+    return None
+
+
 def campaign_view(camp: dict) -> dict:
     """A campaign for the UI, with where it's got to."""
     cid = camp["id"]
@@ -9645,7 +9701,8 @@ def campaign_view(camp: dict) -> dict:
     blocked = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND blocked IS NOT NULL", cid, one=True)["n"]
     return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "needs_backup": needs_backup,
             "blocked": blocked, "worked": worked, "current": running[0] if running else None,
-            "running": running, "paused": paused, "next": pending[:10], "old_next": old_next[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh}
+            "running": running, "paused": paused, "next": pending[:10], "old_next": old_next[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh,
+            "idle_why": area_idle_why(cid) if camp["status"] == "running" and not running else None}
 
 
 def active_areas(camps: list[dict]) -> set[str]:

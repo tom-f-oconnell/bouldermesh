@@ -928,7 +928,9 @@ photos the filter rejected, which are only kept to put one back by hand and were
 videos have a cap of their own within it, `VIDEO_CACHE_GB`. With notifications on, your phone is told when less than
 0.5% of the cap is left (about 5 climbs' and boulders' worth at 60 GB), and when the cap is reached, each once until
 there's room again; *Room for data* changes the %, or sets a number of GB instead, and says how many climbs' worth both
-are. Above 70% of the cap, what the backup holds and nothing uses is offloaded to it ("Offloading to the backup", below).
+are. Part of the data can sit on another disk: `deploy/cache-to-system-disk.sh` moves `data/cache` onto the
+public server's system disk (mounted back at the same path), and the cap counts it as before; with less than
+`OTHER_DISK_FLOOR_GB` (15) free on that disk, volunteers and areas wait, as at the cap. Above 70% of the cap, what the backup holds and nothing uses is offloaded to it ("Offloading to the backup", below).
 ship.sh deletes the server's images no container uses before sending a new one, so that each ship leaves only the build
 before.
 

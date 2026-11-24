@@ -1658,6 +1658,23 @@ try:
     finally:
         server.disk_free, server.CAMPAIGN_MIN_FREE = real_free, real_floor
         server._disk_level = 0
+    # part of the data on another disk (a folder mounted from it): under its floor, areas and volunteers wait, told once
+    assert server.other_disks() == {}, "nothing mounted under this test's data"
+    n, had_total = len(told), server._usage["total"]
+    server._usage.update(total=1 * 2**30, disks={"cache": {"free": int(0.5 * server.OTHER_DISK_FLOOR), "disk": 75 * 2**30}})
+    try:
+        assert "data/cache is on has" in server.full(), server.full()
+        server.check_room(); server.check_room()
+        assert len(told) == n + 1 and told[-1][0] == "BoulderMesh's other disk is full", told[n:]
+        server._usage["disks"]["cache"]["free"] = int(2 * server.OTHER_DISK_FLOOR)
+        assert not server.full()
+        server.check_room()
+        server._usage["disks"]["cache"]["free"] = 0
+        server.check_room()
+        assert len(told) == n + 2, "told again once there had been room"
+    finally:
+        server._usage.update(total=had_total, disks={})
+        server._other_told.clear()
     del told[2:]        # the cap's two, as the presence checks below count from
     assert server.settings().get("storage.warn_percent") == 1.0
     # and when a worker or downloader joins or leaves (presence.py)
@@ -4350,4 +4367,27 @@ server.q("DELETE FROM mesh_labels WHERE mesh_id='wal-test'", write=True)
 assert time.time() - t0 < 2, "a write doesn't wait for an open read"
 reader.close()
 print("WAL OK")
+
+# --- why a running area has no climb going, on its card: a deploy's drain, a stop, or every worker busy elsewhere -------
+fresh()
+c = server.create_campaign("", "popularity", sub({"Alpha"}))
+server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+row = lambda: server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True)  # noqa: E731
+assert server.campaign_view(row())["idle_why"] is None, "nothing to say"
+server._draining = {"since": time.time(), "now": False, "until": time.time() + 300}
+try:
+    assert "about to restart (a deploy)" in server.campaign_view(row())["idle_why"]
+finally:
+    server._draining = None
+other = server.create_campaign("", "popularity", sub({"Beta"}))
+saved = [(w, w.campaign, w.job) for w in server._workers]
+try:
+    for w in server._workers:
+        w.campaign = other["id"]
+    why = server.campaign_view(row())["idle_why"]
+    assert why.startswith(f"all {server.plural(len(server._workers), 'worker')} are busy, with ") and other["name"] in why, why
+finally:
+    for w, camp_id, job in saved:
+        w.campaign, w.job = camp_id, job
+print("an area's card saying why no climb is going OK")
 print("ALL CAMPAIGN TESTS PASSED")

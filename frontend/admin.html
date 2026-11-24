@@ -806,6 +806,7 @@ function render(s){
   $('#room-more').innerHTML = (u.counts ? `<div>It holds the data of <b>${num(cnt.climbs)}</b> climbs (in ${num(cnt.projects)} projects) and <b>${num(cnt.meshes)}</b> meshes:
       ${num(cnt.photos)} photos, ${num(cnt['rejected photos'])} more the filter rejected, and ${num(cnt.videos)} videos.
       ${u.per_climb ? `On average, a climb's data takes <b>${size(u.per_climb)}</b>` : ''}${u.per_mesh ? `${u.per_climb ? ', and' : 'On average,'} a mesh <b>${size(u.per_mesh)}</b>` : ''}${u.per_climb || u.per_mesh ? '.' : ''}</div>` : '')
+    + Object.entries(u.disks || {}).map(([p, d]) => `<div>data/${esc(p)} is on another disk: <b>${gb(d.free)}</b> free of ${gb(d.disk)}.</div>`).join('')
     + (u.full ? `<div class="warn">${esc(u.full)}. Volunteers are given nothing, and areas take no new climb, until there's room again.</div>` : '')
     + '<div>The photos the filter rejected are only kept to put one back by hand (on the Projects tab), and are usually most of what harvests leave.</div>';
   const pr = s.proxy_ranges, box = $('#ranges');
