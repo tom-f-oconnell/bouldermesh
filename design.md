@@ -1729,6 +1729,18 @@ failure out, as either placing has them placed again, for far less than placing 
 looked in once (`collapsed_existing_meshes()`, kept in `inputs.json`), and the admin page's *Place again the
 collapsed* remakes those with any from scratch, with old meshes; a mesh made again from its cameras refuses them.
 
+## Threads and memory (`pipeline.cpu_budget()`, `extract_threads()`)
+
+COLMAP and OpenMVS start a thread for each core they see, and in a container that's every core of the machine, even
+where Docker gives it fewer (`--cpus` is a CPU quota). On hal-2 and hal-3 (6 of 48 cores) CPU SIFT ran 48 threads of
+about 0.5 GB each and peaked at 24.5 GB, which set the machines' script's need for 24 GB free before a climb. Each
+step now gets a thread a core it's given (`cpu_budget()`: its affinity, or the cgroup quota rounded up), and feature
+extraction no more than the memory free can take at 0.6 GB each (`extract_threads()`). Tried on hal on 48 of Swing
+Dance's photos under a 6-core quota (CPU SIFT, 2400 px, affine shapes, Nov 24): 48 threads took 96 s at 14.5 GB, 6
+took 76 s at 3.3 GB, with the same 480,184 features. A photo's SIFT and an OpenMVS depth map are each one photo's,
+so the threads change nothing of what's made. The script's need fell to 12 GB (the rest of a climb stayed under it in
+all but 3 of 489), and a machine short of that for a climb takes filtering, beta and size jobs meanwhile.
+
 ## Made again from its cameras (`server.run_kept()`, `pipeline._use_kept()`)
 
 The user's rule (Nov 24, 2026): remake only the meshes a change would actually change, and only what it changes. A

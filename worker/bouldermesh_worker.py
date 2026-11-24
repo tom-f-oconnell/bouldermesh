@@ -113,7 +113,8 @@ from pathlib import Path
 # 30: does A/B tests of meshing (remote_job.py --task abtest), with a GPU
 # 31: sends an A/B test's results even if it exits non-zero after them (not what lost them: compute.follow() didn't
 #     take their result line as one)
-VERSION = 31
+# 32: with memory short for a climb (NEED_RAM_GB, now 12), takes filtering, beta and size jobs still (LIGHT_TASKS)
+VERSION = 32
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat", "abtest")    # remote_job.py's: meshing a climb, finding its beta, finding
@@ -143,9 +144,13 @@ IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
 TURNED_AWAY = 3             # the exit status when the server won't take this script: starting again won't help,
                             # so systemd units leave it stopped (RestartPreventExitStatus)
 BUSY_GPU_UTIL = 50          # others' GPU use (%), as a median, over which it takes no climbs
-# memory free (MemAvailable) a job may need at its peak (19 GB seen on hal-2, 24 on hal itself); the variable, as the flag
-NEED_RAM_GB = float(os.environ.get("BOULDERMESH_NEED_RAM_GB", "24"))
+# memory free (MemAvailable) a climb may need at its peak; the variable, as the flag. It was 24, from CPU SIFT on hal-2
+# and hal-3 running a thread for each of 48 cores within a quota of 6 (24.5 GB); since the server's image gives each
+# step only the threads of the cores it's given (pipeline.cpu_budget()), and feature extraction only those the memory
+# free can take, the rest of a climb stayed under 12 GB in all but 3 of 489 (Nov 24)
+NEED_RAM_GB = float(os.environ.get("BOULDERMESH_NEED_RAM_GB", "12"))
 LIGHT_RAM_GB = 4            # and without meshing: filtering's CLIP model and its matching
+LIGHT_TASKS = ("filter", "beta", "scale")   # what it still takes while memory is short for a climb (memory_short())
 LIGHT_GB = 2.0              # room for a job's folder and CLIP's weights, without meshing
 # seconds between GPU samples, over which others' use makes it hold back, and over which it must be quiet again to stop
 GPU_EVERY, BUSY_WINDOW, QUIET_WINDOW = (float(x) for x in os.environ.get("BOULDERMESH_GPU_WINDOWS", "5,180,300").split(","))
@@ -1234,13 +1239,23 @@ class Worker:
         return gpu, given or fits, None, said
 
     # -- others using this machine -----------------------------------------------------------------------------------
+    def memory_short(self) -> tuple[str, list[str]] | None:
+        """Where memory is short for a climb (--need-ram-gb, NEED_RAM_GB) but not for a light job (LIGHT_RAM_GB): why,
+        and the kinds of job it takes meanwhile (LIGHT_TASKS of those it takes). None otherwise."""
+        need = self.args.need_ram_gb if self.args.need_ram_gb is not None else NEED_RAM_GB
+        free, light = mem_available_gb(), [t for t in self.tasks if t in LIGHT_TASKS]
+        if not self.meshes or not need or free is None or free >= need or free < LIGHT_RAM_GB or not light:
+            return None
+        return f"{free:.0f} GB of memory free, and a climb may need {need:g} GB", light
+
     def held_back(self) -> str | None:
-        """Why this machine shouldn't take a climb now, or None: too little memory free, or others keeping its GPU busy
-        (a median over BUSY_WINDOW, and once over, quiet again over QUIET_WINDOW, so as not to flip back and forth). The
-        GPU memory a climb needs, the server checks against what's free (gpu_free_mb)."""
+        """Why this machine shouldn't take any job now, or None: too little memory free even for a light one (or for a
+        climb, where it takes no light ones: memory_short()), or others keeping its GPU busy (a median over BUSY_WINDOW,
+        and once over, quiet again over QUIET_WINDOW, so as not to flip back and forth). The GPU memory a job needs, the
+        server checks against what's free (gpu_free_mb)."""
         need = self.args.need_ram_gb if self.args.need_ram_gb is not None else NEED_RAM_GB if self.meshes else LIGHT_RAM_GB
         free = mem_available_gb()
-        if need and free is not None and free < need:
+        if need and free is not None and free < need and not self.memory_short():
             return f"{free:.0f} GB of memory free, and {'a climb' if self.meshes else 'a job'} may need {need:g} GB"
         limit = self.args.busy_gpu_util if self.args.busy_gpu_util is not None else BUSY_GPU_UTIL
         if self.watch and limit:
@@ -1321,6 +1336,10 @@ class Worker:
         if task not in self.tasks:      # a server too old to know what it takes
             self.server.call(f"{api}/done", {"status": "released"})
             raise NotHere(f"the server sent a job of a kind this machine doesn't take ({task}; it takes {', '.join(self.tasks)})")
+        short = getattr(self, "short", None)
+        if short and task not in short[1]:      # a server too old to know it's short of memory for a climb
+            self.server.call(f"{api}/done", {"status": "released"})
+            raise NotHere(f"the server sent a {task} job, and only {', '.join(short[1])} fit now: {short[0]}")
         if self.args.image_prefix and not image.startswith(self.args.image_prefix):
             self.server.call(f"{api}/done", {"status": "released"})
             raise SystemExit(f"the server asked for {image}, and this machine only runs images starting {self.args.image_prefix}")
@@ -1616,8 +1635,9 @@ class Worker:
         updates = not blocked and not self.args.once
         usage = Usage(Path(self.args.home).expanduser())
         while True:
-            held = self.held_back()
+            held, self.short = self.held_back(), self.memory_short()
             asking = {**client, "updates": updates, "held": held,     # a GPU whose memory it can't read isn't measured: --gpu all, cdi
+                      **({"short": self.short[0], "short_tasks": self.short[1]} if self.short and not held else {}),
                       **({"gpu_free_mb": self.watch.free_mb(), "gpu_total_mb": self.watch.total_mb()} if self.watch else {})}
             self.doing = {"what": "asking for work", "since": time.time()}
             try:

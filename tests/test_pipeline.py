@@ -1377,4 +1377,22 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         pipeline._run, pipeline.COLMAP, pipeline._upright, pipeline.occlusion.available = saved
 print("made again from kept cameras OK")
+# ---- threads: one a core the container is given, and for feature extraction, no more than the memory free can take
+saved = pipeline.cpu_budget, pipeline.memory_free_gb
+try:
+    pipeline.cpu_budget, pipeline.memory_free_gb = (lambda: 6), (lambda: 164.0)
+    assert pipeline.extract_threads()[0] == 6 and pipeline.mvs_threads() == ["--max-threads", "6"], "a quota of 6 of 48"
+    pipeline.cpu_budget, pipeline.memory_free_gb = (lambda: 32), (lambda: 18.0)
+    n, why = pipeline.extract_threads()
+    assert n == int((18 - pipeline.EXTRACT_RESERVE_GB) / pipeline.EXTRACT_GB_PER_THREAD) and "18 GB of memory is free" in why, (n, why)
+    pipeline.memory_free_gb = lambda: 1.0
+    assert pipeline.extract_threads()[0] == 1, "at least one"
+    pipeline.memory_free_gb = lambda: None
+    assert pipeline.extract_threads()[0] == 32, "memory not known: the cores"
+    assert "--max-threads" in pipeline.texture_args(pathlib.Path("/nonexistent"), pathlib.Path("/nonexistent"), [])
+finally:
+    pipeline.cpu_budget, pipeline.memory_free_gb = saved
+assert pipeline.OPTIONS_391["--FeatureExtraction.num_threads"] == "--SiftExtraction.num_threads", "3.9.1's spelling, for A/B tests"
+assert 1 <= pipeline.cpu_budget() <= (os.cpu_count() or 1) and (pipeline.memory_free_gb() or 1) > 0
+print("threads OK")
 print("ALL PIPELINE TESTS PASSED")

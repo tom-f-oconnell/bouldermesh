@@ -674,8 +674,32 @@ finally:
 assert "no climbs for now: held back: others keep its GPU busy" in out and out.count("others keep its GPU busy") == 1, out
 r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox"), "--once",
                     "--need-ram-gb", "1e6"], env=genv, capture_output=True, text=True, timeout=60)
+c = board.current(box["id"])
+assert c["state"] == "idle" and "taking only beta, filter, scale for now (" in c["why"] and "a climb may need 1e+06 GB" in c["why"], (c, r.stdout)
+r = subprocess.run([sys.executable, str(SCRIPT), "--server", URL, "--token", box["token"], "--home", str(TMP / "gbox-meshing"), "--once",
+                    "--need-ram-gb", "1e6", "--tasks", "reconstruct"], env=genv, capture_output=True, text=True, timeout=60)
 assert "GB of memory free, and a climb may need 1e+06 GB" in r.stdout and board.current(box["id"])["state"] == "held back", r.stdout
+board.work(board.machine(box["token"]), "10.0.0.5", {"version": SCRIPT_VERSION, "held": "taking all again"})    # as it was
 print("holding back OK")
+
+# --- memory short for a climb, not for a light job (script 32 on): only filtering, beta and size meanwhile ------------
+lean = board.add("lean-box")
+ml = lambda: board.machine(lean["token"])  # noqa: E731
+pj = project("lean-mesh")
+climb = board._new_job("reconstruct", {"photos": pj / "photos"}, {}, "lean climb", image[0])
+asks = {"version": SCRIPT_VERSION, "gpu": True, "gpu_free_mb": 20000, "gpu_total_mb": 24576, "short": "18 GB of memory free, and a climb may need 24 GB",
+        "short_tasks": ["filter", "beta", "scale"], "tasks": ["reconstruct", "beta", "scale", "filter"]}
+got = board.work(ml(), "10.0.0.9", asks)
+assert "job" not in got and "taking only beta, filter, scale for now (18 GB of memory free" in got["why"], got
+light = board._new_job("beta", {"photos": pj / "photos"}, {}, "lean beta", image[0])
+got = board.work(ml(), "10.0.0.9", asks)
+assert got["job"]["id"] == light.id and got["job"]["task"] == "beta", got
+assert board.takes[lean["id"]] == {"reconstruct", "beta", "scale", "filter"}, "it still takes climbs, once memory's free"
+board._drop(light)
+got = board.work(ml(), "10.0.0.9", {k: v for k, v in asks.items() if k not in ("short", "short_tasks")})
+assert got["job"]["id"] == climb.id, got
+board._drop(climb)
+print("light jobs while memory is short for a climb OK")
 
 # --- a GPU's details as nvidia-smi has them, sent as the script starts (script 20 on), and diagnostics when asked ----------
 card = board.add("card-box")

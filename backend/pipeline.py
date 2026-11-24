@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -195,7 +196,69 @@ def texture_args(work: Path, images: Path, mask_args: list[str], log=None) -> li
     """TextureMesh's arguments after its input, output and work folder, as every mesh is textured (here and by
     textureagain.py)."""
     return ["--export-type", "glb", "--empty-color", str(0x808080), "--max-texture-size", str(MAX_TEXTURE), *mask_args,
-            *texture_views(work, images, log)]
+            *texture_views(work, images, log), *mvs_threads()]
+
+
+# Threads. COLMAP and OpenMVS start one per core they see, and in a container that's every core of the machine even
+# where Docker gives it fewer (--cpus is a CPU quota, not fewer cores): hal-2 and hal-3, at 6 of 48, ran CPU SIFT on 48
+# threads, about 0.5 GB each, and peaked at 24 GB where atlas and blackbox peaked under 8. Given as many threads as
+# the quota's cores, a step runs as fast (the quota already held it to that much CPU time) in a fraction of the memory;
+# SIFT's features and OpenMVS's depth maps are each one photo's, so they're the same whatever the count. Feature
+# extraction, the one step whose memory goes with its threads, is also held to what the memory free can take.
+EXTRACT_GB_PER_THREAD = 0.6     # CPU SIFT's memory a thread (2400 px, affine shapes, domain-size pooling): 0.5 on hal
+EXTRACT_RESERVE_GB = 2.0        # memory left aside for the rest of the job and the machine
+
+
+def cpu_budget() -> int:
+    """The cores this process may use: those it may run on, or fewer where a CPU quota (cgroup cpu.max, which Docker's
+    --cpus sets; cgroup v1's cfs_quota_us) allows fewer, rounded up."""
+    n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    quota = None
+    try:
+        q, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        quota = None if q == "max" else int(q) / int(period)
+    except (OSError, ValueError):
+        try:
+            q, period = (int(Path(f"/sys/fs/cgroup/cpu/cpu.cfs_{k}_us").read_text()) for k in ("quota", "period"))
+            quota = q / period if q > 0 else None
+        except (OSError, ValueError):
+            pass
+    return max(1, min(n, math.ceil(quota)) if quota else n)
+
+
+def memory_free_gb() -> float | None:
+    """Memory free for this process: MemAvailable, or less where a memory limit (cgroup memory.max) leaves less of it
+    unused (its anonymous memory counted, not the page cache, which gives way); None if neither says."""
+    free = None
+    try:
+        with open("/proc/meminfo") as f:
+            free = next((int(line.split()[1]) / 2**20 for line in f if line.startswith("MemAvailable:")), None)
+    except (OSError, ValueError):
+        pass
+    try:
+        limit = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if limit != "max":
+            stat = dict(line.split() for line in Path("/sys/fs/cgroup/memory.stat").read_text().splitlines() if line.count(" ") == 1)
+            left = (int(limit) - int(stat.get("anon", 0))) / 2**30
+            free = left if free is None else min(free, left)
+    except (OSError, ValueError):
+        pass
+    return free
+
+
+def extract_threads() -> tuple[int, str]:
+    """Feature extraction's threads (cpu_budget(), fewer where the memory free can't take that many at
+    EXTRACT_GB_PER_THREAD), and why, for the log."""
+    n, free = cpu_budget(), memory_free_gb()
+    fits = max(1, int((free - EXTRACT_RESERVE_GB) / EXTRACT_GB_PER_THREAD)) if free is not None else n
+    if fits < n:
+        return fits, f"{fits} threads, as {free:.0f} GB of memory is free (about {EXTRACT_GB_PER_THREAD:g} GB each), of {n} cores"
+    return n, f"{n} threads, one a core it's given"
+
+
+def mvs_threads() -> list[str]:
+    """OpenMVS's --max-threads: a thread a core this process is given (cpu_budget())."""
+    return ["--max-threads", str(cpu_budget())]
 
 
 @functools.cache
@@ -319,7 +382,8 @@ COLMAP391 = shutil.which("colmap")     # the image's COLMAP 3.9.1, for A/B tests
 _as_391 = False
 OPTIONS_391 = {"--FeatureExtraction.max_image_size": "--SiftExtraction.max_image_size", "--FeatureExtraction.use_gpu":
                "--SiftExtraction.use_gpu", "--FeatureMatching.guided_matching": "--SiftMatching.guided_matching",
-               "--FeatureMatching.use_gpu": "--SiftMatching.use_gpu", "--default_random_seed": "--random_seed"}
+               "--FeatureMatching.use_gpu": "--SiftMatching.use_gpu", "--default_random_seed": "--random_seed",
+               "--FeatureExtraction.num_threads": "--SiftExtraction.num_threads"}
 
 
 @contextlib.contextmanager
@@ -1427,8 +1491,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             cmd += ["--ImageReader.single_camera", "1"]
         if masks:
             cmd += ["--ImageReader.mask_path", str(masks)]
+        threads, why = extract_threads()
+        cmd += ["--FeatureExtraction.num_threads", str(threads)]
         if not _finished(work, "features"):
-            log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings)")
+            log(f"== COLMAP: feature extraction ({'internet-collection' if internet else 'single-camera'} settings; {why})")
             tracker.update("features", 0, f"0 of {n_images} photos")
             watch = _phases(tracker, "features", (r"Processed file \[(\d+)/(\d+)\]", 0, 1))
             device = None
@@ -1633,7 +1699,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "dense"):
         log("== OpenMVS: densify")
         tracker.update("dense")
-        densify = ["scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args,
+        densify = ["scene.mvs", "-w", str(work), "--resolution-level", "2", *mask_args, *mvs_threads(),
                    *(["--mask-path", str(dense / "images")] if mask_args else []), *_mvs24(MVS24_DENSIFY)]
         cuda, on_gpu = _mvs_cuda("DensifyPointCloud"), False
         passes = GEOMETRIC_ITERS if "--geometric-iters" in densify else 2
@@ -1655,7 +1721,7 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
     if not _finished(work, "mesh"):
         log("== OpenMVS: reconstruct mesh")
         tracker.update("mesh")
-        _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work), *_mvs24(MVS24_MESH)], work, log,
+        _run([_mvs("ReconstructMesh"), "scene_dense.mvs", "-w", str(work), *_mvs24(MVS24_MESH), *mvs_threads()], work, log,
              _phases(tracker, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9)))
         _finish(work, "mesh")
     mesh = work / "scene_dense_mesh.ply"

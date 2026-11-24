@@ -30,7 +30,8 @@ their callers ask again; a machine still running one is told it's gone.
 A machine says which kinds of job it takes (worker script 13 on): one without a GPU only filters harvests' photos, by
 default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.9 GB, x86-64 and ARM64) where built.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
-whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
+whose memory is short only for a climb says which kinds it takes meanwhile (short_tasks: filtering, beta and size,
+script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
 and logged, for the admin page's share of time in each.
 """
@@ -564,6 +565,8 @@ class Board:
         if held:    # its owner's work, or memory short: as its script says
             self._state(m, "held back", held)
             return {"wait": POLL, "why": f"held back: {held}", "held": True}
+        short = client.get("short_tasks")     # memory short for a climb (worker script 32 on): only these meanwhile
+        short = {str(t) for t in short} if isinstance(short, list) else None
         free = _number(client.get("gpu_free_mb")) if client.get("gpu") else None
         if client.get("gpu") and free is None:      # then no more than it has in all
             free = _number(client.get("gpu_total_mb"))
@@ -586,6 +589,7 @@ class Board:
                 version = int(_number(client.get("version")) or 1)
                 could = [j for j in self.jobs.values() if j.state == "queued" and j.version <= version and j.owner != 0
                          and (not waiting or j.task == "reconstruct") and (tasks is None or j.task in tasks)
+                         and (short is None or j.task in short)
                          and (not self.paused or j.task in DRAIN_TASKS)]     # paused: only short jobs, as a harvest's filtering
                 if self.paused and not could:
                     self._state(m, "idle", self.paused)
@@ -608,6 +612,8 @@ class Board:
                         why = self.idle_why()
                     except Exception as e:      # only the reason is lost
                         why = f"(couldn't say why: {type(e).__name__})"
+                    if short is not None:
+                        why = f"taking only {', '.join(sorted(short))} for now ({str(client.get('short') or '')[:150]})" + (f"; {why}" if why else "")
                     self._state(m, "idle", why)
                     return {"wait": POLL, **({"why": f"nothing for it: {why}"} if why else {})}
                 gpu = " (GPU)" if client.get("gpu") else ""

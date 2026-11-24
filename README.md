@@ -1220,7 +1220,8 @@ machine. *Run more on* adds up to that many machines (2 by default):
   registry won't say); short of either, it gives the job back and stops, saying what's short. Each job's folder goes when
   it's done, and an image it pulled goes once it pulls a newer one. It shares the machine: it takes no climb while others
   keep its GPU busier than 50% (`--busy-gpu-util`; a median over 3 min, and quiet again over 5 before it carries on), or
-  while less than 24 GB of memory is free (`--need-ram-gb`; also `BOULDERMESH_NEED_RAM_GB`), and only one whose GPU
+  while less than 12 GB of memory is free (`--need-ram-gb`; also `BOULDERMESH_NEED_RAM_GB`), taking filtering, beta and
+  size jobs meanwhile while 4 GB is, and only one whose GPU
   memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). It
   takes only the kinds of job its GPU's memory in all could ever hold (meshing from 7.4 GB, a scenery's splat from 7.8,
   beta, size and filtering from 3.9), and with less than any, works on the CPU, as without a GPU (`--tasks` takes what it
