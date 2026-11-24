@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """What's out of date, by tier (server.mesh_tiers()), and remaking a tier at low priority (server.queue_remakes()):
 meshes made by an older pipeline, from the CPU's SIFT without GPU SIFT's being tried or judged, textured by older
-texturing, and with photos they weren't made from; each mesh's pipeline record (pipeline.write_record()) and the record
+texturing, with photos they weren't made from, and densified while OpenMVS cropped to a region it guessed (roicrop.py);
+each mesh's pipeline record (pipeline.write_record()) and the record
 of meshes from before it (server.pipeline_backfill()). Offline.
 
     python3 tests/test_tiers.py
@@ -162,6 +163,60 @@ try:
         (server.PROJECTS / "h1" / "photos" / n).write_bytes(b"jpg")
     assert server._new_photos({**rec, "pooled": ["a.jpg", "b.jpg", "c.jpg"]}, now - 100) == 3, "the frame and the newer harvest"
     print("a boulder's new photos OK")
+
+    # ---- OpenMVS's region of interest: each densify run in a job log, matched to its mesh by the faces TextureMesh saved
+    import roicrop  # noqa: E402
+    LOG = """== OpenMVS: densify
+10:00:00 [App     ] Depth-maps fused and filtered: 31 depth-maps, 4521844 depths, 592321 points (13%%) (1s398ms)
+== OpenMVS: texture mesh
+10:05:00 [Mesh    ] Mesh 'scene_dense_mesh_texture.glb' saved: 50 vertices, 1000 faces (1ms)
+== OpenMVS: densify
+20:16:24 [Scene   ] ROI estimated with position (1.7,0.4,2.2) and extent (0.09,0.26,4.99): scale 1.100000, up axis -1
+20:17:26 [ScnDense] Depth-maps fused and filtered: 137 depth-maps, 19808794 depths, 1600000 points (8%%), 11.22 hits
+20:17:26 [ScnDense] Point-cloud trimmed to ROI: 1480000 points removed (52ms)
+INTERRUPTED: the server restarted during this job: Retry carries on from the last step it finished
+== OpenMVS: texture mesh
+20:18:32 [Mesh    ] Mesh 'scene_dense_mesh_texture.glb' saved: 7900 vertices, 15757 faces (96ms)
+== OpenMVS: densify
+21:00:00 [Scene   ] ROI estimated with position (0,0,0) and extent (5,5,5): scale 1.100000, up axis -1
+21:00:10 [ScnDense] Depth-maps fused and filtered: 10 depth-maps, 100 depths, 1000 points (8%%), 11.22 hits
+21:00:10 [ScnDense] Point-cloud trimmed to ROI: 50 points removed (52ms)
+21:00:20 [Mesh    ] Mesh 'scene_dense_mesh_texture.glb' saved: 10 vertices, 2000 faces (96ms)
+"""
+    found = roicrop.runs(LOG.splitlines())
+    assert [(r["estimated"], r["fused"], r["cut"], r["faces"]) for r in found] == \
+        [(False, 592321, 0, 1000), (True, 1600000, 1480000, 15757), (True, 1000, 50, 2000)], found
+    assert roicrop.record(15757, now, found) == {"affected": True, "share": 0.925, "cut": 1480000, "fused": 1600000, "from": "log"}
+    assert roicrop.record(1000, now, found)["affected"] is False, "densified without a region: 2.3"
+    assert roicrop.record(7, now, found) == {"affected": True, "share": None, "cut": None, "fused": None, "from": "date"}
+    assert roicrop.record(7, roicrop.SINCE - 1, found)["affected"] is False, "before 2.4 came in"
+
+    def cropped_mesh(mid: str, faces: int, made: dict | None = None) -> str:
+        pid = mesh(mid, made=made or current, tex=tex_now)
+        (server.MESHES / mid / "cleanup.json").write_text(json.dumps({"faces": faces}))
+        (server.PROJECTS / pid / "job.log").write_text(LOG)
+        return pid
+    cropped_mesh("sliver", 15757)
+    cropped_mesh("trimmed", 2000)
+    cropped_mesh("whole", 1000)
+    cropped_mesh("fixed", 15757, {**current, "openmvs": [2, 4], "dense": pipeline.MVS24_DENSIFY})
+    assert server.roi_existing_meshes() >= 4 and server.roi_existing_meshes() == 0, "worked out once, kept"
+    assert meshinputs.load(server.MESHES / "sliver")["roi"]["share"] == 0.925 and server._roi["trimmed"]["share"] == 0.05
+    assert not server._roi["whole"]["affected"] and server._roi["fixed"] == {"affected": False, "share": 0.0, "cut": 0, "fused": None,
+                                                                              "from": "record"}
+    t = server.mesh_tiers(fresh=True)
+    ids = t["ids"]["roi"]
+    assert ids[0] == "sliver" and ids[-1] == "trimmed" and "whole" not in ids and "fixed" not in ids, ids
+    assert t["roi_urgent"] == 1 and t["roi_flagged"] == 1 and t["roi"] == len(ids) and t["roi_unknown"] == len(ids) - 2, t
+    # remade: the one cut most with old meshes, the rest at low priority
+    for sid, pid in (("5", "psliver"), ("6", "ptrimmed")):
+        server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,project_id,status) VALUES('c1',?,9,?,?,'done')",
+                 sid, sid, pid, write=True)
+    assert server.queue_remakes(["sliver", "trimmed"], "roi")["queued"] == 2
+    ranks = {r["source_id"]: (r["old_rerun"], r["redo"]) for r in server.q("SELECT * FROM campaign_items WHERE source_id IN ('5','6')")}
+    assert ranks == {"5": (server.ROI_URGENT_RANK, "rebuild"), "6": (server.REMAKE_RANKS["roi"], "rebuild")}, ranks
+    assert "cropped it" in server.q("SELECT note FROM campaign_items WHERE source_id='5'", one=True)["note"]
+    print("OpenMVS's cropping OK")
 
     # a machine's job is kept over a restart by its inputs' fingerprint, or by its photos where that can't be told
     whole = {"photos": {"n": 1, "digest": "d1", "at": 0, "files": {}}, "filter": "none", "unknown": {}}

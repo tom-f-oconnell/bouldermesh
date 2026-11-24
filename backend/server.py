@@ -80,6 +80,7 @@ import modelcheck  # noqa: E402
 import meshopts  # noqa: E402
 import offload as offload_mod  # noqa: E402
 import orientation  # noqa: E402
+import roicrop  # noqa: E402
 import policy  # noqa: E402
 import provenance  # noqa: E402
 import retexture  # noqa: E402
@@ -4059,12 +4060,55 @@ def pipeline_existing_meshes() -> int:
     return n
 
 
+_roi: dict[str, dict] = {}     # mesh id -> roicrop.record() kept in its inputs.json, for meshes made since roicrop.SINCE
+
+
+def roi_existing_meshes() -> int:
+    """Work out, for each mesh made since roicrop.SINCE whose inputs.json doesn't say, whether OpenMVS cropped it to a
+    region it guessed and how much that took (roicrop.record(), from its project's job log), and keep that there as
+    "roi"; then hold every such record in _roi. One whose pipeline record has --estimate-roi, or OpenMVS before 2.4, wasn't.
+    Returns how many were worked out."""
+    n, logs = 0, {}
+    for m in q("SELECT id, source, created FROM meshes WHERE source LIKE 'project:%' AND created>=?", roicrop.SINCE):
+        rec = meshinputs.load(MESHES / m["id"])
+        if rec is None:
+            continue
+        if "roi" not in rec:
+            made = rec.get("pipeline") or {}
+            if "--estimate-roi" in (made.get("dense") or []) or made.get("openmvs") and tuple(made["openmvs"]) < (2, 4):
+                roi = {"affected": False, "share": 0.0, "cut": 0, "fused": None, "from": "record"}
+            else:
+                pid = m["source"].split(":", 1)[1]
+                if pid not in logs:
+                    logs[pid] = roicrop.of_log(PROJECTS / pid / "job.log")
+                roi = roicrop.record(mesh_faces(m["id"]), m["created"] or 0, logs[pid])
+            try:
+                rec = meshinputs.save(MESHES / m["id"], {**rec, "roi": roi})
+                n += 1
+            except OSError as e:
+                print(f"{m['id']}: keeping whether OpenMVS cropped it failed ({e})", flush=True)
+                continue
+        _roi[m["id"]] = rec["roi"]
+    if n:
+        tiers_changed()
+        meshes_changed()    # editors' tags of the cropped
+        print(f"worked out whether OpenMVS cropped {n} mesh{'' if n == 1 else 'es'} made since its 2.4 came in", flush=True)
+    return n
+
+
+def roi_order(share: float | None) -> tuple:
+    """Where a possibly cropped mesh goes in remaking them: those cut most first (over roicrop.URGENT), then those
+    whose cut isn't known, then the rest, most cut first."""
+    return (0, -share) if share is not None and share > roicrop.URGENT else (1, 0) if share is None else (2, -share)
+
+
 # ------------------------------------------------------------- what's out of date, by tier (the admin page's section)
 TIERS_EVERY = 600       # seconds mesh_tiers() is kept before it's worked out again
 _tiers: dict = {"at": 0.0, "report": None}
 # remade by the admin page's buttons at low priority, after old meshes (old_rerun 1) and YouTube's re-searches (2):
 # old_rerun's value for each, the order _claim_old() takes them in
-REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4}
+REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4, "roi": 3}
+ROI_URGENT_RANK = 1     # a mesh OpenMVS cut over roicrop.URGENT of goes with old meshes
 
 
 def tiers_changed() -> None:
@@ -4114,16 +4158,19 @@ def mesh_tiers(fresh: bool = False) -> dict:
     as their areas run), by an older pipeline (pipeline.PIPELINE_VERSION), from the CPU's SIFT for a reason other than
     its being judged better (pipeline.fallback_tier()), textured by an older texturing (pipeline.TEXTURE_VERSION; only
     those whose reconstruction was kept can be textured again), and with new photos they weren't made from. A mesh is
-    counted in the first of rules, pipeline and fallback that it's in; texture and new photos apart. Kept for TIERS_EVERY.
+    counted in the first of rules, pipeline and fallback that it's in; texture, new photos and OpenMVS's cropping apart.
+    Kept for TIERS_EVERY.
 
     Returns:
         {pipeline_version, texture_version, meshes, rules, pipeline, fallback: {n, why: {why: n}}, texture,
-        texture_unkept, new_data, new_photos, grouping, ids: {pipeline, fallback, texture, new_data, grouping}}.
+        texture_unkept, new_data, new_photos, grouping, roi (possibly cropped by OpenMVS: roicrop.py), roi_urgent,
+        roi_flagged, roi_unknown, ids: {pipeline, fallback, texture, new_data, grouping, roi (those cut most first)}}.
     """
     if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
         return _tiers["report"]
     ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier()}
     rules, unkept, why, photos = 0, 0, collections.Counter(), 0
+    cropped: list[tuple[str, float | None]] = []
     rows = q("SELECT id, source, rules, created FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created")
     for m in rows:
         rec = meshinputs.load(MESHES / m["id"]) or {}
@@ -4135,6 +4182,8 @@ def mesh_tiers(fresh: bool = False) -> dict:
         elif pipeline.fallback_tier(made):
             ids["fallback"].append(m["id"])
             why[pipeline.fallback_tier(made)] += 1
+        if (rec.get("roi") or {}).get("affected"):
+            cropped.append((m["id"], rec["roi"].get("share")))
         if (tex.get("version") or 0) < pipeline.TEXTURE_VERSION and rec.get("kind") != "rest":
             if (MESHES / m["id"] / reconstruction.FILE).exists():
                 ids["texture"].append(m["id"])
@@ -4147,8 +4196,13 @@ def mesh_tiers(fresh: bool = False) -> dict:
         if n:
             ids["new_data"].append(m["id"])
             photos += n
+    cropped.sort(key=lambda c: roi_order(c[1]))
+    ids["roi"] = [mid for mid, _ in cropped]
+    shares = [s for _, s in cropped]
     adds = adds_summary()
-    report = {"pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
+    report = {"roi": len(cropped), "roi_urgent": sum(s is not None and s > roicrop.URGENT for s in shares),
+              "roi_flagged": sum(s is not None and s > roicrop.FLAG for s in shares), "roi_unknown": shares.count(None),
+              "pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
               "grouping": len(ids["grouping"]), "ids": ids, "at": time.time()}
@@ -4206,20 +4260,24 @@ def adds_summary() -> dict:
 
 
 def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
-    """Queue these meshes to be made again at low priority (old_rerun REMAKE_RANKS[tier]), taken only when no area has
+    """Queue these meshes to be made again at low priority (old_rerun REMAKE_RANKS[tier]; ROI_URGENT_RANK for one OpenMVS
+    cut much of, roicrop.URGENT), taken only when no area has
     anything else (_claim_old()), from the photos they have: a climb's own mesh by rebuilding its climb (for grouping, by
     meshing its boulder, harvesting its other problems first), a boulder's by
     meshing its boulder again (even from the same photos, unless it's for new photos), a pool's by meshing its climbs
     together again, each on an area's climb of it that isn't busy; for new photos with add, by adding them to its model
     (incremental.py) where it kept its features, else from scratch. A rest goes with its boulder's mesh; a mesh no area
     lists is left (counted apart). Returns {queued, busy, not_in_area}."""
-    rank, out = REMAKE_RANKS[tier], {"queued": 0, "busy": 0, "not_in_area": 0}
+    out = {"queued": 0, "busy": 0, "not_in_area": 0}
     note = {"pipeline": "made by an older pipeline", "fallback": "made from the CPU's SIFT without GPU SIFT's being tried or judged",
-            "new_data": "it has new photos", "grouping": "meshed on its own, on a boulder with more problems"}[tier]
+            "new_data": "it has new photos", "grouping": "meshed on its own, on a boulder with more problems",
+            "roi": "OpenMVS cropped it to a region it guessed"}[tier]
     free = "ci.status IN ('done','skipped','failed') AND ci.redo IS NULL AND ci.blocked IS NULL"
     for mid in dict.fromkeys(mids):
         rec = meshinputs.load(MESHES / mid) or {}
         kind, pid = rec.get("kind"), rec.get("project")
+        share = (rec.get("roi") or {}).get("share")
+        rank = ROI_URGENT_RANK if tier == "roi" and share is not None and share > roicrop.URGENT else REMAKE_RANKS[tier]
         proj = q("SELECT boulder FROM projects WHERE id=?", pid, one=True) if pid else None
         adding = tier == "new_data" and add and (MESHES / mid / reconstruction.FEATURES_FILE).is_file() or tier == "new_data" and add \
             and offload_mod.away(q, f"meshes/{mid}/{reconstruction.FEATURES_FILE}")
@@ -11030,6 +11088,9 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
         r["climbs"] = by.get(r["id"], [])
         r["rating"] = rated.get(r["id"])
         r["old"] = mesh_is_old(r)
+        cut = (_roi.get(r["id"]) or {}).get("share") if editor else None
+        if cut is not None and cut > roicrop.FLAG:      # the share of its dense points OpenMVS cut, to editors
+            r["cropped"] = cut
         if r["boulder"]:    # a pooled mesh (a boulder's, or a pool's): its climbs, and where each is seen from
             views = pooled_views[r["id"]]
             r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
@@ -14970,7 +15031,7 @@ def admin_abtest(body: dict) -> dict:
 
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
-    {"tier": "pipeline" | "fallback" | "new_data" | "grouping", "add": true to add new photos to meshes' models rather than
+    {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi", "add": true to add new photos to meshes' models rather than
     remake}."""
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
@@ -15037,7 +15098,8 @@ def main() -> None:
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
-    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes()), daemon=True, name="inputs-backfill").start()
+    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes(), roi_existing_meshes()), daemon=True,
+                     name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     carried = carry_sets_existing()
     if carried:

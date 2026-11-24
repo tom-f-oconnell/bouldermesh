@@ -56,8 +56,11 @@ GPU_SIFT = os.environ.get("GPU_SIFT", "1") == "1"
 AFFINE_SIFT = ["--SiftExtraction.estimate_affine_shape", "1", "--SiftExtraction.domain_size_pooling", "1"]
 # What makes a mesh, as each records it (pipeline.json beside it, then its inputs.json's "pipeline" and "texture"): when
 # these go up, the server counts meshes made under lower ones as made by an older pipeline (remade at low priority, from
-# the admin page), or textured by an older one (textured again, keeping their shape). Raise PIPELINE_VERSION with any
-# change to how photos are placed or the mesh is made from them; TEXTURE_VERSION with any change to texturing alone.
+# the admin page), or textured by an older one (textured again, keeping their shape). Tom (Nov 24): remake only the
+# meshes a change would actually change, so for each change that would, first look for a check, quicker than remaking,
+# of which meshes it touches (roicrop.py: those OpenMVS 2.4 cropped, from their job logs), with its own tier; raise
+# PIPELINE_VERSION (any change to how photos are placed or the mesh is made from them) or TEXTURE_VERSION (texturing
+# alone) only where no such check can be had.
 #   PIPELINE_VERSION 1: COLMAP 3.9.1 (GPU SIFT, the CPU's as its fallback; the incremental mapper), OpenMVS 2.4: every
 #                       mesh made before versions were recorded counts as this
 #                    2: COLMAP 4.2.1 throughout, features kept for adding photos to a mesh's model later

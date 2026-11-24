@@ -296,8 +296,16 @@ after it failed (not where the CPU's was judged better), those textured by older
 kept, and those with photos they weren't made from. *Texture again* colours the third kind again, keeping their shape;
 the others' buttons queue them to be made again from the photos they have, at low priority (after old meshes, and the
 CPU-SIFT ones last), on an area's climb of each: a climb's mesh by rebuilding it, a boulder's by meshing its boulder
-again, a pool's by meshing its climbs together again. Raise `PIPELINE_VERSION` with any change to how photos are
-placed or meshed, and `TEXTURE_VERSION` with any change to texturing alone.
+again, a pool's by meshing its climbs together again. Where a check quicker than remaking can tell which meshes a
+change touches, those get a tier of their own; only where none can is `PIPELINE_VERSION` raised (a change to how
+photos are placed or meshed) or `TEXTURE_VERSION` (to texturing alone).
+
+**Meshes OpenMVS cropped.** From Nov 15 to Nov 24, 2026, OpenMVS 2.4 guessed a region of interest for each mesh, chose
+each depth map's neighbouring photos by it and dropped the dense points outside it (93% of Swing Dance Boulder's).
+`backend/roicrop.py` reads from each such mesh's job log whether it was densified so and how much was cut (kept in its
+`inputs.json` as `roi`; the server works it out as it starts). The admin page counts them, those cut over 20% and 10%,
+and *Remake the cropped* makes them again: those cut over 20% first, with old meshes, the rest at low priority.
+Editors see those cut over 10% tagged "cropped N%".
 
 **A/B tests of COLMAP.** *Queue A/B tests of COLMAP* on the admin page meshes projects' photos with COLMAP 3.9.1 and
 4.2.1, one after the other on one machine (which goes first alternates from test to test), as machines' work after
