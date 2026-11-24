@@ -218,9 +218,10 @@ again.
 - *Don't mesh a boulder again from the same photos*: a boulder whose current mesh was made from the photos its climbs'
   harvests hold now isn't meshed again when one of its climbs comes round again (as after a restart interrupted it); that
   climb is done with the boulder's mesh. New photos, or a new climb on it, still mesh it again, as does *Rebuild*.
-- *Keep the mesh before when a rebuild from the same photos places fewer*: COLMAP can place fewer photos of the same set
-  from one run to the next. When a rebuild had every photo the mesh before placed and places fewer, the mesh before stays
-  the current one, and the new one is kept as an older version of it.
+- *Keep the mesh before when a rebuild places fewer of the same photos, or has under half its faces*: COLMAP can place
+  fewer photos of the same set from one run to the next. When a rebuild had every photo the mesh before placed and
+  places fewer, or has under half the faces the mesh before has (one OpenMVS cropped, say), the mesh before stays the
+  current one, and the new one is kept as an older version of it. Neither holds back a mesh made under newer rules.
 - *When COLMAP places under 75% of the photos, try 0 more seeds, keeping the best*: within one meshing, COLMAP's placing
   of the photos can be tried again with another random seed (a minute or so for most, much more for big boulders) while
   the model it keeps places under that share of them, and the model placing most is used. 0 in either turns it off, as

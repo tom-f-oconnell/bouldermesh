@@ -2432,6 +2432,27 @@ assert current() == m3 and server.q("SELECT replaced_by FROM meshes WHERE id=?",
 placing[:] = "a"
 m4 = server.run_reconstruct(kept)
 assert current() == m4, "without keep_better, the newest is current"
+faces_made = {"n": 1000}
+
+
+def placing_faces(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
+    got = placing_rec(images, work, out_dir, log, use_gpu, internet, tracker)
+    (out_dir / "cleanup.json").write_text(json.dumps({"faces": faces_made["n"]}))     # its faces, its GLB being a stand-in
+    return got
+
+
+pipeline.reconstruct = placing_faces
+placing[:] = "abc"
+m5 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m5, "the mesh before's faces aren't known: not held back by them"
+faces_made["n"] = 400
+m6 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m5 and server.q("SELECT replaced_by FROM meshes WHERE id=?", m6, one=True)["replaced_by"] == m5, \
+    "as many placed, but under half the faces: the one before stays"
+assert "this has 400 faces, under half the 1,000 of mesh" in server.read_log(kept)
+faces_made["n"] = 600
+m7 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m7, "over half the faces: the newest is current"
 pipeline.reconstruct = fake_reconstruct
 print("the same photos once, and keeping the better mesh OK")
 

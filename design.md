@@ -1084,7 +1084,7 @@ attempt makes no mesh of listed prominently, rather than deleting anything.
 - **How.** One harvested before is queued as "new+rebuild", which looks in every source again, downloads only what it
   hasn't had, keeps earlier verdicts, and is meshed again whatever it finds (on a boulder meshed whole, harvested and its
   boulder meshed again, the existing path). One never harvested (via another's mesh) starts as if new. Interrupted by a
-  restart, it goes next, as other interrupted climbs do. "Keep the mesh before when a rebuild places fewer" never keeps
+  restart, it goes next, as other interrupted climbs do. "Keep the mesh before when a rebuild places fewer" (or has under half its faces) never keeps
   an old mesh over a new one.
 - **Replacing.** A new mesh takes over from each current old mesh (lower `MESH_RULES`) every one of whose climbs it's of
   too, those linked via it included: the old one becomes an older version, as a rebuild's mesh before does. One made

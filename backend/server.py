@@ -313,7 +313,7 @@ def init_db() -> None:
             con.execute("ALTER TABLE campaigns ADD COLUMN count_failures INTEGER DEFAULT 0")
         if "same_photos_once" not in cols:  # a boulder isn't meshed again from the photos its current mesh was made from
             con.execute("ALTER TABLE campaigns ADD COLUMN same_photos_once INTEGER DEFAULT 1")
-        if "keep_better" not in cols:       # a rebuild from the same photos that places fewer leaves the mesh before current
+        if "keep_better" not in cols:       # a rebuild that places fewer of the same photos, or has under half the faces, leaves the mesh before current
             con.execute("ALTER TABLE campaigns ADD COLUMN keep_better INTEGER DEFAULT 1")
         if "mapper_below" not in cols:      # COLMAP's mapper placing under this % of the photos tries more seeds (meshopts.py)
             con.execute(f"ALTER TABLE campaigns ADD COLUMN mapper_below INTEGER DEFAULT {round(meshopts.MAPPER['retry_below'] * 100)}")
@@ -4591,6 +4591,23 @@ def fewer_placed(before: str, mid: str, photos: Path) -> tuple[int, int] | None:
     return (len(now), len(was)) if set(was) <= given else None
 
 
+# a rebuild with fewer than this share of the mesh before's faces leaves that one current (fewer_faces()): on Nov 23 a
+# remake of Swing Dance Boulder that OpenMVS cropped to a sliver had 15,757 faces against 1,053,382, and took over
+# because it placed more photos
+FEWER_FACES = 0.5
+
+
+def mesh_faces(mid: str) -> int | None:
+    """How many faces a mesh has: from its GLB's header, else as its cleanup recorded them (its GLB offloaded)."""
+    return timings_mod.face_count(MESHES / mid) or (_read_json(MESHES / mid / "cleanup.json") or {}).get("faces")
+
+
+def fewer_faces(before: str, mid: str) -> tuple[int, int] | None:
+    """(how many faces mesh mid has, how many mesh before has), if mid has under FEWER_FACES of before's; else None."""
+    was, now = mesh_faces(before), mesh_faces(mid)
+    return (now, was) if was and now is not None and now < FEWER_FACES * was else None
+
+
 def place_climbs(mid: str, pid: str, log) -> None:
     """Work out where on a boulder's mesh each of its climbs is seen from (viewpoints.py). Only costs that if it fails."""
     try:
@@ -4648,7 +4665,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         add_to: a mesh whose model the project's photos it lacks are added to (incremental.py), where it kept its
             reconstruction and features (asked back from the backup first, if offloaded); else every photo is placed.
         keep_better: if this places fewer photos than the project's mesh before, from photos that included every one
-            that mesh placed (fewer_placed()), that one stays the current one, and this is kept as an older version of it.
+            that mesh placed (fewer_placed()), or has under half its faces (fewer_faces()), that one stays the current
+            one, and this is kept as an older version of it. Never where the mesh before is old.
 
     Returns:
         The id of the mesh it made, if it made one.
@@ -4731,12 +4749,15 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             except Exception as e:
                 log(f"capture: adding the holds marked on the phone failed ({type(e).__name__}: {e})")
         before = proj["mesh_id"] if proj["mesh_id"] and proj["mesh_id"] != mid and q("SELECT id FROM meshes WHERE id=?", proj["mesh_id"]) else None
-        worse = fewer_placed(before, mid, pdir / "photos") if before and keep_better and not mesh_is_old(
-            q("SELECT source, rules FROM meshes WHERE id=?", before, one=True)) else None      # never an old one over it
+        judged = before and keep_better and not mesh_is_old(q("SELECT source, rules FROM meshes WHERE id=?", before, one=True))
+        placed = fewer_placed(before, mid, pdir / "photos") if judged else None      # never an old one over it
+        smaller = fewer_faces(before, mid) if judged and not placed else None
+        worse = placed or smaller
         if worse:
             supersede(mid, before)
-            log(f"this placed {worse[0]} of its photos, fewer than the {worse[1]} mesh {before} placed from them: that one stays "
-                "the current one, and this is kept as an older version of it")
+            log((f"this placed {placed[0]} of its photos, fewer than the {placed[1]} mesh {before} placed from them" if placed else
+                 f"this has {smaller[0]:,} faces, under half the {smaller[1]:,} of mesh {before}") +
+                ": that one stays the current one, and this is kept as an older version of it")
         elif before:
             supersede(before, mid)
             q("UPDATE meshes SET preferred=(SELECT preferred FROM meshes WHERE id=?) WHERE id=?", before, mid, write=True)   # the choice made of it
@@ -5590,8 +5611,8 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         count_failures: with max_meshes, count its climbs and boulders that failed or were skipped toward it too.
         check_new: for an area listed already, ask Mountain Project for its list again, and add the climbs added since.
         same_photos_once: don't mesh a boulder again from the photos its current mesh was made from (boulder_unchanged()).
-        keep_better: when a rebuild from the photos the mesh before was made from places fewer of them, that mesh stays
-            the current one (run_reconstruct()).
+        keep_better: when a rebuild from the photos the mesh before was made from places fewer of them, or has under
+            half its faces, that mesh stays the current one (run_reconstruct()).
         mapper_below, mapper_more: when COLMAP's mapper places under mapper_below % of a climb's or boulder's photos, it
             tries mapper_more more seeds, and the model placing most is kept (meshopts.py); None for the defaults, 0 for never.
 
@@ -7612,7 +7633,7 @@ def _rebuild(cid: str, row: dict, log) -> dict:
     if made and p["status"] == "done" and row["mesh_id"] and p["mesh_id"] == row["mesh_id"] != made:
         shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
         return {"status": "done", "mesh_id": row["mesh_id"], "changed": 0, "note": "rebuilt, but that placed fewer of the same "
-                "photos: the mesh before stays the current one, and the new one is kept as an older version of it"}
+                "photos or had under half the faces: the mesh before stays the current one, and the new one is kept as an older version of it"}
     if p["status"] == "done" and p["mesh_id"] and p["mesh_id"] != row["mesh_id"]:
         shutil.rmtree(PROJECTS / pid / "work", ignore_errors=True)
         return {"status": "done", "mesh_id": p["mesh_id"], "note": "rebuilt" + (": the one before is kept as an older version" if row["mesh_id"] else ""),
