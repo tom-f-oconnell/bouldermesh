@@ -592,16 +592,19 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
             take most of an hour.</p>
           <p>Before a climb is meshed, the page of its lowest Mountain Project area is read, for whether that's one rock. Where its
             name or description says so ("Drifter/Smoking Boulder"), the area's climbs on it are harvested, wherever they come in
-            the order, and meshed together from all their photos: one mesh, counting once toward a limit. It shows what their
+            the order, and meshed together from all their photos, with its page's other problems: one mesh, counting once toward
+            a limit, even where the area lists only one of them. It shows what their
             photos do, often not all the way round. The photos it leaves out are tried again against it, and each set of what's
             still left that COLMAP places together, and that's tied to it (a climb's page photo, or photos matching those it
             placed), can be meshed apart, as another side or another rock. It's a boulder when every climb on it (its page's
             every problem) was harvested and tried in it, and none of that is waiting or made a mesh; otherwise each mesh placing
             more than one climb is a group. (The admin page can have every climb meshed on its own instead.)</p>
-          <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, each
-            climb is meshed on its own, counting one each. Once its climbs within the limit are through, those whose photos show
-            the same rock are meshed together as well, as groups: clusters of a boulder's climbs, not always all of them. These,
-            like what a boulder's mesh leaves out, come on top of the limit.</p>
+          <p>Where the area holds several rocks ("Stained Glass/Flyboy Area", "Birthday Boulders"), or its page doesn't say, its
+            climbs count one each. One whose photos show the same rock as a climb harvested before it isn't meshed on its own:
+            once the area's climbs there within the limit are through, they're meshed together, as a group (a cluster of a
+            boulder's climbs, not always all of them), and it's meshed on its own only if that doesn't place its photos. The
+            others are meshed on their own. A group a later climb joins (as the limit is raised) has the new photos added to its
+            model. Groups, like what a boulder's mesh leaves out, come on top of the limit.</p>
           <p>Several areas, one a line, are taken in the order given, top first, after any running already; one with no climb to
             take for now (waiting for volunteers) is passed over until it has. An area listed already is taken up again with these
             settings, keeping what's done, and moves to its place in the new list. One removed and entered again starts over,
@@ -3482,7 +3485,7 @@ function workTag(w) {
   if (w.kept) return `<span class="tag" title="Kept from before a restart, for the project to take up when it carries on (Retry, or its area's run): no machine is given it until then${w.drop_at ? `. Dropped at ${new Date(w.drop_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} if nothing has` : ''}">${what}, kept for a retry</span>`;
   return `<span class="tag" title="waiting for a machine">${what}, waiting</span>`;
 }
-const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder\'s mesh', done: 'meshed', failed: 'failed', skipped: 'skipped' };
+const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs', done: 'meshed', failed: 'failed', skipped: 'skipped' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
 // A mesh of several climbs' photos (a boulder's, of what a boulder's left out, or a pool's: climbs whose photos match): how
@@ -3823,7 +3826,7 @@ const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stoppe
 // a project made for an area: which, and what it is there (a climb's own harvest, with how that climb stands on the
 // list, or the mesh of its boulder, a group of its climbs, or what a boulder's mesh left out)
 const AREA_STATES = { pending: 'still to go', running: 'in progress', waiting: 'waiting for volunteers\' YouTube searches and videos',
-                      harvested: 'harvested, waiting for the rest of its boulder\'s', done: 'meshed', skipped: 'skipped', failed: 'failed' };
+                      harvested: 'harvested, waiting for the climbs it\'s meshed with', done: 'meshed', skipped: 'skipped', failed: 'failed' };
 const AREA_KINDS = { boulder: 'the mesh of its boulder', group: 'the mesh of a group of its climbs whose photos match',
                      rest: 'the mesh of what its boulder\'s mesh left out' };
 function projectAreasHtml(p){
@@ -4013,7 +4016,7 @@ $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create
 
 // ---------------------------------------------------------------- areas
 const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
-const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for its boulder' };
+const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null, meshMark = '';
 const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h1.5"/></svg>';

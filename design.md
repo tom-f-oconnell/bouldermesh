@@ -948,6 +948,24 @@ group names (`GROUP_AREA`, e.g. "Manx Boulders - Northwest Face") hold several r
 share. If a boulder's first problem didn't get a mesh, the next one still tries, as its name finds
 different photos.
 
+**One rock meshed once (Nov 24, 2026, the user's choices).** Two ways an area meshed the same rock again:
+- **Overlapping areas.** An area meshed a boulder whole only when its own list had 2 or more climbs on it. Joshua Tree's
+  export stops at 1000, so it could mesh one climb alone, and a sub-area listing more then meshed the boulder. Now a
+  climb is harvested for its boulder's mesh when the boulder's page lists 2 or more problems, or 2 are known on it
+  (`pooled()`, `many_problems()`). That mesh harvests the page's other problems first, waiting for their videos.
+- **Pools growing.** On a lowest area that isn't one boulder, every climb was meshed on its own, and its pool's mesh then
+  hid that mesh. Each climb joining the pool later, as a limit rose, also meant a full remake. Now a climb whose photos
+  match a harvested neighbour's isn't meshed on its own (`join_climb()`); it waits harvested for the pool. The first of
+  each pool still is, as nothing matched it yet.
+  - If the pool's mesh doesn't place a joining climb's own photos, or isn't made, that climb is meshed on its own
+    (`cluster_meshed()`).
+  - A pool gaining climbs has their photos added to its kept model (`cluster+add`, incremental.py). It's re-solved in full
+    only where the add's gates say so, or it kept no features.
+
+Meshes made before either change aren't old by `MESH_RULES`. Own meshes of pool members are already old by data. A
+climb meshed alone on a boulder with more problems and no mesh of its own is in the admin page's "grouping" tier, whose
+button meshes its boulder at low priority (`grouping_tier()`).
+
 **A restart only pauses a run.** It carries on by itself, unless someone had stopped it, and its climb
 in progress carries on from its last finished step: each step of a reconstruction records when it's
 done, and a partial harvest starts again, which is quick, as its downloads are cached. Within a step,

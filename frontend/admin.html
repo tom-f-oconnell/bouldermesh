@@ -186,6 +186,7 @@
       <button class="sec" id="tier-fallback" title="Make them again, at the lowest priority: meshes made from the CPU's SIFT without GPU SIFT's being tried, or after it failed (not those where the CPU's was judged better)">Remake, lowest priority</button>
       <button class="sec" id="tier-add" title="Add the photos they weren't made from to their models, at low priority, rather than place every photo again: for meshes that kept their features (made since pipeline version 2); the others are remade with them. A gate may still call for a full solve (counted below)">Add new photos</button>
       <button class="sec" id="tier-new" title="Make them again with the photos they weren't made from, at low priority, placing every photo again: a boulder's or a pool's mesh with its climbs' new photos">Remake with new photos</button>
+      <button class="sec" id="tier-grouping" title="Mesh the boulder of each climb meshed on its own whose boulder has more problems, at low priority, harvesting those first: its boulder's mesh then takes over from its own">Mesh their boulders</button>
     </div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
       COLMAP places together (6 photos or more) is a scene to mesh apart, as another side or rock, if it's tied to the
@@ -503,7 +504,8 @@ function tiersNote(t){
     <li><b>${t.pipeline}</b> made by an older pipeline (before version ${t.pipeline_version})</li>
     <li><b>${fb.n}</b> made from the CPU's SIFT for another reason than its being judged better${whys ? ` (${esc(whys)})` : ''}</li>
     <li><b>${t.texture}</b> textured by older texturing (before version ${t.texture_version}) that can be textured again${t.texture_unkept ? `; ${t.texture_unkept} more whose reconstruction wasn't kept need remaking first` : ''}</li>
-    <li><b>${t.new_data}</b> with ${t.new_photos} photos they weren't made from</li></ul>${addsNote(t.adds)}`;
+    <li><b>${t.new_data}</b> with ${t.new_photos} photos they weren't made from</li>
+    <li><b>${t.grouping ?? 0}</b> of a climb meshed on its own, on a boulder with more problems and no mesh of its own (made before areas went by the boulder's page)</li></ul>${addsNote(t.adds)}`;
 }
 // a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
 // also: a second way to go, {label, value} (resolved with value; the main button with true, Cancel with false)
@@ -741,6 +743,7 @@ function render(s){
   $('#abtests').innerHTML = abNote(s.abtests);
   $('#tier-texture').disabled = !s.tiers?.texture; $('#tier-pipeline').disabled = !s.tiers?.pipeline;
   $('#tier-fallback').disabled = !s.tiers?.fallback?.n; $('#tier-new').disabled = $('#tier-add').disabled = !s.tiers?.new_data;
+  $('#tier-grouping').disabled = !s.tiers?.grouping;
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#beta-parallel')) $('#beta-parallel').value = v['beta.parallel'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];
@@ -1171,7 +1174,8 @@ $('#tier-texture').onclick = async () => {
 for (const [id, tier, n, what, add] of [['#tier-pipeline', 'pipeline', t => t.pipeline, 'made by an older pipeline, at low priority'],
                                    ['#tier-fallback', 'fallback', t => t.fallback.n, 'made from the CPU\'s SIFT without GPU SIFT\'s being tried or judged, at the lowest priority'],
                                    ['#tier-new', 'new_data', t => t.new_data, 'with photos they weren\'t made from, at low priority'],
-                                   ['#tier-add', 'new_data', t => t.new_data, 'with photos they weren\'t made from, adding those to their models where they can be, at low priority', true]])
+                                   ['#tier-add', 'new_data', t => t.new_data, 'with photos they weren\'t made from, adding those to their models where they can be, at low priority', true],
+                                   ['#tier-grouping', 'grouping', t => t.grouping, 'of a climb on its own, on a boulder with more problems, as their boulders\' meshes (harvesting those problems first), at low priority']])
   $(id).onclick = async () => {
     if (!state?.tiers || !confirm(`Make again the ${n(state.tiers)} mesh(es) ${what}? Each takes as long as meshing does (an add less), but only when nothing else is waiting.`)) return;
     try { msg((await call('/api/admin/actions/remake-tier', { tier, add: !!add })).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); }

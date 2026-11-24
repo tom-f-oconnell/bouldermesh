@@ -3673,12 +3673,22 @@ def fake_links(samples, pairs, log, progress=None):
 
 
 server.relevance_mod.link_climbs = fake_links
+real_views, unplaced = server.viewpoints.load, set()      # a pool's mesh places every climb's own photos, but those named
+server.viewpoints.load = lambda d: {"climbs": {c: {"photos": 2, "of": 3} for c, n in names_of().items() if n not in unplaced}}
+rec_before, real_pipeline_rec = len(reconstructed), pipeline.reconstruct
+pipeline.reconstruct = lambda images, *a, **k: (reconstructed.append(server.q(
+    "SELECT name FROM projects WHERE id=?", pathlib.Path(images).parent.name, one=True)["name"]), real_pipeline_rec(images, *a, **k))[1]
 try:
     c = server.create_campaign("", "popularity", HEAD + "".join([leaf_row(31, "Marie", 4.0, "Bas Cuvier"), leaf_row(32, "Rose", 3.9, "Bas Cuvier"),
                                                                 leaf_row(33, "Fausse", 3.8, "Bas Cuvier"), leaf_row(34, "Lone", 3.7, "Bas Cuvier")]))
     run_all(c["id"], 30)
     got = items(c["id"])
     assert all(got[n]["status"] == "done" and got[n]["mesh_id"] for n in ("Marie", "Rose", "Fausse", "Lone")), got
+    # Rose's and Fausse's photos match Marie's, harvested before them: meshed only with her, not on their own too
+    assert sorted(reconstructed[rec_before:]) == ["Fausse, Marie, Rose (boulder)", "Lone (harvest)", "Marie (harvest)"], reconstructed[rec_before:]
+    assert got["Rose"]["mesh_id"] == got["Fausse"]["mesh_id"] != got["Marie"]["mesh_id"], got
+    assert "meshed with the climbs its photos match, placing 2 photos of its own" in got["Rose"]["note"], got["Rose"]["note"]
+    assert "its photos match Marie's" in server.read_log(got["Rose"]["project_id"])
     assert len(set(compared)) == 6, "each pair once"
     pool = server.q("SELECT * FROM pools", one=True)
     proj = server.q("SELECT * FROM projects WHERE kind='boulder'", one=True)
@@ -3693,8 +3703,35 @@ try:
     assert server.campaign_status(c["id"]) == "done"
     server._settled.clear()
     assert server.settle_clusters(c["id"], got["Marie"]["boulder"]) == 0, "not again from the same climbs"
+    # a climb joining later (as a limit is raised): no mesh of its own, its photos added to the pool's model
+    first_pool = proj["mesh_id"]
+    MATCH[("Bleau", "Rose")] = 4
+    server.add_new_climbs(c["id"], server.mp_mod.parse_area_csv(HEAD + leaf_row(35, "Bleau", 3.6, "Bas Cuvier")))
+    server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+    added_to, real_boulder = [], server.run_boulder
+    server.run_boulder = lambda pid, **k: (added_to.append(k.get("add_to")), real_boulder(pid, **k))[1]
+    try:
+        run_all(c["id"], 30)
+    finally:
+        server.run_boulder = real_boulder
+    got = items(c["id"])
+    assert reconstructed[rec_before:].count("Fausse, Marie, Rose (boulder)") == 2 and "Bleau (harvest)" not in reconstructed, reconstructed
+    assert added_to == [first_pool], ("its new photos added to the pool's model", added_to)
+    pool_now = server.q("SELECT mesh_id FROM projects WHERE kind='boulder'", one=True)["mesh_id"]
+    assert got["Bleau"]["status"] == "done" and got["Bleau"]["mesh_id"] == pool_now != first_pool, got["Bleau"]
+    # one its pool's mesh doesn't place is meshed on its own after all
+    MATCH[("Crux", "Lone")] = 5
+    unplaced.add("Crux")
+    server.add_new_climbs(c["id"], server.mp_mod.parse_area_csv(HEAD + leaf_row(36, "Crux", 3.5, "Bas Cuvier")))
+    server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+    run_all(c["id"], 30)
+    got = items(c["id"])
+    assert reconstructed[-2:] == ["Crux, Lone (boulder)", "Crux (harvest)"], reconstructed[rec_before:]
+    assert got["Crux"]["status"] == "done" and got["Crux"]["mesh_id"] not in (None, got["Lone"]["mesh_id"]), got["Crux"]
+    assert got["Lone"]["status"] == "done", got["Lone"]
 finally:
     server.climb_samples, server.relevance_mod.nearest, server.relevance_mod.link_climbs = real_samples, real_nearest, real_link
+    server.viewpoints.load, pipeline.reconstruct = real_views, real_pipeline_rec
 # what a pooled mesh's card says: how many of its climbs it places, and whether it's the whole boulder; a sector isn't
 # meshed as one from a climb's card; names without the project's kind
 summary = server.pooled_summary(pool["key"], [{"id": "a", "view": {"photos": 2}}, {"id": "b", "view": None}], server.boulder_kinds())
