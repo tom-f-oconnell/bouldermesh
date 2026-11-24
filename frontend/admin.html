@@ -316,6 +316,9 @@
       and give up on videos none of which has moved on (been wanted, given out, or heard of) for
       <input type="number" id="vid-giveup" min="0.5" max="240" step="0.5" style="width:70px"> h, meshing it with what's come.
       Videos are fetched a boulder at a time, the one waiting longest first.</div>
+    <div class="inline" style="margin-top:8px">Videos that come after a boulder's or pool's mesh was made: it's made again with them once
+      the rest still to come for its climbs has, or <input type="number" id="vid-late" min="0" max="240" step="0.5" style="width:70px"> h
+      after the first came <small class="note">(0: at once)</small>, so that late videos remake it once, not once each.</div>
     <div class="note" id="vid-holds"></div>
     <div class="inline" style="margin-top:8px">Volunteers run yt-dlp's <select id="vol-ytdlp"><option value="nightly">nightly</option>
       <option value="stable">stable</option></select> builds <small class="note">(nightly follows YouTube's changes days or weeks before a
@@ -885,6 +888,7 @@ function render(s){
   keep('#chk-new', Math.round(v['volunteers.check_new'] * 100)); keep('#chk-trusted', Math.round(v['volunteers.check_trusted'] * 100));
   $('#chk-fresh').checked = v['volunteers.check_fresh'];
   keep('#vid-alert', v['videos.hold_alert_hours']); keep('#vid-giveup', v['videos.give_up_hours']);
+  keep('#vid-late', v['videos.late_batch_hours']);
   const holds = s.video_holds || [];
   $('#vid-holds').innerHTML = holds.length ? `Held up by videos now: ${holds.map(h => `${esc(h.what)} (${((Date.now() / 1000 - h.since) / 3600).toFixed(1)} h,
     ${h.coming} to come${h.notified ? ', told' : ''})`).join('; ')}` : 'Nothing is held up by videos now.';
@@ -1258,6 +1262,7 @@ for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vo
                   '#chk-new', '#chk-trusted', '#chk-fresh']) $(id).onchange = regSave;
 $('#vid-alert').onchange = () => save({ 'videos.hold_alert_hours': +$('#vid-alert').value });
 $('#vid-giveup').onchange = () => save({ 'videos.give_up_hours': +$('#vid-giveup').value });
+$('#vid-late').onchange = () => save({ 'videos.late_batch_hours': +$('#vid-late').value });
 $('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value });
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });

@@ -870,6 +870,12 @@ class Broker:
             self.q("UPDATE wants SET applied=1 WHERE purpose=? AND ref=?", purpose, ref)
         return self._ready(purpose, ref)
 
+    def unsettled(self, purpose: str, since: float) -> list[str]:
+        """The refs for a purpose that something came for since then (a task finished) that ready() hasn't taken, as it
+        said not now: for resettle()."""
+        return [r["ref"] for r in self.q("SELECT DISTINCT w.ref FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose=? "
+                                         "AND w.applied=0 AND t.state='done' AND t.finished>=?", purpose, since)]
+
     # -- for the admin page ---------------------------------------------------------------------------------------
     def contributions(self) -> list[dict]:
         """What each volunteer has fetched, for the leaderboard: {id, name, created, revoked, registered (by its own

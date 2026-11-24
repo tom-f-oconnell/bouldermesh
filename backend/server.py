@@ -242,6 +242,9 @@ def init_db() -> None:
           only_retries INTEGER DEFAULT 0);   -- run only its retries, and then stop
         -- a boulder or climb held up by videos volunteers are still fetching: since when, how many, when the phone was told
         CREATE TABLE IF NOT EXISTS video_holds(key TEXT PRIMARY KEY, what TEXT, since REAL, coming INTEGER, seen REAL, notified REAL);
+        -- a boulder's or pool's mesh whose climbs' harvests had volunteers' videos added since their photos were last pooled
+        -- (note_late()): when the first and the last of them came, until it's meshed again with them (settle_late())
+        CREATE TABLE IF NOT EXISTS late_photos(key TEXT PRIMARY KEY, first REAL, last REAL);
         CREATE TABLE IF NOT EXISTS campaign_items(
           campaign_id TEXT, source_id TEXT, rank INTEGER, name TEXT, grade TEXT, stars REAL, url TEXT,
           boulder TEXT, data TEXT, media INTEGER, climb_id TEXT, project_id TEXT, mesh_id TEXT,
@@ -5272,8 +5275,12 @@ def boulder_project_made(boulder: str) -> str:
     return pid
 
 
-def mesh_boulder(boulder: str) -> tuple[dict, int]:
+def mesh_boulder(boulder: str, wait: bool = False, why: str | None = None) -> tuple[dict, int]:
     """Queue meshing a boulder from every photo of its climbs, in its project.
+
+    Args:
+        wait: as run_boulder() has it: for videos volunteers are still fetching for its climbs, rather than mesh it now.
+        why: what queued it, when no one asked (shown in deploy.sh's list of what a restart would interrupt).
 
     Returns:
         The response, and its HTTP status.
@@ -5286,7 +5293,7 @@ def mesh_boulder(boulder: str) -> tuple[dict, int]:
         return {"error": "already being meshed", "project_id": proj["id"]}, 409
     pid = boulder_project_made(boulder)
     q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
-    queue_job({"type": "boulder", "pid": pid})
+    queue_job({"type": "boulder", "pid": pid, **({"wait": True} if wait else {}), **({"why": why} if why else {})})
     return {"queued": True, "project_id": pid, "position": jobs.qsize()}, 202
 
 
@@ -5351,12 +5358,13 @@ def then_boulder(job: dict) -> None:
         return
     if (q("SELECT status FROM projects WHERE id=?", job["pid"], one=True) or {}).get("status") not in ("harvested", "done"):
         return append_log(job["pid"], "its boulder isn't meshed, as this harvest didn't get through: Retry does both")
-    said, _ = mesh_boulder(job["then_boulder"])
+    said, _ = mesh_boulder(job["then_boulder"], wait=True)
     append_log(job["pid"], "its boulder queued to be meshed from every climb's photos" if said.get("queued") else
                f"its boulder wasn't meshed: {said.get('error')}")
 
 
-def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False, add_to: str | None = None) -> None:
+def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better: bool = False, add_to: str | None = None,
+                wait: bool = False) -> None:
     """Mesh a whole boulder from every photo its climbs' harvests found, in a project and mesh of its own, which
     take nothing from any climb's own; then work out where on it each climb is seen from (viewpoints.py), by the
     photos from its own page and videos. A climb's own harvests stay as they are, to mesh it from on its own.
@@ -5367,6 +5375,9 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
         fetch: first harvest each of its climbs that has no harvest yet, in a project of its own, as an area would
             (new_harvest_project()). Otherwise only what has been harvested is used.
         keep_better: as run_reconstruct() has it.
+        wait: rather than pool its climbs' photos now, leave it "waiting" while volunteers are still fetching videos
+            for any of their harvests (videos_moving()), those it harvested itself just now included, or one of them is
+            being harvested: to be meshed once, with them (settle_boulder() for an area's, settle_late() otherwise).
     """
     proj = q("SELECT boulder, harvest FROM projects WHERE id=?", pid, one=True)
     boulder, pdir = proj["boulder"], PROJECTS / pid
@@ -5428,6 +5439,16 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
             got = q("SELECT harvest FROM projects WHERE id=?", cpid, one=True) if cpid else None
             if got:
                 log(f"  {c['name']}: " + (f"{json.loads(got['harvest'])['images']} photo(s)" if got["harvest"] else f"failed: {last_failure(cpid)}"))
+        if wait and not finished:
+            coming = videos_moving([h for c in climbs for h in climb_harvests(c["id"])])
+            busy = harvests_busy([c["id"] for c in climbs])
+            if coming or busy:
+                log(f"waiting for {plural(len(coming), 'YouTube search or video')} volunteers are fetching for its climbs"
+                    if coming else f"waiting for {plural(len(busy), 'harvest')} of its climbs under way")
+                log("its climbs' photos are pooled and meshed once they've come, so that it's meshed once, with them")
+                q("UPDATE projects SET status='waiting' WHERE id=?", pid, write=True)
+                tracker.skip_rest()
+                return
         if finished:
             summary = json.loads(finished)
             log("its climbs' photos were already pooled")
@@ -5951,11 +5972,19 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
         return False
     # nor while volunteers are still fetching videos for any climb on it, whatever its status (one done or skipped
     # before had its videos wanted again by a search, say), until they've come or stopped moving on
-    coming = videos_moving([h for c in boulder_climbs(boulder) for h in climb_harvests(c["id"])])
+    climbs = boulder_climbs(boulder)
+    harvests = [h for c in climbs for h in climb_harvests(c["id"])]
+    coming = videos_moving(harvests)
     key = f"boulder|{camp_id}|{boulder}"
+    name = (json.loads(boulder)[-1] if boulder.startswith("[") else boulder)
     if coming:
-        name = (json.loads(boulder)[-1] if boulder.startswith("[") else boulder)
         hold(key, name, len(coming))
+        return False
+    # nor while one of them is being harvested (what volunteers fetched being added to a climb its area doesn't list,
+    # say), nor, made before, while what came late waits for the rest (late_wait()): held quietly, as these end by themselves
+    busy = harvests_busy([c["id"] for c in climbs])
+    if busy or late_wait(boulder, harvests):
+        hold(key, name, len(busy), quiet=True)
         return False
     unhold(key)
     mesh = boulder_unchanged(boulder) if camp.get("same_photos_once", 1) != 0 else None
@@ -5965,10 +5994,14 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
         return False
     set_item(camp_id, harvested[0]["source_id"], status="pending", retry=1, redo="boulder", was="harvested", redo_started=0,
              note=f"queued to {REDO_NAMES['boulder']}")
+    # its area may have finished meanwhile, as when the boulder waited on with the area's list through (holds_worker())
+    q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", camp_id, write=True)
     return True
 
 
 SAME_PHOTOS_NOTE = "already meshed with its boulder, from these same photos"
+BOULDER_WAITS_NOTE = ("harvested for its boulder's mesh, which waits for the videos volunteers are fetching for climbs on it "
+                      "(those its page lists that were harvested for it too)")
 
 
 def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dict:
@@ -6009,10 +6042,12 @@ def videos_moving(pids) -> list[dict]:
 _holds_lock = threading.Lock()
 
 
-def hold(key: str, what: str, coming: int) -> None:
-    """A boulder or climb is held up by coming videos: when it first was is kept (video_holds), for hold_alerts()."""
+def hold(key: str, what: str, coming: int, quiet: bool = False) -> None:
+    """A boulder or climb is held up by coming videos: when it first was is kept (video_holds), for hold_alerts(). quiet:
+    held up by something else that ends by itself (settle_boulder()), which the phone isn't told of."""
     with _holds_lock:
-        q("INSERT OR IGNORE INTO video_holds(key, what, since) VALUES(?,?,?)", key, what, time.time(), write=True)
+        q("INSERT OR IGNORE INTO video_holds(key, what, since, notified) VALUES(?,?,?,?)", key, what, time.time(),
+          time.time() if quiet else None, write=True)
         q("UPDATE video_holds SET coming=?, seen=? WHERE key=?", coming, time.time(), key, write=True)
 
 
@@ -6044,7 +6079,8 @@ def hold_alerts() -> int:
 
 def holds_worker() -> None:
     """Every few minutes: the phone told of long holds; boulders held up by videos looked at again (settle_boulder()),
-    so that one whose videos came, or were given up on, is meshed."""
+    so that one whose videos came, or were given up on, is meshed; and those with photos that came after their mesh, or
+    that waited outside areas, meshed again once nothing more is coming (settle_late())."""
     while True:
         time.sleep(300)
         try:
@@ -6056,8 +6092,143 @@ def holds_worker() -> None:
                 _, camp_id, boulder = r["key"].split("|", 2)
                 settle_boulder(camp_id, boulder)
             hold_alerts()
+            settle_late()
         except Exception as e:  # noqa: BLE001 - next time
             print(f"error: video holds: {type(e).__name__}: {e}", flush=True)
+
+
+def harvests_busy(climb_ids: list[str]) -> list[str]:
+    """These climbs' harvests being harvested now, or queued to be (not those meshing a climb on its own): what a boulder's
+    or pool's mesh waits for, as what they add would come too late for it."""
+    if not climb_ids:
+        return []
+    return [r["id"] for r in q(
+        f"SELECT id FROM projects WHERE kind='harvest' AND climb_id IN ({','.join('?' * len(climb_ids))}) AND (status='harvesting' "
+        """OR (status='queued' AND (job IS NULL OR job LIKE '%"type": "harvest"%')))""", *climb_ids)]
+
+
+def pooled_at(key: str) -> float | None:
+    """When a boulder's or pool's photos were last pooled from its climbs' harvests (run_boulder()), or None if never."""
+    proj = boulder_project(key)
+    try:
+        return float(json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())["created"]) if proj else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def note_late(climb_id: str) -> list[str]:
+    """What volunteers fetched has been added to a climb's harvest: each boulder or pool whose photos were pooled from its
+    climbs before is to be meshed again with it (late_photos), by its area (settle_boulder()) or else settle_late().
+
+    Returns:
+        Their keys.
+    """
+    row = q("SELECT area_path FROM climbs WHERE id=?", climb_id, one=True)
+    leaf = boulder_of(row["area_path"]) if row else None
+    if not leaf:
+        return []
+    keys = [leaf] if pools_whole(leaf) else []
+    keys += [r["key"] for r in q("SELECT key, members FROM pools WHERE leaf=?", leaf)
+             if not is_rest(r["key"]) and climb_id in json.loads(r["members"] or "[]")]
+    keys = [k for k in keys if pooled_at(k) is not None]
+    now = time.time()
+    for key in keys:
+        q("INSERT INTO late_photos(key, first, last) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET last=excluded.last", key, now, now,
+          write=True)
+    return keys
+
+
+def late_wait(key: str, harvests: list[str]) -> bool:
+    """Whether a boulder's or pool's mesh, to be made again with what came after it (note_late()), waits on for the rest
+    of what volunteers have still to fetch for its climbs' harvests, moving on or not (as given up on by videos_moving()
+    after videos.give_up_hours, which is often what comes late), until videos.late_batch_hours after the first came: so that
+    what comes late is meshed in once, rather than once each. Forgets what its last pooling has (pooled_at())."""
+    r = q("SELECT first, last FROM late_photos WHERE key=?", key, one=True)
+    if not r:
+        return False
+    at = pooled_at(key)
+    if at is None or at >= r["last"]:
+        q("DELETE FROM late_photos WHERE key=? AND last=?", key, r["last"], write=True)
+        return False
+    if time.time() - r["first"] >= float(settings().get("videos.late_batch_hours") or 0) * 3600:
+        return False
+    try:
+        return bool(VOLUNTEERS.pending_tasks("harvest", harvests))
+    except Exception:  # noqa: BLE001 - nothing then holds it up
+        return False
+
+
+def settle_late() -> int:
+    """Boulders' and pools' meshes with photos that came after them (note_late()), and boulders' meshes that waited for
+    their climbs' videos (run_boulder()'s wait) with no area's climb waiting with them: meshed again, or at last, once nothing
+    more is coming for their climbs (videos_moving(), harvests_busy(), late_wait()) and no area is at work on them. On one
+    of an area's climbs that's through, as its Rebuild would, starting the area again if it had finished (a stopped one
+    waits to be started); with none, a boulder by a job (mesh_boulder()). Also gives again what came for harvests that
+    were busy then (resettle_harvests()). Returns how many were queued."""
+    resettle_harvests()
+    keys = {r["key"] for r in q("SELECT key FROM late_photos")}
+    keys |= {r["boulder"] for r in q("SELECT boulder FROM projects WHERE kind='boulder' AND status='waiting' AND boulder IS NOT NULL")}
+    n = 0
+    for key in sorted(keys):
+        try:
+            n += _settle_late(key)
+        except Exception as e:  # noqa: BLE001 - the next one, and this one next time
+            print(f"error: late photos of {key}: {type(e).__name__}: {e}", flush=True)
+    return n
+
+
+def _settle_late(key: str) -> int:
+    """settle_late() for one boulder or pool: 1 if it was queued."""
+    proj = boulder_project(key)
+    late = q("SELECT first, last FROM late_photos WHERE key=?", key, one=True)
+    at = pooled_at(key)
+    if late and (at is None or at >= late["last"]):     # pooled since: they're in it
+        q("DELETE FROM late_photos WHERE key=? AND last=?", key, late["last"], write=True)
+        late = None
+    if not proj or not (late or proj["status"] == "waiting") or proj["status"] in ("queued", "running", "harvesting"):
+        return 0    # (one under way pools them, or keeps them noted, as too late for it, to be done after)
+    pool = is_pool(key)
+    climbs = [c["id"] for c in boulder_climbs(key)]
+    marks = ",".join("?" * len(climbs)) or "NULL"
+    items = q(f"SELECT ci.campaign_id, ci.source_id, ci.status, ci.redo, ci.rank, ca.status AS area FROM campaign_items ci "
+              f"JOIN campaigns ca ON ca.id=ci.campaign_id WHERE ci.climb_id IN ({marks}) OR ci.boulder=?", *climbs, key)
+    if any(i["redo"] or i["status"] in ("running", "waiting", "harvested") for i in items):
+        return 0    # an area is at work on it: it meshes it once through (settle_boulder(), settle_clusters())
+    harvests = [h for c in climbs for h in climb_harvests(c)]
+    if videos_moving(harvests) or harvests_busy(climbs) or late_wait(key, harvests):
+        return 0
+    what = "what volunteers fetched for its climbs after it was made" if late else "the videos of its climbs it waited for"
+    through = sorted((i for i in items if i["status"] in ("done", "skipped", "failed")),
+                     key=lambda i: ({"running": 0, "done": 1}.get(i["area"], 2), i["rank"]))
+    if through:
+        i = through[0]
+        set_item(i["campaign_id"], i["source_id"], status="pending", retry=1, redo="cluster" if pool else "boulder", was=i["status"],
+                 redo_started=0, **({"pool": key} if pool else {}),
+                 note=f"queued to mesh its {'climbs whose photos match' if pool else 'boulder'} again with {what}")
+        q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", i["campaign_id"], write=True)
+    elif pool:      # meshed only by an area's job: none lists its climbs any more
+        pass
+    else:
+        said, code = mesh_boulder(key, wait=True, why="for videos that came after its mesh" if late else "for its climbs' videos")
+        if code != 202:
+            return 0
+        append_log(said["project_id"], f"-- queued to be meshed with {what}")
+    q("DELETE FROM late_photos WHERE key=?", key, write=True)
+    return 0 if pool and not through else 1
+
+
+def resettle_harvests() -> int:
+    """Give again what volunteers fetched lately (in the last RESETTLE_DAYS) for harvests that were busy when it came
+    (reharvest_with_videos() said not now), now that they aren't, rather than only once their climb waits
+    (wait_for_volunteers()). Returns how many were taken."""
+    try:
+        refs = VOLUNTEERS.unsettled("harvest", time.time() - RESETTLE_DAYS * 86400)
+    except Exception:  # noqa: BLE001 - next time
+        return 0
+    return sum(bool(VOLUNTEERS.resettle("harvest", ref)) for ref in refs)
+
+
+RESETTLE_DAYS = 2
 
 
 def youtube_checked(summary: dict | None) -> bool:
@@ -7340,7 +7511,7 @@ def _harvested_again(row: dict, pid: str, before: set[str]) -> dict:
     note = f"harvested again: {summary['images']} photos, {summary.get('video_frames') or 0} of them from videos; " + (
         "not enough different viewpoints" if verdict == "poor" else
         "Rebuild changed will use them" if changed else "the same photos as before")
-    return {"status": status, "note": note, "changed": int((changed or bool(row["changed"])) and verdict != "poor")}
+    return {"status": status, "note": note, "changed": int((changed or bool(row["changed"])) and verdict != "poor"), "grew": changed}
 
 
 def _rebuild(cid: str, row: dict, log) -> dict:
@@ -7389,8 +7560,10 @@ def _boulder_again(cid: str, row: dict) -> dict:
     pid = boulder_project_made(boulder)
     set_item(cid, row["source_id"], redo_started=1)
     add_to = (proj or {}).get("mesh_id") if row.get("redo") == "boulder+add" else None     # its climbs' new photos, added to its model
-    run_boulder(pid, resume=resume, keep_better=camp.get("keep_better", 1) != 0, add_to=add_to)
+    run_boulder(pid, resume=resume, keep_better=camp.get("keep_better", 1) != 0, add_to=add_to, wait=not force)
     p = q("SELECT status, mesh_id, harvest FROM projects WHERE id=?", pid, one=True)
+    if p["status"] == "waiting":    # for its climbs' videos: it waits as harvested for it, and settle_boulder() queues it again
+        return {"status": "harvested", "note": BOULDER_WAITS_NOTE, "waits": True}
     harvest = json.loads(p["harvest"]) if p["harvest"] else {}
     of = harvest.get("climbs") or {}
     what = f"{harvest.get('images', 0)} photos of {of.get('pooled', '?')} of its {of.get('of', '?')} climbs"
@@ -7424,6 +7597,12 @@ def run_redo(camp: dict, item: dict) -> None:
         set_item(cid, sid, status="running", note=None)
         if first in ("harvest", "videos", "more", "new", "refilter") and not row["redo_started"]:    # a rebuild that started was harvested already
             end = _harvest_again(row, log)
+            grew = end.pop("grew", False)
+            if grew and (first == "more" or row["old_rerun"] == 2):     # videos volunteers fetched, or a newer search found
+                # after its boulder's or pool's mesh was made: made again with them, once what's still coming has
+                # (settle_boulder(), or for a pool, which isn't this climb's own rebuild, settle_late())
+                for key in note_late(row["climb_id"]):
+                    log(f"{pool_name(key) if is_pool(key) else boulder_name(key)}'s mesh is to be made again with them")
             # waiting for what volunteers are fetching, whatever it had: a climb with a mesh being made again (its old
             # one's, say) used to go on without, and its videos came after its boulder's mesh (Nov 20: 187 of 213 late
             # frames were of videos wanted before their mesh was made)
@@ -7434,7 +7613,7 @@ def run_redo(camp: dict, item: dict) -> None:
                 log("still not searched for on YouTube: not meshed yet")
                 return wait_for_volunteers(cid, sid, row["project_id"], None)
             remake = row["old_rerun"] == 1     # its meshes are old (queue_old()): made again, whatever was found
-            if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and (end.get("changed") or remake))):
+            if pooled(cid, row["boulder"]) and (row["was"] in ("waiting", "harvested") or (then and (end.get("changed") or grew or remake))):
                 end = {**end, "status": "harvested", "note": HARVESTED_NOTE}     # its boulder's mesh is made again with it
             elif then and (end.get("changed") or remake or (row["was"] == "waiting" and not row["mesh_id"])):
                 set_item(cid, sid, changed=1)
@@ -7733,7 +7912,9 @@ def _run_boulder_redo(camp: dict, row: dict) -> None:
         raise
     except Exception as e:
         end, failed = {"status": row["was"], "note": f"{REDO_NAMES['boulder']}: {type(e).__name__}: {e}"}, True
-    if row["was"] == "harvested":
+    if end.pop("waits", False):     # its neighbours harvested for it go on waiting for it with it
+        pass
+    elif row["was"] == "harvested":
         end = boulder_meshed(cid, sid, end, failed)
     elif not failed:    # one done or skipped before carried it: its neighbours harvested for it are done with it too
         b = q("SELECT boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)["boulder"]
@@ -9368,14 +9549,19 @@ def _run_job(job: dict, low: bool) -> None:
         with pullwork.priority(max(prio, pullwork.PRIO_BACKFILL) if low and prio != PRIO_NEXT else prio):
             run_reconstruct(job["pid"], job.get("internet", False), resume=job.get("resume", False))
     elif job["type"] == "harvest":
+        before = photo_names(job["pid"]) if job.get("late") else None
         run_harvest(job["pid"], set(job["sources"]), job["reconstruct"], job.get("filter", True), resume=job.get("resume", False),
                     again=job.get("again", False), add=job.get("add", False), refresh=job.get("refresh", False))
+        if before is not None and photo_names(job["pid"]) != before:    # volunteers' videos, after its boulder's mesh, say
+            climb = (q("SELECT climb_id FROM projects WHERE id=?", job["pid"], one=True) or {}).get("climb_id")
+            for key in note_late(climb) if climb else []:
+                append_log(job["pid"], f"{pool_name(key) if is_pool(key) else boulder_name(key)}'s mesh is to be made again with them")
         then_boulder(job)
     elif job["type"] == "retry":
         run_retry(job["pid"], job.get("then_boulder"))
         then_boulder(job)
     elif job["type"] == "boulder":
-        run_boulder(job["pid"], resume=job.get("resume", False))
+        run_boulder(job["pid"], resume=job.get("resume", False), wait=job.get("wait", False))
 
 
 def worker(w: Worker | None = None) -> None:
@@ -13889,12 +14075,12 @@ def reharvest_with_videos(pid: str) -> bool:
     to harvest again and rebuild (if its photos changed), and a finished area runs only that; a stopped one waits
     to be started. Any other project is harvested again, to be rebuilt by hand. False, doing nothing, while the
     project is queued or running: what came may have been too late for the harvest under way."""
-    proj = q("SELECT status FROM projects WHERE id=?", pid, one=True)
+    proj = q("SELECT status, harvest FROM projects WHERE id=?", pid, one=True)
     if not proj:
         return True
     if proj["status"] in ("queued", "running", "harvesting"):
         return False
-    item = q("SELECT campaign_id, source_id, status FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
+    item = q("SELECT campaign_id, source_id, status, redo FROM campaign_items WHERE project_id=? LIMIT 1", pid, one=True)
     if item:
         if item["status"] == "waiting":
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was="waiting",
@@ -13908,12 +14094,28 @@ def reharvest_with_videos(pid: str) -> bool:
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was=item["status"],
                      redo_started=0, note="queued to add the videos volunteers fetched to its photos")
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
+        elif item["status"] == "running":   # its area is at work on it: given again once it waits (wait_for_volunteers())
+            return False
+        elif item["status"] == "pending":   # harvested by its boulder's mesh before its area reached it (run_boulder()), which
+            # then marks it done with that mesh: added to its photos now, as for a climb no area lists, unless what's queued
+            # for it harvests again anyway
+            first = (item["redo"] or "").split("+")[0]
+            if first in ("harvest", "videos", "more", "new", "refilter") or not proj["harvest"]:
+                return True
+            _add_volunteers_videos(pid)
         return True
-    append_log(pid, "volunteers fetched the videos this harvest couldn't have: adding them to its photos (Reconstruct uses them)")
+    _add_volunteers_videos(pid)
+    return True
+
+
+def _add_volunteers_videos(pid: str) -> None:
+    """Add the videos volunteers fetched to a harvest no area is at work on (reharvest_with_videos()), as a job; then its
+    boulder's or pool's mesh, if one was made from it, is made again with them (note_late(), settle_late())."""
+    append_log(pid, "volunteers fetched the videos this harvest couldn't have: adding them to its photos (Reconstruct uses them, as "
+                    "does its boulder's or pool's mesh, made again with them)")
     q("UPDATE projects SET status='queued', progress=NULL WHERE id=?", pid, write=True)
     queue_job({"type": "harvest", "pid": pid, "sources": sorted(HARVEST_SOURCES), "reconstruct": False, "again": True, "add": True,
-               "why": "for volunteers' videos"})     # not asked for by anyone: said so in deploy.sh's list
-    return True
+               "late": True, "why": "for volunteers' videos"})     # not asked for by anyone: said so in deploy.sh's list
 
 
 def volunteer_rules() -> dict:

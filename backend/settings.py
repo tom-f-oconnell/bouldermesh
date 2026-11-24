@@ -107,6 +107,9 @@ DEFAULTS = {
     # it's said on the phone (0: never)
     "videos.give_up_hours": 12.0,
     "videos.hold_alert_hours": 2.0,
+    # videos that come after a boulder's or pool's mesh was made: it's made again with them once the rest of what volunteers
+    # still have to fetch for its climbs has come too, moving on or not, or this long after the first came (0: at once)
+    "videos.late_batch_hours": 12.0,
     "volunteers.per_hour": 15,
     "volunteers.per_day": 200,
     # which yt-dlp volunteers' scripts run: its nightly builds, which follow YouTube's changes days or weeks before a
@@ -145,7 +148,7 @@ LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulde
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "volunteers.check_new": (0, 1), "volunteers.check_trusted": (0, 1),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000),
-          "videos.give_up_hours": (0.5, 240), "videos.hold_alert_hours": (0, 240)}
+          "videos.give_up_hours": (0.5, 240), "videos.hold_alert_hours": (0, 240), "videos.late_batch_hours": (0, 240)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
     if _given in CHOICES[_key]:

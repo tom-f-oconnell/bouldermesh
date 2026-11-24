@@ -50,7 +50,7 @@ try:
     server.q("UPDATE projects SET status='failed' WHERE id=?", hp, write=True)
     assert server.retry_project(hp)[1] == 202 and queued[-1] == {"type": "retry", "pid": hp, "then_boulder": leaf}, queued[-1]
     meshed = []
-    server.mesh_boulder = lambda b: (meshed.append(b), ({"queued": True}, 202))[1]
+    server.mesh_boulder = lambda b, wait=False: (meshed.append(b), ({"queued": True}, 202))[1]
     server.then_boulder(queued[-1])
     assert not meshed, "not while it's queued"
     server.q("UPDATE projects SET status='harvested' WHERE id=?", hp, write=True)

@@ -1165,6 +1165,25 @@ what's there, and what comes later rebuilds it as before. Except its YouTube sea
 YouTube has been searched for it at all (the harvest records `youtube_checked`), as most of a climb's best photos are
 frames of its videos; with no volunteer, it's harvested again each day to try, unless its area is set to mesh without.
 
+**Videos that come after a boulder's or pool's mesh (Nov 23, 2026).** A review found three ways they were missed or cost
+more than one remake (`note_late()`, `settle_late()`):
+- **Climbs a boulder's mesh harvests itself.** `run_boulder()` harvests the problems its page lists that no one has (those
+  past a big area's 1000-climb export, say), and used to pool them at once, so their videos always came after. Now, for an
+  area or a harvest followed by its boulder, it waits (`wait`) while volunteers' videos for any climb on it move on, or one
+  is being harvested, the same as `settle_boulder()`. An area's climb carrying it waits harvested, with the rest.
+- **Climbs an area hasn't reached.** What came for one harvested that way was dropped, and the area then marked it done
+  with the boulder's mesh. It's now added to its harvest, as for a climb no area lists. Anything a harvest said "not now"
+  to is given again every few minutes (`resettle_harvests()`), not only once its climb waits.
+- **Pools.** Late videos for a pooled climb rebuilt only its own mesh. A harvest they're added to now records each boulder
+  and pool pooled from it before (`late_photos`). Areas mesh their boulders again as before; otherwise a pool or boulder
+  is queued again, on an area's climb that's through, or by a job outside areas.
+- **Once, not once each.** A mesh to be made again waits for whatever else is still to come for its climbs, even what
+  `videos.give_up_hours` gave up on, which is often what comes late. It waits up to `videos.late_batch_hours` (12) from the
+  first. A harvest being added to holds a boulder quietly: the phone isn't told.
+
+This changes when photos reach a mesh, not which ones may. Meshes made before that lack late videos show in the
+admin page's new-data counts, so `MESH_RULES` stays as it was.
+
 **Room on the public server.** Its disk is 75 GB, with about 59 free. Of hal's 97 GB of projects on Nov 10, 2026, 92
 were photos the filter rejected (kept only to put one back by hand), 9.4 the photos themselves (3 for the projects of
 current meshes), 4.4 work folders kept by failed climbs (which a server meshing elsewhere never has) and 0.1 masks. So
