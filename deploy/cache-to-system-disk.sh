@@ -8,7 +8,7 @@
 #     deploy/cache-to-system-disk.sh       on the server, from the repo's folder
 #
 # 1. copies data/cache to /srv/bouldermesh-cache while the site runs;
-# 2. stops the site (a machine's meshing job carries on on its machine, and is taken up again after), copies what
+# 2. stops the site, now or once what's in progress has finished (as deploy.sh's [a]), copies what
 #    changed meanwhile, puts the old folder aside as data/cache.before-move, and mounts the copy at data/cache (and in
 #    /etc/fstab, so it's there after a reboot, after the Volume's own mount);
 # 3. starts the site again, checks it sees the mount, and asks before deleting data/cache.before-move.
@@ -29,8 +29,26 @@ echo "== 1. copying data/cache ($(( need / 2**30 )) GB) to $dest, with the site 
 sudo mkdir -p "$dest" && sudo chown "$(id -u):$(id -g)" "$dest"
 nice -n 19 ionice -c3 rsync -aH --info=progress2 data/cache/ "$dest/"
 
-read -r -p "== 2. stop the site now, copy what changed and switch to the system disk's copy? [y/N] " go
-[ "$go" = y ] || { echo "stopped there: run it again to carry on (the copy so far is kept and only topped up)"; exit 0; }
+read -r -p "== 2. stop the site, copy what changed and switch to the system disk's copy: [a]fter what's in progress finishes (taking no new work meanwhile, as deploy.sh's [a]), [n]ow, or [c]ancel? " go
+case "$go" in
+    a*|A*) mode=after ;;
+    n*|N*) mode=now ;;
+    *) echo "stopped there: run it again to carry on (the copy so far is kept and only topped up)"; exit 0 ;;
+esac
+cli() { docker compose exec -T bouldermesh python3 cli.py "$@"; }
+if [ "$mode" = after ]; then
+    cli deploy-drain > /dev/null
+    trap 'cli deploy-drain --off > /dev/null; echo; echo "cancelled: taking work again, nothing switched"; exit 130' INT HUP TERM
+    echo "taking no new work, and stopping once what's in progress has finished (Ctrl-C cancels)"
+    while true; do
+        left=$(cli deploy-check --brief 2>&1) && break
+        echo "$(date +%H:%M:%S) $left"
+        cli deploy-drain > /dev/null 2>&1 || true     # renewed: the drain lasts 5 min unless it is
+        sleep 30
+    done
+    trap - INT HUP TERM
+    echo "$(date +%H:%M:%S) nothing in progress that a stop would lose: stopping"
+fi
 sudo systemctl stop bouldermesh
 rsync -aH --delete data/cache/ "$dest/"
 mv data/cache data/cache.before-move
