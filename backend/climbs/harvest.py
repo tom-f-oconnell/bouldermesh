@@ -587,7 +587,7 @@ def photos_part(c: Climb, sources: set[str], queries: list[str], photos_dir: Pat
 
 
 def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = None, relevance_filter: bool = True,
-            tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | None = None,
+            tracker=None, pool_from: list[Path] | None = None, anchors_from: list[Path] | Callable[[], list[Path]] | None = None,
             want: Callable[[str], bool] | None = None, want_search: Callable[[str], bool] | None = None,
             add: bool = False, refresh: bool = False, rejudge: bool = False) -> dict:
     """Collect photos for climb `c` into project_dir/photos (provenance + reports are written
@@ -599,7 +599,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
         tracker: a progress.Tracker with this harvest's steps().
         pool_from: other harvests of the same boulder, whose photos are added (pool()).
         anchors_from: other harvests of the same boulder, whose own photos (anchors_of()) the relevance
-            filter matches web photos against, without adding them.
+            filter matches web photos against, without adding them; or what gives them, called just before the filter
+            (which may wait there for those to finish: server.FilterTurns).
         want: given the URL of each video YouTube wouldn't let this server have, to ask volunteers (video_frames()).
         want_search: given the words of a YouTube search this server won't do, to ask volunteers (youtube.search()).
         add: add to what an earlier harvest here found, rather than start again: its photos and sources.json stay,
@@ -693,6 +694,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     try:
         paths = diversity.dedupe(photos_dir, log, progress=progress("dedupe"))
         if relevance_filter:
+            anchors_from = anchors_from() if callable(anchors_from) else anchors_from
             more = anchors_of(anchors_from) if anchors_from else []
             if more:
                 log(f"relevance: also matching against {len(more)} photo(s) from the pages and videos of "

@@ -63,6 +63,7 @@ def fake_harvest(c, project_dir, log, sources, relevance_filter=True, tracker=No
     if add:
         added.append((c.name, frozenset(sources)))
     pools[c.name] = [p.name for p in pool_from or []]
+    anchors_from = anchors_from() if callable(anchors_from) else anchors_from     # as the filter asks for them
     anchors[c.name] = [p.name for p in anchors_from or []]
     what = outcome.get(c.name) if sources else outcome.get("pooled")
     if what == "outage":
@@ -1702,9 +1703,9 @@ w1, w2, w3 = server.Worker("one"), server.Worker("two", remote=True), server.Wor
 server._workers.extend([w1, w2, w3])
 with server._claim_lock:
     picks = [server._claim(w) for w in (w1, w2, w3)]
-assert [p[1]["name"] for p in picks] == ["Alpha", "Beta", "Gamma"], "Alpha2 waits: its boulder is Alpha's, being harvested"
-assert [w.doing for w in (w1, w2, w3)] == ["Alpha", "Beta", "Gamma"] and server.busy_campaigns() == {c["id"]}
-assert {i["name"] for i in server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["running"]} == {"Alpha", "Beta", "Gamma"}
+assert [p[1]["name"] for p in picks] == ["Alpha", "Alpha2", "Beta"], "Alpha2 next: funnelled onto Alpha's boulder, being harvested"
+assert [w.doing for w in (w1, w2, w3)] == ["Alpha", "Alpha2", "Beta"] and server.busy_campaigns() == {c["id"]}
+assert {i["name"] for i in server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))["running"]} == {"Alpha", "Alpha2", "Beta"}
 server.stop_campaign(c["id"], now=True)
 assert all(w.control._stop.is_set() for w in (w1, w2, w3)) and not server._first.control._stop.is_set(), "stops every worker on it, and only those"
 assert server.campaign_status(c["id"]) == "stopped"
@@ -4390,4 +4391,65 @@ finally:
     for w, camp_id, job in saved:
         w.campaign, w.job = camp_id, job
 print("an area's card saying why no climb is going OK")
+
+# --- a boulder's filters go in the area's order, though its climbs are harvested side by side (FilterTurns) ----------
+turns, said, order = server.FilterTurns(), [], []
+first = turns.enter("B", 1, "p1", "Alpha")
+second = turns.enter("B", 2, "p2", "Alpha2")
+other = turns.enter("C", 0, "p9", "Gamma")
+assert turns.ahead("B", second) == [first] and turns.ahead("B", first) == [] and turns.ahead("C", other) == []
+waiter = threading.Thread(target=lambda: order.append(("Alpha2", turns.wait("B", second, said.append))))
+waiter.start()
+time.sleep(0.3)
+assert waiter.is_alive() and "waiting for Alpha to finish harvesting first" in said[0], said
+order.append(("Alpha", "done"))
+turns.leave("B", first)
+waiter.join(5)
+assert order == [("Alpha", "done"), ("Alpha2", True)], order
+late = turns.enter("B", 3, "p3", "Alpha3")
+turns.enter("B", 1, "p4", "Alpha again")
+assert turns.wait("B", late, said.append, most=0.2) is False and "judging against what's finished" in said[-1], "gives up, said so"
+print("a boulder's filters in the area's order OK")
+
+# two workers on one boulder's climbs at once: the second's filter waits for the first's harvest, and is matched against it
+fresh()
+c = server.create_campaign("", "popularity", CSV)
+w1, w2 = server.Worker("one"), server.Worker("two")
+server._workers[:] = [server._first, w1, w2]
+with server._claim_lock:
+    (camp, first_item), (_, second_item) = server._claim(w1), server._claim(w2)
+assert (first_item["name"], second_item["name"]) == ("Alpha", "Alpha2"), (first_item["name"], second_item["name"])
+seen: dict[str, tuple] = {}
+
+
+def side_by_side(c_, project_dir, log, sources, relevance_filter=True, tracker=None, pool_from=None, anchors_from=None, want=None,
+                 want_search=None, add=False, refresh=False, rejudge=False):
+    if c_.name == "Alpha":
+        time.sleep(0.8)     # still downloading when Alpha2 reaches its filter
+    got = anchors_from() if callable(anchors_from) else anchors_from
+    seen[c_.name] = ([p.name for p in got or []], time.time())
+    return {"images": 20, "diversity": {"verdict": "good"}, "video_frames": 0, "queries": []}
+
+
+def go(w, item):
+    server._here.worker = w
+    server.use_control(w.control)
+    server.run_campaign_item(camp, item)
+
+
+server.harvest_mod.harvest = side_by_side
+try:
+    ts = [threading.Thread(target=go, args=a) for a in ((w1, first_item), (w2, {**second_item}))]
+    for t in ts:
+        t.start()
+        time.sleep(0.1)
+    for t in ts:
+        t.join(30)
+finally:
+    server.harvest_mod.harvest = fake_harvest
+    server._workers[:] = [server._first]
+got = {i["name"]: i for i in server.q("SELECT * FROM campaign_items WHERE campaign_id=?", c["id"])}
+assert seen["Alpha2"][1] >= seen["Alpha"][1] and got["Alpha"]["project_id"] in seen["Alpha2"][0], (seen, got["Alpha"]["project_id"])
+assert "waiting for Alpha to finish harvesting first" in server.read_log(got["Alpha2"]["project_id"])
+print("one boulder's climbs harvested side by side, filtered in order OK")
 print("ALL CAMPAIGN TESTS PASSED")

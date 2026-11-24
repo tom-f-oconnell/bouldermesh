@@ -5446,6 +5446,75 @@ def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
     return [PROJECTS / r["id"] for r in rows if (PROJECTS / r["id"] / "photos").is_dir()]
 
 
+# A boulder's climbs are harvested side by side (_claim() funnels workers onto the boulder one is on), but each one's
+# off-topic filter matches its web photos against the photos its boulder-mates' finished harvests took from their pages
+# and videos (boulder_projects(), harvest_mod.anchors_of()). So that it's judged against just those it would have been
+# when they went one at a time, the filters of one boulder's harvests run in the area's order (FilterTurns): each waits
+# for those ahead of it, and none finishes before one ahead of it has.
+TURN_WAIT = 3600.0      # seconds a filter waits for those ahead of it before going on with what's finished (said so)
+
+
+class FilterTurns:
+    """The order the filters of harvests of one boulder run in: by the area's rank of the climb, then by when its
+    harvest began (one no area ranks goes after those an area does)."""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.waiting: dict[str, list[tuple]] = {}     # boulder -> [(rank, began, project id, its climb's name)]
+
+    def enter(self, boulder: str, rank: float, pid: str, name: str) -> tuple:
+        entry = (rank, time.time(), pid, name)
+        with self.cond:
+            self.waiting.setdefault(boulder, []).append(entry)
+        return entry
+
+    def ahead(self, boulder: str, entry: tuple) -> list[tuple]:
+        with self.cond:
+            return [e for e in self.waiting.get(boulder, []) if e[:2] < entry[:2]]
+
+    def wait(self, boulder: str, entry: tuple, log, check=lambda: None, most: float = TURN_WAIT) -> bool:
+        """Until no harvest of the boulder ahead of this one is still going (or most seconds); whether that came."""
+        until, said = time.time() + most, False
+        with self.cond:
+            while True:
+                ahead = [e for e in self.waiting.get(boulder, []) if e[:2] < entry[:2]]
+                if not ahead:
+                    return True
+                if not said:
+                    log(f"relevance: waiting for {', '.join(e[3] for e in ahead)} to finish harvesting first, so that this is "
+                        "judged against its boulder's photos as when they went one at a time")
+                    said = True
+                left = until - time.time()
+                if left <= 0:
+                    log(f"relevance: still waiting after {most / 60:.0f} min: judging against what's finished")
+                    return False
+                self.cond.wait(min(5.0, left))
+                check()
+
+    def leave(self, boulder: str, entry: tuple) -> None:
+        with self.cond:
+            rows = self.waiting.get(boulder, [])
+            if entry in rows:
+                rows.remove(entry)
+            if not rows:
+                self.waiting.pop(boulder, None)
+            self.cond.notify_all()
+
+
+_filter_turns = FilterTurns()
+
+
+def filter_turn(pid: str) -> tuple[str, tuple] | None:
+    """This harvest's place in its boulder's filter order (FilterTurns), where its climb is on a boulder meshed whole;
+    None otherwise (a group's, or one with no lowest area)."""
+    row = q("SELECT c.area_path, c.name FROM projects p JOIN climbs c ON c.id=p.climb_id WHERE p.id=?", pid, one=True)
+    leaf = boulder_of(row["area_path"]) if row else None
+    if not leaf or not pools_whole(leaf):
+        return None
+    rank = (q("SELECT MIN(rank) r FROM campaign_items WHERE project_id=?", pid, one=True) or {}).get("r")
+    return leaf, _filter_turns.enter(leaf, float(rank) if rank is not None else float("inf"), pid, row["name"])
+
+
 def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter: bool = True, resume: bool = False,
                 again: bool = False, wait: bool = False, need_youtube: bool = False, add: bool = False,
                 follow: Callable[[dict], None] | None = None, refresh: bool = False, rejudge: bool = False) -> None:
@@ -5521,20 +5590,30 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                     c = climb_obj(proj["climb_id"])
                 except Exception as e:
                     log(f"couldn't read the problem page again ({e}); using what was read before")
-            summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker,
-                                          anchors_from=boulder_projects(proj["climb_id"], pid), want=video_wanter("harvest", pid),
-                                          want_search=search_wanter("harvest", pid), add=add, refresh=add and refresh,
-                                          rejudge=add and rejudge)
-            videos = summary.pop("videos", [])
-            record_videos(proj["climb_id"], videos, log)
-            summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
-            if add:     # the harvest before's videos and frames, with what's new
-                was = json.loads(before)
-                had = {v.get("url") for v in summary["videos"]}
-                summary["videos"] = [v for v in was.get("videos") or [] if v.get("url") not in had] + summary["videos"]
-                summary["video_frames"] = (was.get("video_frames") or 0) + (summary.get("video_frames") or 0)
-                summary["queries"] = was.get("queries") or summary.get("queries")
-            q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
+            turn = filter_turn(pid) if relevance_filter else None
+
+            def anchors() -> list[Path]:    # once those ahead of it in its boulder's order have finished (FilterTurns)
+                if turn:
+                    _filter_turns.wait(*turn, log, jobctl.check)
+                return boulder_projects(proj["climb_id"], pid)
+            try:
+                summary = harvest_mod.harvest(c, pdir, log, sources, relevance_filter=relevance_filter, tracker=tracker,
+                                              anchors_from=anchors, want=video_wanter("harvest", pid),
+                                              want_search=search_wanter("harvest", pid), add=add, refresh=add and refresh,
+                                              rejudge=add and rejudge)
+                videos = summary.pop("videos", [])
+                record_videos(proj["climb_id"], videos, log)
+                summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
+                if add:     # the harvest before's videos and frames, with what's new
+                    was = json.loads(before)
+                    had = {v.get("url") for v in summary["videos"]}
+                    summary["videos"] = [v for v in was.get("videos") or [] if v.get("url") not in had] + summary["videos"]
+                    summary["video_frames"] = (was.get("video_frames") or 0) + (summary.get("video_frames") or 0)
+                    summary["queries"] = was.get("queries") or summary.get("queries")
+                q("UPDATE projects SET harvest=?, status='harvested' WHERE id=?", json.dumps(summary), pid, write=True)
+            finally:     # once its harvest is recorded, for those after it to be judged against (boulder_projects())
+                if turn:
+                    _filter_turns.leave(*turn)
             if summary.get("youtube_method"):
                 q("UPDATE climbs SET yt_method=? WHERE id=?", summary["youtube_method"], proj["climb_id"], write=True)
         verdict = diversity_mod.judge(summary.get("diversity"))     # by the current rules, for a harvest finished earlier
@@ -7346,8 +7425,9 @@ def snapshot_worker() -> None:
 
 def _claim(w: Worker, low: bool | None = None):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
-    climb, from the area fewest other workers are on, but not one on a boulder another worker is on, whose
-    harvests use each other's photos. Areas with nothing left are settled here. With low False, only regular areas';
+    climb, from the area fewest other workers are on; within it, first one on a boulder (meshed whole) another worker
+    is on, so that its climbs are harvested side by side and its mesh starts sooner, before any other boulder is
+    begun (their filters still go in the area's order: FilterTurns). Areas with nothing left are settled here. With low False, only regular areas';
     with low True, only low-priority areas' (set_area_low()), then climbs remade as their meshes are old (_claim_old());
     with None, any, regular areas' first.
 
@@ -7381,8 +7461,8 @@ def _claim(w: Worker, low: bool | None = None):
         waiting = bool(items)
         if camp["only_retries"]:
             items = [i for i in items if i["retry"]]
-        taken = {x.boulder for x in others if x.boulder}
-        free = [i for i in items if not (i["boulder"] and i["boulder"] in taken)]
+        active = {x.boulder for x in others if x.boulder}     # boulders being harvested: theirs first (funnelled)
+        free = [i for i in items if i["boulder"] and i["boulder"] in active] or items
         if not free:
             if not items and not any(x.campaign == camp["id"] for x in others):
                 own = "AND COALESCE(old_rerun, 0)=0"     # what's queued again at low priority doesn't hold it up

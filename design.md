@@ -1483,8 +1483,20 @@ beta search uses the same.
 
 Until Nov 3 one worker thread did everything, one climb at a time, so a second area waited for the
 first. Workers are now threads with their own job control, each claiming an area's next climb under a
-lock: from the area fewest other workers are on, and never a climb on a boulder another worker is
-meshing, which would make two meshes of it. Running two locally isn't measured. The heavy steps
+lock: from the area fewest other workers are on. Until Nov 24 that was never a climb on a boulder another worker was
+on, so four workers harvested four boulders at once and each boulder's mesh waited for the slowest of them.
+
+**Funnelled since Nov 24 (the user's ask):** a worker takes first a climb on a boulder (meshed whole) another worker
+is on, so a boulder's climbs are harvested side by side and its mesh starts sooner, and only then begins the next.
+Each climb's off-topic filter matches its web photos against the page photos and video frames its boulder-mates'
+finished harvests took (`boulder_projects()`, `anchors_of()`). One at a time, each was judged against those ahead of
+it in the area's order; side by side, that's kept by `FilterTurns`: a harvest's filter waits until every harvest
+of its boulder ahead of it has been recorded, and its anchors are read only then (`anchors_from` given as a callable),
+so the filter's verdicts, and which photos a mesh is made from, are as before. A filter waits at most an hour
+(`TURN_WAIT`), then goes on with what's finished, saying so. Groups and unknown lowest areas aren't funnelled: their
+climbs are meshed each on its own, and pooled by their photos. Of the 2,159 harvests areas had made by Nov 24, 80%
+were of boulders meshed whole with 2 or more climbs harvested, 11% of such boulders with one, 8% of groups or unknown
+areas; by the harvest time recorded (969 of them), 72%, 3% and 25%. Running two locally isn't measured. The heavy steps
 (matching, bundle adjustment, densifying, texturing) already use every core, so it mostly helps by
 overlapping one climb's downloads and Mountain Project's 60 s crawl delay with another's reconstruction.
 That might be 1.2-1.6x, at the cost of memory (CPU matching of 30 photos peaked at 22 GB) and being a

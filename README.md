@@ -1146,7 +1146,8 @@ photos at a time, and the public setup holds native libraries to one thread each
 as two filters at once on its 2 cores spun in the kernel for hours. The admin page's *Workers* line says
 what each worker is doing: each takes one area's climb at a time and harvests it here; *this server* meshes it here
 too, and *remote 1*, *remote 2*, ... each hand theirs to a machine, as many as *Climbs at once meshed on other
-machines*, which is how many climbs can be on their way at once, one harvested while another is meshed, even with one
+machines*, which is how many climbs can be on their way at once (those of one boulder first, side by side, before
+the next boulder's: design.md, "Funnelled"), one harvested while another is meshed, even with one
 machine. *Run more on* adds up to that many machines (2 by default):
 
 - **Machines reached over SSH**: any you keep running, with Docker (and NVIDIA's container toolkit for
