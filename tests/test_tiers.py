@@ -169,6 +169,14 @@ try:
     old_filter = {**whole, "filter": {"version": None, "settings": "s", "methods": []}}
     assert server.inputs_fingerprint(old_filter) is None and server.job_identity(old_filter)["fingerprint"] == "photos:d1"
     assert server.job_identity(None)["fingerprint"] is None and server.job_identity(whole, "m1")["add_to"] == "m1"
+    # and a filter's, beta's or size's, by what it was asked: its arguments, files' names, and photos' sizes
+    ph = pathlib.Path(tmp) / "ph.jpg"
+    ph.write_bytes(b"12345")
+    one = server.machine_identity("filter", {"photos/ph.jpg": ph, "cache.sqlite": pathlib.Path(tmp) / "nonesuch"}, {"a": 1}, [1, 1])
+    assert one == server.machine_identity("filter", {"photos/ph.jpg": ph, "cache.sqlite": pathlib.Path(tmp) / "x"}, {"a": 1}, [1, 1])
+    assert one["fingerprint"] != server.machine_identity("filter", {"photos/ph.jpg": ph}, {"a": 2}, [1, 1])["fingerprint"]
+    ph.write_bytes(b"123456")
+    assert one["fingerprint"] != server.machine_identity("filter", {"photos/ph.jpg": ph, "cache.sqlite": ph}, {"a": 1}, [1, 1])["fingerprint"]
     print("jobs kept over a restart OK")
     print("ALL TIERS TESTS PASSED")
 finally:

@@ -1936,7 +1936,7 @@ url = "https://www.youtube.com/watch?v=aaaaaaaaaaa"
 sent, heard = [], []
 
 
-def fake_task(kind, files, args, label, log, tracker=None, take_within=None):
+def fake_task(kind, files, args, label, log, tracker=None, take_within=None, same=None):
     sent.append((kind, files, args))
     if kind == "beta":  # the machine's progress lines (remote_job.py) go to the mesh's beta.json as they come
         at = server.beta_mod.progress_at(0, 2, (30, 120), 0.0, 0.0)
@@ -2121,7 +2121,7 @@ server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", 
 remote, here = [], []
 
 
-def remote_filter(kind, files, args, label, log, tracker=None, version=None, take_within=None):
+def remote_filter(kind, files, args, label, log, tracker=None, version=None, take_within=None, same=None):
     remote.append((kind, sorted(files), args, label, version, take_within))
     tracker.update("filter", 0.5, "matching: 1 of 2")
     back = pathlib.Path(tempfile.mkdtemp())
@@ -2165,7 +2165,7 @@ try:
     # with the viewpoint check asked for: done there too, its progress in its own step, used if its OpenCV is the same
     real_remote, opencv = remote_filter, [server._opencv_version()]
 
-    def remote_filter_div(kind, files, args, label, log, tracker=None, version=None, take_within=None):
+    def remote_filter_div(kind, files, args, label, log, tracker=None, version=None, take_within=None, same=None):
         result, back = real_remote(kind, files, args, label, log, tracker, version, take_within)
         assert args["diversity"] and args["order"] == [p.name for p in fphotos], args
         tracker.update("diversity", 0.25, "1 of 2 photos")

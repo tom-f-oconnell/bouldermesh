@@ -8323,6 +8323,25 @@ def mesh_inputs(mid: str, pid: str, photos: list[str]) -> dict[str, Path]:
     return out
 
 
+STABLE_INPUTS = ("photos/", "masks/", "more/")     # a job's files whose sizes say what they are (machine_identity())
+
+
+def machine_identity(kind: str, files: dict[str, Path], args: dict, rules) -> dict:
+    """What a machine's filter, beta or size job is taken up again by after a restart (pullwork's same, as meshing's
+    job_identity()): rules (what changes how it's done, as relevance's VERSION), and a fingerprint of what it was
+    asked: its arguments, the names of its files, and the sizes of its photos, masks and anchors. A deploy that
+    changes any of these starts it again rather than taking up what it made."""
+    h = hashlib.sha1(json.dumps([kind, args], sort_keys=True, default=str).encode())
+    for key in sorted(files):
+        h.update(key.encode())
+        if key.startswith(STABLE_INPUTS):
+            try:
+                h.update(str(Path(files[key]).stat().st_size).encode())
+            except OSError:
+                pass
+    return {"rules": rules, "fingerprint": h.hexdigest()}
+
+
 def take_made(back: Path, mid: str, kind: str) -> list[str]:
     """Move what a job made (remote_job.MADE) into the mesh's folder."""
     import remote_job
@@ -8382,7 +8401,8 @@ def remote_beta(mid: str, pid: str, log) -> None:
                 shutil.copy(src, dst)
             files[f"videos/{dst.name}"] = dst
         beta_mod.save(mesh_dir, {**rec, "status": "running", "progress": "on a machine that connects here", "at": None, "started": time.time()})
-        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log, tracker=_BetaProgress(mesh_dir), take_within=TAKE_WITHIN)
+        _, back = MACHINES.task("beta", files, {}, f"beta: {mid}", log, tracker=_BetaProgress(mesh_dir), take_within=TAKE_WITHIN,
+                                same=machine_identity("beta", files, {}, 0))
         try:
             log(f"beta: back from the machine: {', '.join(take_made(back, mid, 'beta')) or 'nothing'}")
         finally:
@@ -8430,8 +8450,9 @@ def remote_scale(mid: str, pid: str, climbs: list[dict], log) -> None:
     mesh_dir = MESHES / mid
     names = [c["name"] for c in json.loads((mesh_dir / "cameras.json").read_text())]
     scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "running", "progress": "on a machine that connects here"})
-    _, back = MACHINES.task("scale", mesh_inputs(mid, pid, names), {"climbs": climbs, "videos": mesh_videos(mid), "known": known_object(pid)},
-                            f"size: {mid}", log, take_within=TAKE_WITHIN)
+    files, args = mesh_inputs(mid, pid, names), {"climbs": climbs, "videos": mesh_videos(mid), "known": known_object(pid)}
+    _, back = MACHINES.task("scale", files, args, f"size: {mid}", log, take_within=TAKE_WITHIN,
+                            same=machine_identity("scale", files, args, 0))
     try:
         log(f"scale: back from the machine: {', '.join(take_made(back, mid, 'scale')) or 'nothing'}")
     finally:
@@ -8528,12 +8549,12 @@ def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[s
             if hasattr(progress, "at"):
                 progress.at("waiting")
             progress(0.0)
-        _, back = MACHINES.task("filter", files, {"methods": methods, "more": sorted(more), "prior": prior,
-                                                  "matcher": relevance_mod.MATCHER, "diversity": assess is not None,
-                                                  "order": [p.name for p in paths]},
-                                f"filter: {name or pid or 'photos'}", log,
+        args = {"methods": methods, "more": sorted(more), "prior": prior, "matcher": relevance_mod.MATCHER,
+                "diversity": assess is not None, "order": [p.name for p in paths]}
+        _, back = MACHINES.task("filter", files, args, f"filter: {name or pid or 'photos'}", log,
                                 tracker=_StepProgress(progress, {"diversity": assess} if assess else None),
-                                version=FILTER_VERSION, take_within=FILTER_TAKE)
+                                version=FILTER_VERSION, take_within=FILTER_TAKE,
+                                same=machine_identity("filter", files, args, [FILTER_VERSION, relevance_mod.VERSION]))
         try:
             report = json.loads((back / "out" / "relevance.json").read_text())
             relevance_mod.merge_cache(back / "out" / "cache.sqlite")
@@ -9575,6 +9596,8 @@ def deploy_state() -> dict:
         lasting = bool(j.get("lasting")) and j["task"] in pullwork.LASTING
         if lasting and j["task"] == "abtest":
             lost = "carries on on its machine, and the A/B tests take it up after, unless the new version changes AB_VERSION"
+        elif lasting and j["task"] != "reconstruct":
+            lost = "carries on on its machine, and is taken up when its step comes round after, unless the new version changes what it's asked"
         elif lasting:
             lost = ("carries on on its machine, and its job, queued again after the restart, takes it up" if mine else
                     "carries on on its machine, and its climb takes it up after") + \

@@ -976,6 +976,8 @@ plain = board._new_job("beta", {}, {}, "beta: not kept", image[0])
 plain.owner = -1
 ab = board._new_job("abtest", {"photos": p2 / "photos"}, {}, "A/B test: kept", image[0], same={"rules": 3, "fingerprint": "p|3.9.1,4.2.1|{}"})
 ab.owner = -1       # an A/B test is kept over a restart too (pullwork.LASTING)
+flt = board._new_job("filter", {"photos": p2 / "photos"}, {}, "filter: kept", image[0], same={"rules": [1, 1], "fingerprint": "f"})
+flt.owner = -1      # and filtering, beta and size jobs made with what they're taken up by
 job_sh = ('echo before; while [ ! -e "$FLAG" ]; do sleep 0.2; done; echo during the outage; mkdir -p "$JOB/out"; '
           'echo ply > "$JOB/out/mesh.ply"; echo \'@@result {"mesh": "mesh.ply", "demo": false}\'')
 proc = subprocess.Popen([sys.executable, str(SCRIPT), "--server", URL, "--token", hal["token"], "--home", str(TMP / "home"), "--gpu", "none",
@@ -993,8 +995,9 @@ time.sleep(3)
 old_board = board
 board = pullwork.Board(TMP / "data" / "compute" / "machines.sqlite", TMP / "data" / "compute" / "jobs", lambda: image[0], ctl)
 assert {j.label: (j.state, j.owner) for j in board.jobs.values()} == {"restart": ("running", 0), "waiting-one": ("queued", 0),
-                                                                      "A/B test: kept": ("queued", 0)}, board.jobs
+                                                                      "A/B test: kept": ("queued", 0), "filter: kept": ("queued", 0)}, board.jobs
 board._drop(next(j for j in board.jobs.values() if j.task == "abtest"))
+board._drop(next(j for j in board.jobs.values() if j.task == "filter"))
 assert board.jobs[kept_id].input.exists() and not plain.input.exists(), "a kept job's photos stay; another's go"
 assert "wait" in board.work(board.machine(order_box["token"]), "10.0.0.8", {"version": SCRIPT_VERSION}), "nothing to take it up: not given out"
 shown = {j["project"]: j for j in board.state()["jobs"]}

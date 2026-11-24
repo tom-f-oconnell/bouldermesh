@@ -67,7 +67,8 @@ CONNECTED = 120             # seconds since a machine last asked or reported for
 APPROVAL_WAIT = 90          # seconds a machine awaiting approval waits between asks: under CONNECTED, not to count as gone
 QUIET = 15 * 60             # a job whose machine hasn't been heard from for this long is lost
 POLL = 15                   # seconds a machine with nothing to do waits before asking again
-LASTING = ("reconstruct", "abtest")     # the kinds of job kept over a restart, for what asked for them to take up again
+LASTING = ("reconstruct", "abtest", "filter", "beta", "scale")    # the kinds of job kept over a restart, for what asked
+                                                                # for them to take up again
 ORPHAN_AFTER = 24 * 3600   # a meshing job kept over a restart that no climb takes up again in this long goes
 AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of meshing (not of filtering), so it isn't starved
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
@@ -899,7 +900,7 @@ class Board:
             version: the oldest machines' script that does it, if newer than task.json needs.
             take_within: seconds a machine has to take it, else it's given up (ComputeUnavailable), as when one
                 that could do it here instead is better than waiting.
-            same: as reconstruct()'s, for a job kept over a restart and taken up again after it (an A/B test's).
+            same: as reconstruct()'s, for a job kept over a restart and taken up again after it (LASTING's kinds).
 
         Returns:
             What the job said it made, and a new folder holding its out/, which is the caller's to delete.
