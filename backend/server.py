@@ -11091,7 +11091,8 @@ def _remake_mesh_list(key, make: Callable[[], dict], gen: int) -> None:
     """A thread: make key's /api/meshes again, at a low CPU priority, while askers get the older copy. Not under
     _mesh_list_lock, which an asking that must wait (after a change) would otherwise wait behind it for."""
     try:
-        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        tid = threading.get_native_id()     # its priority only ever lowered: raising it needs privileges (under nice, say)
+        os.setpriority(os.PRIO_PROCESS, tid, max(10, os.getpriority(os.PRIO_PROCESS, tid)))
         _make_mesh_list(key, make, gen)
     except Exception as e:  # noqa: BLE001 - the next asking tries again
         print(f"error: making the list of meshes again: {type(e).__name__}: {e}", flush=True)
