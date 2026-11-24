@@ -204,9 +204,11 @@ def main() -> int:
     try:
         given = json.loads((a.job / "task.json").read_text()) if (a.job / "task.json").exists() else {}
         with meshopts.using(given.get("mapper")):    # an area's settings for the mapper, if it sent any
-            kept = a.job / "kept"       # a mesh's kept reconstruction and features: its model, to add photos to
+            kept = a.job / "kept"       # a mesh's kept reconstruction (and features): its model, to add photos to,
+            cameras = kept.is_dir() and bool(given.get("kept_cameras"))     # or whose cameras are taken as they were
             mesh, demo = pipeline.reconstruct(a.job / "photos", a.job / "work", a.job / "out", log, a.gpu, internet=a.internet,
-                                              tracker=PrintedTracker(pipeline.steps()), add_to=kept if kept.is_dir() else None)
+                                              tracker=PrintedTracker(pipeline.steps()),
+                                              add_to=kept if kept.is_dir() and not cameras else None, kept=kept if cameras else None)
     except Exception as e:
         print(f"FAILED: {e}", flush=True)
         return 1

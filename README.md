@@ -304,8 +304,17 @@ photos are placed or meshed) or `TEXTURE_VERSION` (to texturing alone).
 each depth map's neighbouring photos by it and dropped the dense points outside it (93% of Swing Dance Boulder's).
 `backend/roicrop.py` reads from each such mesh's job log whether it was densified so and how much was cut (kept in its
 `inputs.json` as `roi`; the server works it out as it starts). The admin page counts them, those cut over 20% and 10%,
-and *Remake the cropped* makes them again: those cut over 20% first, with old meshes, the rest at low priority.
-Editors see those cut over 10% tagged "cropped N%".
+and *Remake the cropped* makes them again from their cameras as they were, the most cut first. Editors see those cut
+over 10% tagged "cropped N%".
+
+**Made again from its cameras.** For a change to the dense steps alone, a mesh can be made again from its kept
+reconstruction: its photos aren't placed again, only undistorted, densified, meshed and textured (about a quarter of
+the tool time of meshing). What its cameras made comes over to the new mesh as it was: its reconstruction and features
+(linked), where its photos were placed, its down, what it left out, which way it faces, its size and its beta. Each is
+a job of its project at low priority, taken once no one's own job and no area's climb waits. A mesh that kept no
+reconstruction is made from scratch instead. One that placed some photos collapsed (cameras and points shrunk to a
+speck together, which the model check can't see) isn't made again this way, and the admin page counts it as needing
+its photos placed again.
 
 **A/B tests of COLMAP.** *Queue A/B tests of COLMAP* on the admin page meshes projects' photos with COLMAP 3.9.1 and
 4.2.1, one after the other on one machine (which goes first alternates from test to test), as machines' work after
@@ -1604,6 +1613,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_abtest.py      # offline: A/B tests of COLMAP 3.9.1 against 4.2.1: options, a machine's job, the queue
     python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, given up on, the phone told, a boulder at a time
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
+    python3 tests/test_kept.py        # offline: a mesh made again from its cameras as they were, what they made carried over
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes

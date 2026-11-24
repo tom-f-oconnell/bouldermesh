@@ -177,4 +177,18 @@ with tempfile.TemporaryDirectory() as tmp:
     assert later["failed"] == ["pairs", "split"] and later["pair_med_deg"] == bad["pair_med_deg"] and modelcheck.load(mesh)["ok"] is False
     assert modelcheck.of_mesh(tmp / "out2") is None, "a mesh that kept nothing has nothing to check"
     print("a kept reconstruction checked later OK")
+
+    # cameras placed collapsed: their points at under 2% of the model's usual depth (every point is at the origin here,
+    # so each camera's depth is its t's z), however well every turn and error holds up
+    flat = [(np.eye(3), np.array([0.0, 0.0, 5.0 + i % 3]), 1000.0) for i in range(10)] + \
+        [(np.eye(3), np.array([0.0, 0.0, 0.05]), 1000.0), (np.eye(3), np.array([0.0, 0.0, 0.001]), 1000.0)]
+    write_model(tmp / "collapsed" / "model", flat)
+    m = tmp / "collapsed" / "model"
+    assert modelcheck.collapsed((m / "images.bin").read_bytes(), (m / "points3D.bin").read_bytes()) == ["p10.jpg", "p11.jpg"]
+    assert reconstruction.keep(m, tmp / "right0" / "db.db", tmp / "cmesh", lambda m: None, "COLMAP x", {"args": [], "device": "cpu"})
+    assert modelcheck.collapsed_kept(tmp / "cmesh") == ["p10.jpg", "p11.jpg"] and modelcheck.collapsed_kept(tmp / "out2") is None
+    write_model(tmp / "apart" / "model", flat[:10])
+    m = tmp / "apart" / "model"
+    assert modelcheck.collapsed((m / "images.bin").read_bytes(), (m / "points3D.bin").read_bytes()) == [], "none, all at their depths"
+    print("collapsed cameras OK")
 print("ALL MODEL CHECK TESTS PASSED")

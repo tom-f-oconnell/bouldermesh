@@ -689,6 +689,45 @@ def _add_photos(add_to: Path, images: Path, masks: Path | None, work: Path, log:
     return record
 
 
+KEPT_STEPS = ("features", "matching", "mapper", "rest", "sift-judged", "consistent", "level")   # what _use_kept() leaves done
+
+
+def _use_kept(kept: Path, images: Path, work: Path, log: Log, tracker: Tracker) -> None:
+    """Take a mesh's kept model (reconstruction.py: its cameras placed and levelled, as its mesh was made from) as this
+    placing: work/ as placing and levelling would leave it, with KEPT_STEPS marked done, and how it was placed (its
+    MAPPER_FILE, from the kept build.json) as before, saying so. For a change to the dense steps alone (OpenMVS's
+    cropping, Nov 2026), which the cameras and all that's made from them (beta, size, where climbs are seen from)
+    don't depend on.
+
+    Raises:
+        RuntimeError: it kept no reconstruction, or a photo it placed isn't in images/.
+    """
+    log("== COLMAP: the cameras of the mesh made before, as they were (nothing placed again)")
+    tracker.update("mapper", 0, "taking the cameras kept")
+    unpacked = work / "kept"
+    shutil.rmtree(unpacked, ignore_errors=True)
+    build = reconstruction.unpack(kept, unpacked)
+    if build is None:
+        raise RuntimeError("the mesh kept no reconstruction, so its cameras aren't known")
+    placed = {c["name"] for c in orientation.read_cameras(unpacked / "model")}
+    missing = sorted(n for n in placed if not (images / n).is_file())
+    if missing:
+        raise RuntimeError(f"{len(missing)} of the {len(placed)} photos its cameras are of aren't here "
+                           f"({', '.join(missing[:3])}{'...' if len(missing) > 3 else ''})")
+    sparse = work / "sparse"
+    shutil.rmtree(sparse, ignore_errors=True)
+    sparse.mkdir()
+    shutil.copytree(unpacked / "model", sparse / "0")
+    (work / EXTRACT_FILE).write_text(json.dumps(build.get("extract") or {}))
+    how = build.get("mapper") or {}
+    (work / MAPPER_FILE).write_text(json.dumps({**how, "cameras": "kept", "why": f"{how.get('why') or 'as placed before'}; "
+                                                "its cameras taken as they were kept"}, indent=1))
+    (work / "level.json").write_text(json.dumps({"model": str(sparse / "0"), "report": None}))
+    for step in KEPT_STEPS:
+        _finish(work, step)
+    log(f"{len(placed)} photos' cameras taken as they were, of the {len(list(p for p in images.iterdir() if p.is_file()))} here")
+
+
 def _round_info(info: dict) -> dict:
     """A failed round of VGGT's placing (vggt_place.RoundFailed's info) as a fallback's details: its "why" as "error"."""
     return {**{k: v for k, v in info.items() if k != "why"}, "error": info.get("why")}
@@ -1242,12 +1281,15 @@ def _swap_back_placing(work: Path) -> None:
 
 def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool,
                                internet: bool = False, min_registered: int = MIN_REGISTERED, tracker: Tracker | None = None,
-                               add_to: Path | None = None) -> Path:
+                               add_to: Path | None = None, kept: Path | None = None) -> Path:
     """internet=True tunes COLMAP for unordered photos from many cameras (per-image intrinsics,
     affine-shape SIFT, domain-size pooling, guided matching) - slower but far more tolerant.
 
     add_to: a mesh's folder (or its kept reconstruction and features alone) to add the photos it lacks to its model,
     rather than place every photo again (_add_photos()); placed from scratch where it can't be, or a gate says so.
+    kept: a mesh's folder (or its kept reconstruction alone) whose cameras are taken as they are (_use_kept()): only
+    the steps from undistorting the photos on run again, and nothing of its placing is written beside the new mesh,
+    which the server carries over from that mesh (server.carry_kept()).
 
     Steps that finish are recorded in work/, so called again on the same work/ after an interruption,
     this carries on from there. Within a step, matching keeps its pairs and densifying its depth maps;
@@ -1359,6 +1401,8 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
             _finish(work, "rest")
         return model, registered
 
+    if kept is not None and not _finished(work, "mapper"):      # its cameras as they were: nothing to place or level
+        _use_kept(kept, images, work, log, tracker)
     if add_to is not None and not _finished(work, "mapper"):    # where it's added, placing has nothing left to do
         _add_photos(add_to, images, masks, work, log, tracker, use_gpu)
     model, registered = place()
@@ -1418,6 +1462,10 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
         _finish(work, "level")
 
     def keep_orientation() -> None:
+        if kept is not None:    # its placing is the mesh's it was taken from, whose files the server carries over
+            if (work / FALLBACKS_FILE).exists():    # what fell back in this run's steps, added to that mesh's there
+                shutil.copyfile(work / FALLBACKS_FILE, out_dir / FALLBACKS_FILE)
+            return
         if report:
             orientation.save(out_dir, report, model)
         if _largest_model(sparse)[0] == sparse / "vggt" and (work / "vggt" / "placed.json").exists():   # the mesh's model came from VGGT's
@@ -1676,13 +1724,15 @@ def demo_relief(images: Path, out_dir: Path, log: Log, grid: int = 96) -> Path:
 
 # --------------------------------------------------------------------------
 def reconstruct(images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool = False,
-                internet: bool = False, tracker: Tracker | None = None, add_to: Path | None = None) -> tuple[Path, bool]:
-    """Returns (mesh_path, is_demo). internet=True for harvested web photo collections; add_to as
-    reconstruct_colmap_openmvs() has it."""
+                internet: bool = False, tracker: Tracker | None = None, add_to: Path | None = None,
+                kept: Path | None = None) -> tuple[Path, bool]:
+    """Returns (mesh_path, is_demo). internet=True for harvested web photo collections; add_to and kept as
+    reconstruct_colmap_openmvs() has them."""
     n = len([p for p in images.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png")])
     log(f"{n} photo(s) in {images}")
     if real_pipeline_ready():
-        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet, tracker=tracker, add_to=add_to), False
+        return reconstruct_colmap_openmvs(images, work, out_dir, log, use_gpu, internet=internet, tracker=tracker, add_to=add_to,
+                                          kept=kept), False
     missing = [k for k, v in tools_available().items() if not v and k != "TextureMesh"]
     log(f"COLMAP/OpenMVS not found ({', '.join(missing)} missing) - falling back to DEMO mode. "
         "Install them (see Dockerfile) for real photogrammetry.")

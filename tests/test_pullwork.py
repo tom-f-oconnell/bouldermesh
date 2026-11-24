@@ -1049,4 +1049,17 @@ board._touch(m)
 assert board.q("SELECT count(*) n FROM machine_states WHERE machine_id=? AND end IS NULL", m["id"], one=True)["n"] == 1
 board._drop(job)
 print("a machine heard from about its job OK")
+
+# a mesh made again from its cameras as they were: its kept reconstruction goes as kept/, and task.json says to take them
+k = TMP / "kept-cameras"
+(k / "photos").mkdir(parents=True)
+(k / "photos" / "a.jpg").write_bytes(b"jpg")
+(k / "kept").mkdir()
+(k / "kept" / "reconstruction.tar.gz").write_bytes(b"tar")
+cams = board._new_job("reconstruct", {"photos": k / "photos", "kept": k / "kept"}, {"internet": True, "kept_cameras": True}, "kept", image[0], 29)
+with tarfile.open(cams.input) as tar:
+    assert "kept/reconstruction.tar.gz" in tar.getnames() and json.load(tar.extractfile("task.json"))["kept_cameras"] is True
+assert cams.version == 29
+board._drop(cams)
+print("kept cameras sent OK")
 print("ALL MACHINES TESTS PASSED")

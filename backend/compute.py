@@ -508,8 +508,11 @@ class RemoteExecutor:
         self.pool, self.image, self.command, self.jobctl = pool, image, command, jobctl
 
     def reconstruct(self, images: Path, work: Path, out_dir: Path, log: Log, use_gpu: bool = True, internet: bool = False,
-                    tracker=None, add_to: Path | None = None) -> tuple[Path, bool]:
-        # add_to: nodes over SSH are sent only photos and masks, so every photo is placed there
+                    tracker=None, add_to: Path | None = None, kept: Path | None = None) -> tuple[Path, bool]:
+        # add_to: nodes over SSH are sent only photos and masks, so every photo is placed there; kept, which can't be
+        # done without the mesh's cameras, isn't taken
+        if kept is not None:
+            raise RuntimeError("a node over SSH can't make a mesh again from its cameras as they were: it's sent only photos")
         from progress import Tracker
         node = self.pool.acquire(log)
         broken = False

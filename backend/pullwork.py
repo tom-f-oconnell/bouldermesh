@@ -813,13 +813,15 @@ class Board:
 
     # -- the climb's side: what compute.RemoteExecutor does, for these machines ---------------------------------------
     def reconstruct(self, images: Path, work: Path, out_dir: Path, log, use_gpu: bool = True, internet: bool = False,
-                    tracker=None, same: dict | None = None, add_to: Path | None = None) -> tuple[Path, bool]:
+                    tracker=None, same: dict | None = None, add_to: Path | None = None, kept: Path | None = None) -> tuple[Path, bool]:
         """Reconstruct a project's photos on a machine that connects here: what pipeline.reconstruct does, there.
 
         Args:
             images: the project's photos/, next to its masks/, which go too and come back with new ones.
             add_to: a folder of a mesh's kept reconstruction and features, sent as kept/: the photos its model lacks are
                 added to it there (pipeline.reconstruct()'s add_to), from a machine's script of version 29 on.
+            kept: a folder of a mesh's kept reconstruction, sent as kept/ with "kept_cameras" in task.json: its cameras
+                are taken as they were there (pipeline.reconstruct()'s kept), likewise.
             same: {"rules": MESH_RULES, "fingerprint": its inputs' fingerprint (meshinputs.py), or None if unknown}: the
                 job is kept over a restart, and one kept from before it for this project is taken up if made under
                 the same (_reattach()), and dropped otherwise. Without it, nothing is kept or taken up.
@@ -832,8 +834,9 @@ class Board:
         """
         project = images.parent
         files = {part: project / part for part in ("photos", "masks") if (project / part).is_dir()}
-        if add_to is not None and add_to.is_dir():
-            files["kept"] = add_to
+        for given in (add_to, kept):
+            if given is not None and given.is_dir():
+                files["kept"] = given
         made = self._take_held(project, files, log)
         if made:
             result, tar = made
@@ -847,8 +850,9 @@ class Board:
                 tar.with_suffix(".json").unlink(missing_ok=True)
             return mesh, bool(result.get("demo"))
         mapper = meshopts.given()     # an area's settings for COLMAP's mapper, sent as task.json
-        result, back, job = self._run("reconstruct", files, {"internet": internet, **({"mapper": mapper} if mapper else {})},
-                                      project.name, project, log, tracker, same=same)
+        args = {"internet": internet, **({"mapper": mapper} if mapper else {}), **({"kept_cameras": True} if "kept" in files and kept else {})}
+        result, back, job = self._run("reconstruct", files, args, project.name, project, log, tracker,
+                                      version=29 if "kept" in files else None, same=same)
         m = self.get(job.machine or "")
         if registration.provisional(m):     # held until its machine is approved
             shutil.rmtree(back, ignore_errors=True)
@@ -991,7 +995,7 @@ class Board:
         with tarfile.open(path, "w") as tar:
             for name, src in files.items():
                 tar.add(src, arcname=name)
-            told = kind != "reconstruct" or bool(args.get("mapper"))
+            told = kind != "reconstruct" or bool(args.get("mapper") or args.get("kept_cameras"))
             if told:
                 data = json.dumps(args).encode()
                 info = tarfile.TarInfo("task.json")

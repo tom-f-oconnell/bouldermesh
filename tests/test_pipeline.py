@@ -1279,4 +1279,72 @@ finally:
     pipeline.MAPPER = saved_mapper
     meshopts.set_site({})
 print("the site's choice of mapper OK")
+
+# ---- a mesh made again from another's cameras as they were (kept): nothing placed or levelled, its model undistorted
+import io  # noqa: E402
+import shutil  # noqa: E402
+import tarfile  # noqa: E402
+
+
+def kept_mesh(where: pathlib.Path, names: list[str]) -> pathlib.Path:
+    """A mesh folder whose kept reconstruction places these photos (no points), placed by the incremental mapper from the
+    CPU's SIFT as judged better."""
+    where.mkdir(parents=True)
+    images = struct.pack("<Q", len(names)) + b"".join(
+        struct.pack("<I7dI", i + 1, 1, 0, 0, 0, 0, 0, 5, 1) + n.encode() + b"\0" + struct.pack("<Q", 0) for i, n in enumerate(names))
+    parts = {"model/images.bin": images, "model/cameras.bin": struct.pack("<Q", 0), "model/points3D.bin": struct.pack("<Q", 0),
+             "pairs.db": b"", "build.json": json.dumps({"extract": {"device": "cpu"}, "mapper": {
+                 "mapper": "incremental", "why": "the mapper chosen", "plain_sift_rejected": {"kept": "cpu"}}}).encode()}
+    with tarfile.open(where / pipeline.reconstruction.FILE, "w:gz") as tar:
+        for name, data in parts.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return where
+
+
+with tempfile.TemporaryDirectory() as td:
+    td = pathlib.Path(td)
+    images, work, out, said, ran = td / "photos", td / "work", td / "out", [], []
+    images.mkdir()
+    for n in ("a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "f.jpg", "new.jpg"):
+        (images / n).write_bytes(b"x")
+    mesh = kept_mesh(td / "mesh", ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg", "f.jpg"])
+
+    def stop_at_undistort(cmd, cwd, log, watch=None):
+        ran.append(cmd[1] if len(cmd) > 1 else cmd[0])
+        if "image_undistorter" in cmd:
+            raise Stop(cmd[cmd.index("--input_path") + 1])
+    saved = pipeline._run, pipeline.COLMAP, pipeline._upright, pipeline.occlusion.available
+    pipeline._run, pipeline.COLMAP = stop_at_undistort, "colmap"
+    pipeline._upright = lambda *a, **k: (_ for _ in ()).throw(AssertionError("levelled again"))
+    pipeline.occlusion.available = lambda: False
+    try:
+        try:
+            pipeline.reconstruct_colmap_openmvs(images, work, out, said.append, False, internet=True, kept=mesh)
+            raise AssertionError("should have gone on to undistorting")
+        except Stop as e:
+            assert str(e) == str(work / "sparse" / "0"), e
+        assert ran == ["image_undistorter"], f"nothing placed: {ran}"
+        assert all(pipeline._finished(work, s) for s in pipeline.KEPT_STEPS)
+        how = json.loads((work / pipeline.MAPPER_FILE).read_text())
+        assert how["cameras"] == "kept" and how["mapper"] == "incremental" and how["plain_sift_rejected"] == {"kept": "cpu"}, how
+        assert json.loads((work / pipeline.EXTRACT_FILE).read_text()) == {"device": "cpu"}
+        assert any("6 photos' cameras taken as they were, of the 7 here" in s for s in said), said
+        # one of the photos its cameras are of gone: it can't be
+        (images / "f.jpg").unlink()
+        shutil.rmtree(work)
+        try:
+            pipeline.reconstruct_colmap_openmvs(images, work, out, said.append, False, internet=True, kept=mesh)
+            raise AssertionError("a photo it placed is missing")
+        except RuntimeError as e:
+            assert "1 of the 6 photos its cameras are of aren't here (f.jpg)" in str(e), e
+        try:
+            pipeline._use_kept(td / "nothing", images, work, said.append, Tracker([]))
+            raise AssertionError("no kept reconstruction")
+        except RuntimeError as e:
+            assert "kept no reconstruction" in str(e)
+    finally:
+        pipeline._run, pipeline.COLMAP, pipeline._upright, pipeline.occlusion.available = saved
+print("made again from kept cameras OK")
 print("ALL PIPELINE TESTS PASSED")

@@ -275,3 +275,58 @@ def of_mesh(mesh_dir: Path, write: bool = False) -> dict | None:
     if write:
         save(mesh_dir, c)
     return c
+
+
+# A placed camera whose points' median depth is under this share of the model's median over its cameras: placed
+# collapsed, cameras and points shrunk together to a speck, which leaves every turn and reprojection as it was, so
+# nothing above sees it. Swing Dance Boulder's Nov 23 model placed its two longest videos so (72 cameras, each
+# under 1% of the model's median, against 0.36 or more on Nov 20), and OpenMVS's region of interest then shrank to them.
+COLLAPSED_BELOW = 0.02
+
+
+def collapsed(images_bin: bytes, points_bin: bytes) -> list[str]:
+    """The photos a binary COLMAP model placed collapsed (COLLAPSED_BELOW), from its images.bin and points3D.bin."""
+    import numpy as np
+    n, o = struct.unpack_from("<Q", points_bin, 0)[0], 8
+    ids, xyz = np.empty(n, np.int64), np.empty((n, 3))
+    for k in range(n):
+        ids[k] = struct.unpack_from("<Q", points_bin, o)[0]
+        xyz[k] = struct.unpack_from("<3d", points_bin, o + 8)
+        o += 51 + 8 * struct.unpack_from("<Q", points_bin, o + 43)[0]
+    order = np.argsort(ids)
+    ids, xyz = ids[order], xyz[order]
+    depths: dict[str, float] = {}
+    m, o = struct.unpack_from("<Q", images_bin, 0)[0], 8
+    for _ in range(m):
+        w, x, y, z = struct.unpack_from("<4d", images_bin, o + 4)
+        t = np.array(struct.unpack_from("<3d", images_bin, o + 36))
+        o += 64
+        end = images_bin.index(b"\0", o)
+        name, o = images_bin[o:end].decode(), end + 1
+        k = struct.unpack_from("<Q", images_bin, o)[0]
+        obs = np.frombuffer(images_bin, np.dtype([("x", "<f8"), ("y", "<f8"), ("p", "<i8")]), count=k, offset=o + 8)
+        o += 8 + 24 * k
+        p = obs["p"][obs["p"] != -1]
+        j = np.minimum(np.searchsorted(ids, p), max(len(ids) - 1, 0))
+        p = j[ids[j] == p] if len(ids) else j[:0]
+        if not len(p):
+            continue
+        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        depths[name] = float(np.median((xyz[p] @ R.T + t)[:, 2]))
+    if len(depths) < 3:
+        return []
+    usual = float(np.median(list(depths.values())))
+    return sorted(n for n, d in depths.items() if d < COLLAPSED_BELOW * usual)
+
+
+def collapsed_kept(mesh_dir: Path) -> list[str] | None:
+    """collapsed() of a mesh's kept reconstruction (reconstruction.tar.gz), read from it as it is; None if it kept none."""
+    import tarfile
+    import reconstruction
+    path = mesh_dir / reconstruction.FILE
+    if not path.is_file():
+        return None
+    with tarfile.open(path, "r:gz") as tar:
+        return collapsed(tar.extractfile("model/images.bin").read(), tar.extractfile("model/points3D.bin").read())

@@ -1708,6 +1708,37 @@ out. And four boulders is few: the thresholds should be looked at again once `ch
 model and the verified pairs). The incremental pipeline (`experiments/mapper/incr`) uses the same module, and there
 it does decide: a model that fails is solved again from another start.
 
+**Collapsed placings** (Nov 24, 2026). Swing Dance Boulder's Nov 23 model placed its two longest videos (72
+cameras) shrunk to a speck with their points: each camera's points at under 1% of the model's usual depth, against
+0.36 or more on Nov 20. Their links to the rest were a few hundred points through two Mountain Project photos, and
+scaling a block's cameras and points together changes no turn and no reprojection, so the check passed it (98.7% of
+its cameras agreeing). `collapsed()` finds such cameras: their points' median depth under 2% of the model's median
+over its cameras. Of 280 current meshes on Nov 24, 9 had any, 4 had 10% or more. For now only making a mesh again
+from its cameras uses it, refusing them; whether the check fails such a model, and the consistent-cameras step drops
+those cameras to be placed again, waits on the user.
+
+## Made again from its cameras (`server.run_kept()`, `pipeline._use_kept()`)
+
+The user's rule (Nov 24, 2026): remake only the meshes a change would actually change, and only what it changes. A
+change to the dense steps alone (OpenMVS's cropping) leaves the cameras as they were, and with them everything made
+from them, so a mesh is made again from its kept reconstruction: the model goes into `work/sparse/0` with every step
+up to levelling marked done, and the pipeline goes on from undistorting. Of the 236 meshes OpenMVS cropped, placing
+was 49 of 66 tool-hours.
+
+The new mesh is a new version (the one before stays an older one, and the guard on fewer faces applies), so that what
+names faces by index (its cleanup, hidden pieces) starts afresh. What names only cameras and photos is carried over
+(`carry_kept()`, `KEPT_CARRIED`): where its photos were placed, its down, check, models, what it left out and those
+scenes' attempts (so nothing is queued to be meshed apart again), which way it faces with any edit by hand, its size
+and its beta, its lining-up pack. Its reconstruction and features are hard links, as they're large and the same. Its
+`inputs.json` is the one before's (the photos its cameras are of, not any its project gained since, which still count
+as new photos), and its pipeline record keeps the one before's placing (version, COLMAP, features, mapper) with
+`cameras_from`. Size and beta aren't found again. Where a machine on an older image placed the photos anyway, nothing
+is carried.
+
+The jobs are the projects' own (`type: from-cameras`, `low`), kept over a restart as any job is. `take_job()` takes
+them only once no regular job and no area's climb is waiting, before low-priority areas' climbs and old meshes'
+remakes. Without a machine, or with the reconstruction in the backup, a job waits in the queue.
+
 ## Why job logs aren't in the database
 
 COLMAP prints tens of thousands of lines. `UPDATE projects SET log = log || ?` rewrites the whole

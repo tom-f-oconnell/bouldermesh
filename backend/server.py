@@ -2766,7 +2766,10 @@ def low_projects(fresh: bool = False) -> frozenset[str]:
 
 
 def job_is_low(job: dict, low: frozenset[str] | None = None) -> bool:
-    """Whether a job someone asked for is a low-priority area's (low_projects()): its project's, or its mesh's project's."""
+    """Whether a job is at low priority: one that says so ("low": a mesh made again from its cameras, queue_kept()), or
+    one someone asked for of a low-priority area's (low_projects()): its project's, or its mesh's project's."""
+    if job.get("low"):
+        return True
     low = low_projects() if low is None else low
     if not low:
         return False
@@ -2778,14 +2781,12 @@ def job_is_low(job: dict, low: frozenset[str] | None = None) -> bool:
 
 
 def take_job(low: bool) -> dict | None:
-    """The first job in this server's queue that is (low) or isn't a low-priority area's, taken out of it; None if
-    there's none."""
+    """The first job in this server's queue that is (low) or isn't at low priority (job_is_low()), taken out of it;
+    None if there's none."""
     lows = low_projects()
     with jobs.mutex:
         waiting = list(jobs.queue)
-    if not lows and low:
-        return None
-    pick = next((j for j in waiting if (job_is_low(j, lows) if lows else False) == low), None)
+    pick = next((j for j in waiting if job_is_low(j, lows) == low), None)
     if pick is None:
         return None
     with jobs.mutex:
@@ -4164,13 +4165,15 @@ def mesh_tiers(fresh: bool = False) -> dict:
     Returns:
         {pipeline_version, texture_version, meshes, rules, pipeline, fallback: {n, why: {why: n}}, texture,
         texture_unkept, new_data, new_photos, grouping, roi (possibly cropped by OpenMVS: roicrop.py), roi_urgent,
-        roi_flagged, roi_unknown, ids: {pipeline, fallback, texture, new_data, grouping, roi (those cut most first)}}.
+        roi_flagged, roi_unknown, roi_replace (cropped, whose cameras couldn't be taken as they were: run_kept()),
+        ids: {pipeline, fallback, texture, new_data, grouping, roi (those cut most first), roi_replace}}.
     """
     if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
         return _tiers["report"]
     ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier()}
     rules, unkept, why, photos = 0, 0, collections.Counter(), 0
     cropped: list[tuple[str, float | None]] = []
+    replace: list[str] = []     # cropped, but not to be made from their cameras as they were (run_kept())
     rows = q("SELECT id, source, rules, created FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created")
     for m in rows:
         rec = meshinputs.load(MESHES / m["id"]) or {}
@@ -4182,8 +4185,11 @@ def mesh_tiers(fresh: bool = False) -> dict:
         elif pipeline.fallback_tier(made):
             ids["fallback"].append(m["id"])
             why[pipeline.fallback_tier(made)] += 1
-        if (rec.get("roi") or {}).get("affected"):
-            cropped.append((m["id"], rec["roi"].get("share")))
+        roi = rec.get("roi") or {}
+        if roi.get("affected") and roi.get("kept") in ("unusable", "failed"):
+            replace.append(m["id"])
+        elif roi.get("affected") and roi.get("kept") != "made":
+            cropped.append((m["id"], roi.get("share")))
         if (tex.get("version") or 0) < pipeline.TEXTURE_VERSION and rec.get("kind") != "rest":
             if (MESHES / m["id"] / reconstruction.FILE).exists():
                 ids["texture"].append(m["id"])
@@ -4197,11 +4203,12 @@ def mesh_tiers(fresh: bool = False) -> dict:
             ids["new_data"].append(m["id"])
             photos += n
     cropped.sort(key=lambda c: roi_order(c[1]))
-    ids["roi"] = [mid for mid, _ in cropped]
+    ids["roi"], ids["roi_replace"] = [mid for mid, _ in cropped], replace
     shares = [s for _, s in cropped]
     adds = adds_summary()
     report = {"roi": len(cropped), "roi_urgent": sum(s is not None and s > roicrop.URGENT for s in shares),
               "roi_flagged": sum(s is not None and s > roicrop.FLAG for s in shares), "roi_unknown": shares.count(None),
+              "roi_replace": len(replace),
               "pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
@@ -4309,6 +4316,76 @@ def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
     if out["queued"]:
         tiers_changed()
     return out
+
+
+def queue_kept(mids: list[str], why: str) -> dict:
+    """Queue these meshes, in this order, to be made again from their cameras as they were (run_kept()), each as a job of
+    its project at low priority: taken only once no regular job or area's climb is waiting (take_job()). Left (counted
+    apart): one that isn't its project's current mesh, whose project isn't done (busy, or with a job of its own to
+    retry) or that's queued already ("busy"), and one that kept no reconstruction ("unkept"). Returns {queued, busy,
+    unkept}."""
+    out = {"queued": 0, "busy": 0, "unkept": 0}
+    with jobs.mutex:
+        waiting = {j.get("mid") for j in jobs.queue if j.get("type") == "from-cameras"}
+    for mid in dict.fromkeys(mids):
+        m = q("SELECT source FROM meshes WHERE id=? AND replaced_by IS NULL", mid, one=True)
+        pid = m["source"].removeprefix("project:") if m and m["source"].startswith("project:") else None
+        proj = q("SELECT status, kind, mesh_id FROM projects WHERE id=?", pid, one=True) if pid else None
+        if not (MESHES / mid / reconstruction.FILE).is_file() and not offload_mod.away(q, f"meshes/{mid}/{reconstruction.FILE}"):
+            out["unkept"] += 1
+        elif not proj or proj["mesh_id"] != mid or proj["status"] != "done" or mid in waiting:
+            out["busy"] += 1
+        else:
+            q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+            append_log(pid, f"-- queued to be made again from the cameras of mesh {mid}, at low priority: {why}")
+            queue_job({"type": "from-cameras", "pid": pid, "mid": mid, "internet": proj["kind"] in ("harvest", "boulder"), "low": True, "why": why})
+            out["queued"] += 1
+    return out
+
+
+def roi_note(mid: str, **how) -> None:
+    """Add to a possibly cropped mesh's record (inputs.json's "roi", and _roi) how making it again went."""
+    rec = meshinputs.load(MESHES / mid)
+    if rec is not None and isinstance(rec.get("roi"), dict):
+        rec = meshinputs.save(MESHES / mid, {**rec, "roi": {**rec["roi"], **how}})
+        _roi[mid] = rec["roi"]
+        tiers_changed()
+
+
+def run_kept(job: dict) -> None:
+    """Make a mesh again from its cameras as they were (run_reconstruct()'s from_kept), as queue_kept() asked, unless
+    something else made it again meanwhile. Where its cameras can't be taken (KeptUnusable: it needs its photos placed
+    again) or making it fails, the mesh stays as it was, its project done with it, and its record (roi_note()) says
+    why; where no machine can be had, or its reconstruction is being asked back from the backup, it waits in the queue."""
+    pid, mid = job["pid"], job["mid"]
+    log = lambda s: append_log(pid, s)  # noqa: E731
+    proj = q("SELECT mesh_id FROM projects WHERE id=?", pid, one=True)
+    if not proj or proj["mesh_id"] != mid or q("SELECT 1 FROM meshes WHERE id=? AND replaced_by IS NOT NULL", mid, one=True):
+        log(f"-- not made again from mesh {mid}'s cameras: it isn't this project's current mesh any more")
+        q("UPDATE projects SET status='done' WHERE id=? AND status='queued'", pid, write=True)
+        return
+    try:
+        kept_cameras(mid, PROJECTS / pid, False, log)       # whether they can be taken, before anything is sent anywhere
+        if not job.get("resume"):
+            log(f"-- made again from the cameras of mesh {mid} as they were: {job.get('why') or 'asked for'}")
+        made = run_reconstruct(pid, job.get("internet", True), resume=job.get("resume", False), keep_better=True, from_kept=mid)
+    except (KeptUnusable, LostData) as e:
+        log(f"not made again from its cameras: {e}" + ("; it needs its photos placed again" if isinstance(e, KeptUnusable) else ""))
+        roi_note(mid, kept="unusable" if isinstance(e, KeptUnusable) else "failed", why=str(e))
+        q("UPDATE projects SET status='done' WHERE id=?", pid, write=True)
+        return
+    except compute.ComputeUnavailable as e:    # no machine, or its reconstruction is coming back from the backup
+        log(f"waiting to be made again from its cameras: {e}")
+        queue_job({**job, "resume": (PROJECTS / pid / "work").is_dir()})
+        q("UPDATE projects SET status='queued' WHERE id=?", pid, write=True)
+        current_worker().wait_until = time.time() + COMPUTE_WAIT
+        return
+    p = q("SELECT status, mesh_id FROM projects WHERE id=?", pid, one=True)
+    if made:
+        roi_note(mid, kept="made", by=made)
+    elif p and p["status"] != "done" and p["mesh_id"] == mid:     # it failed: its mesh is as it was
+        roi_note(mid, kept="failed", why=last_failure(pid))
+        q("UPDATE projects SET status='done' WHERE id=?", pid, write=True)
 
 
 def inputs_existing_meshes() -> None:
@@ -4678,13 +4755,116 @@ def place_climbs(mid: str, pid: str, log) -> None:
         log(f"placing its climbs failed ({type(e).__name__}: {e})")
 
 
-def job_identity(inputs: dict | None, add_to: str | None = None) -> dict:
+def job_identity(inputs: dict | None, add_to: str | None = None, kept: str | None = None) -> dict:
     """What a machine's meshing job is taken up again by after a restart (pullwork's same): MESH_RULES, its inputs'
     fingerprint, or where that can't be told (a project whose filter report predates the filter's version being kept)
     its photos' digest, so that such jobs are kept too (until Nov 21 they weren't, and each restart began them again),
-    and the mesh it adds photos to, if any."""
+    the mesh it adds photos to, if any, and the mesh whose cameras it takes as they were, if any."""
     fp = inputs_fingerprint(inputs) or ("photos:" + inputs["photos"]["digest"] if isinstance((inputs or {}).get("photos"), dict) else None)
-    return {"rules": MESH_RULES, "fingerprint": fp, **({"add_to": add_to} if add_to else {})}
+    return {"rules": MESH_RULES, "fingerprint": fp, **({"add_to": add_to} if add_to else {}), **({"kept": kept} if kept else {})}
+
+
+class KeptUnusable(RuntimeError):
+    """A mesh's kept cameras can't be taken as they were (kept_cameras()): it needs its photos placed again."""
+
+
+def kept_cameras(mid: str, pdir: Path, remote: bool, log) -> Path:
+    """What making a mesh again from its cameras as they were needs (pipeline._use_kept()): its kept reconstruction, in
+    its own folder here, or for a machine in a folder of that alone in the project (kept/), sent as the job's kept/.
+    Asked back from the backup first if offloaded (PhotosAway: the job waits for it).
+
+    Raises:
+        KeptUnusable: it kept none (or the backup lost it), or it placed some photos collapsed (modelcheck.collapsed()),
+            which would only be carried over.
+    """
+    d, path = MESHES / mid, f"meshes/{mid}/{reconstruction.FILE}"
+    if not (d / reconstruction.FILE).is_file():
+        if not offload_mod.away(q, path) or offload_mod.lost(q, [path]):
+            raise KeptUnusable(f"mesh {mid} kept no reconstruction, so its cameras aren't known")
+        if offload_mod.want(DATA, q, [path]):
+            raise PhotosAway(f"making mesh {mid} again from its cameras: its reconstruction is in the backup, and has been asked for back")
+    try:
+        gone = modelcheck.collapsed_kept(d) or []
+    except Exception as e:  # noqa: BLE001 - what can't be read can't be taken either
+        raise KeptUnusable(f"mesh {mid}'s kept reconstruction can't be read ({type(e).__name__}: {e})") from e
+    if gone:
+        raise KeptUnusable(f"mesh {mid} placed {plural(len(gone), 'photo')} collapsed (cameras and points shrunk to a speck: "
+                           f"{', '.join(gone[:3])}{'...' if len(gone) > 3 else ''}), so its cameras would only carry that over")
+    if not remote:
+        return d
+    kept = pdir / "kept"
+    shutil.rmtree(kept, ignore_errors=True)
+    kept.mkdir()
+    shutil.copyfile(d / reconstruction.FILE, kept / reconstruction.FILE)
+    return kept
+
+
+# what a mesh made from another's cameras as they were (pipeline._use_kept()) takes over from it (carry_kept()): its
+# reconstruction and features, linked, as they're large and the same; and what's made from its cameras, not its faces
+KEPT_LINKED = (reconstruction.FILE, reconstruction.FEATURES_FILE)
+KEPT_CARRIED = (orientation.CAMERAS_FILE, "orientation.json", modelcheck.FILE, pipeline.MODELS_FILE, pipeline.MAPPER_FILE,
+                "placement.json", incremental_mod.ADD_FILE, "photo_sources.json", "heading.json", "views.json", "rest.json",
+                "scale.json", "scale.log", "scale_people.json", "beta.json", "beta.log", "beta_poses.json", "poses.json",
+                "locate.json", "locate.bin", "holds.json", "frame.json", "scene.splat", "scene-small.splat", "scene.json",
+                "scene-pano.webp")
+KEPT_CARRIED_LIKE = ("beta_*.jpg",)
+
+
+def carry_kept(old: str, mid: str, log) -> bool:
+    """Carry over to mesh mid, made from mesh old's cameras as they were, what old kept of them and made from them:
+    its reconstruction and features (KEPT_LINKED), where its photos were placed, its down, check and models, what it
+    left out, which way it faces, its size, its beta and its lining up (KEPT_CARRIED); of the scenes it left out, how
+    meshing them went where that came to an end (the others are queued again for mid). Not where mid has cameras of its
+    own (its photos were placed again, by a machine on an older image). Returns whether it did."""
+    src, dst = MESHES / old, MESHES / mid
+    if (dst / orientation.CAMERAS_FILE).exists() or (dst / reconstruction.FILE).exists():
+        log("its photos were placed again, not taken as they were: nothing of the mesh before carried over")
+        return False
+    for name in KEPT_LINKED:
+        if (src / name).is_file() and not (dst / name).exists():
+            try:
+                os.link(src / name, dst / name)
+            except OSError:
+                shutil.copyfile(src / name, dst / name)
+    names = [*KEPT_CARRIED, *(p.name for like in KEPT_CARRIED_LIKE for p in src.glob(like))]
+    carried = [n for n in names if (src / n).is_file() and not (dst / n).exists()]
+    for name in carried:
+        shutil.copyfile(src / name, dst / name)
+    with _rest_lock:    # scenes of what it left out that weren't meshed or tried to the end: queued again for mid (keep_rest())
+        rest = load_rest(mid)
+        if rest:
+            for x in rest_attempts(rest):
+                if rest_state(x.get("attempt")) not in REST_TRIED + ("done",):
+                    x["attempt"] = None
+            save_rest(mid, rest)
+    log(f"carried over from mesh {old}: its kept reconstruction, and {len(carried)} files made from its cameras")
+    return True
+
+
+def carry_fallbacks(old: str, mid: str) -> None:
+    """What fell back in the placing of mesh old, before what fell back in making mid from its cameras (FALLBACKS_FILE)."""
+    before, now = _read_json(MESHES / old / pipeline.FALLBACKS_FILE), _read_json(MESHES / mid / pipeline.FALLBACKS_FILE)
+    if isinstance(before, list) and before:
+        (MESHES / mid / pipeline.FALLBACKS_FILE).write_text(json.dumps(before + (now if isinstance(now, list) else []), indent=1))
+
+
+def kept_made(old: str, mid: str) -> None:
+    """For mesh mid, made from mesh old's cameras as they were: its pipeline record (pipeline.json) says its placing was
+    old's (its version, COLMAP, features and mapper, version 1 where old recorded none), and whose cameras they were,
+    as only the steps from undistorting its photos on are its own."""
+    made = _read_json(MESHES / mid / pipeline.PIPELINE_FILE)
+    if not isinstance(made, dict):
+        return
+    before = (meshinputs.load(MESHES / old) or {}).get("pipeline") or _read_json(MESHES / old / pipeline.PIPELINE_FILE) or {}
+    made.update({k: before.get(k) for k in ("colmap", "features", "mapper")}, version=before.get("version") or 1, cameras_from=old)
+    (MESHES / mid / pipeline.PIPELINE_FILE).write_text(json.dumps(made, indent=1))
+
+
+def kept_inputs(old: str) -> dict | None:
+    """What mesh old was made from (its inputs.json), for a mesh made from its cameras as they were: the same photos,
+    whatever its project has gained since. None if it has no record."""
+    rec = meshinputs.load(MESHES / old)
+    return {k: v for k, v in rec.items() if k not in ("mesh", "made", "pipeline", "texture", "roi", "fingerprint")} if rec else None
 
 
 def kept_for_add(mid: str, pdir: Path, remote: bool, log) -> Path | None:
@@ -4715,7 +4895,7 @@ def kept_for_add(mid: str, pdir: Path, remote: bool, log) -> Path | None:
 
 
 def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = None, resume: bool = False,
-                    keep_better: bool = False, add_to: str | None = None) -> str | None:
+                    keep_better: bool = False, add_to: str | None = None, from_kept: str | None = None) -> str | None:
     """Make a project's mesh.
 
     Args:
@@ -4725,6 +4905,9 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         keep_better: if this places fewer photos than the project's mesh before, from photos that included every one
             that mesh placed (fewer_placed()), or has under half its faces (fewer_faces()), that one stays the current
             one, and this is kept as an older version of it. Never where the mesh before is old.
+        from_kept: a mesh whose cameras are taken as they were (kept_cameras(), pipeline._use_kept()): only the dense,
+            mesh and texture steps run, and what's made from its cameras is carried over (carry_kept()), its beta and
+            size among them. Raises KeptUnusable where it can't be.
 
     Returns:
         The id of the mesh it made, if it made one.
@@ -4753,20 +4936,21 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             raise compute.ComputeUnavailable("this server meshes nothing itself (Reconstructions at once on this server is 0), "
                                              "and no other machines are set up")
         build = _executor.reconstruct if remote else pipeline.reconstruct
-        inputs = inputs_record(pid, log)
+        inputs = (kept_inputs(from_kept) if from_kept else None) or inputs_record(pid, log)
         for st in tracker.snapshot()["steps"]:      # the harvest's last, which was left running until a next one began
             if st["state"] == "running" and not st.get("parallel"):
                 tracker.end(st["key"])
         tracker.at("machine" if remote else "server")
         # on machines that connect here, the job outlasts a restart, and is taken up again under the same rules and inputs
-        same = {"same": job_identity(inputs, add_to)} if remote and _executor is MACHINES else {}
-        kept = kept_for_add(add_to, pdir, remote, log) if add_to else None
+        same = {"same": job_identity(inputs, add_to, from_kept)} if remote and _executor is MACHINES else {}
+        kept = kept_for_add(add_to, pdir, remote, log) if add_to else kept_cameras(from_kept, pdir, remote, log) if from_kept else None
         try:
             mesh_path, demo = build(pdir / "photos", work, MESHES / mid, log, USE_GPU, internet=internet, tracker=tracker, **same,
-                                    **({"add_to": kept} if kept else {}))
+                                    **({"kept": kept} if kept and from_kept else {"add_to": kept} if kept else {}))
         finally:
             if kept is not None and kept.parent == pdir:
                 shutil.rmtree(kept, ignore_errors=True)
+        carried = carry_kept(from_kept, mid, log) if from_kept else False
         flat, sheet = meshmetrics.thickness(mesh_path), meshmetrics.sheet_spread(mesh_path)
         if flat is not None and flat < meshmetrics.FLAT_BELOW or sheet is not None and sheet < meshmetrics.SHEET_BELOW:
             aside = pdir / "flat-mesh"      # a photo on a card, flat or bent: a failure, kept aside to look at
@@ -4781,6 +4965,9 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
           mid, mesh_name(proj["name"]), mesh_path.name, f"project:{pid}", time.time(), mesh_path.stat().st_size, int(demo),
           *boulder_place(proj["boulder"]), proj["boulder"] if proj["kind"] == "boulder" else None, MESH_RULES, write=True)
         note_fallbacks(mid, proj["name"], pid, "a machine" if remote else "this server")
+        if carried:
+            carry_fallbacks(from_kept, mid)
+            kept_made(from_kept, mid)
         if inputs:
             try:
                 made = _read_json(MESHES / mid / pipeline.PIPELINE_FILE) or {}     # what made it (pipeline.write_record())
@@ -4841,11 +5028,12 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
           current, time.time(), pid, write=True)   # made by hand since its area gave up on it
         if not demo and not worse:
-            queue_scale(mid)
+            if not (carried and (scale_mod.load(MESHES / mid) or {}).get("status") == "done"):     # its size, carried over
+                queue_scale(mid)
             queue_splat(mid)
             if (pdir / "scenery" / SCENERY_DONE).exists():     # a capture's scenery, all sent before its mesh was made
                 queue_scenery(pid)
-            if settings().get("beta.auto") and beta_mod.videos(MESHES / mid):
+            if settings().get("beta.auto") and beta_mod.videos(MESHES / mid) and not (carried and (MESHES / mid / "beta.json").exists()):
                 queue_beta(mid)     # while its videos are still in the cache
         return mid
     except compute.ComputeUnavailable as e:    # not the climb's failure: it waits for a machine
@@ -9725,7 +9913,7 @@ def run_job(job: dict) -> None:
     """A job someone asked for, on this thread's worker."""
     w = current_worker()
     w.job = {"job": job, "started": time.time(), "from": job_progress(job) or 0.0, "thread": threading.get_ident()}
-    jobctl.begin(low_priority=job["type"] in ("retexture", "texture-again", "scale", "boulder"))
+    jobctl.begin(low_priority=job["type"] in ("retexture", "texture-again", "scale", "boulder", "from-cameras"))
     if job.get("pid"):      # so that a restart queues it again, to carry on (init_db())
         q("UPDATE projects SET job_started=? WHERE id=?", time.time(), job["pid"], write=True)
     run = job_run_start(job["type"], job.get("pid"), job.get("mid"), _queued_at.pop(id(job), None))
@@ -9756,6 +9944,8 @@ def _run_job(job: dict, low: bool) -> None:
         run_retexture(job["mid"])
     elif job["type"] == "texture-again":
         run_texture_again(job["mid"])
+    elif job["type"] == "from-cameras":
+        run_kept(job)
     elif job["type"] == "reconstruct":
         prio = contribution_prio(q("SELECT user_id, approved, next_at FROM projects WHERE id=?", job["pid"], one=True) or {})
         with pullwork.priority(max(prio, pullwork.PRIO_BACKFILL) if low and prio != PRIO_NEXT else prio):
@@ -9826,7 +10016,7 @@ _draining: dict | None = None    # deploy.sh about to restart it: {since, now, u
 DRAIN_LEASE = 300   # seconds a drain lasts unless deploy.sh says so again (it does every 30 s as it waits): one it left behind ends
 GOES_ON = "it's queued again by itself, to carry on from the last step it finished"     # init_db()
 AGAIN = {"reconstruct": GOES_ON, "harvest": GOES_ON, "retry": GOES_ON, "boulder": GOES_ON, "retexture": "Make textures... on the admin page runs it",
-         "texture-again": "Texture again on the admin page runs it",
+         "texture-again": "Texture again on the admin page runs it", "from-cameras": GOES_ON,
          "scale": "it's queued again by itself"}     # what runs a job after a restart interrupted it
 
 
@@ -15036,6 +15226,15 @@ def admin_remake_tier(body: dict) -> dict:
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
         raise ValueError(f"tier must be one of {', '.join(REMAKE_RANKS)}")
+    if tier == "roi":   # only their dense steps on, from their cameras as they were; from scratch those that kept none
+        ids = mesh_tiers(fresh=True)["ids"]["roi"]
+        kept = queue_kept(ids, "OpenMVS cropped it to a region it guessed")
+        full = queue_remakes([m for m in ids if not (MESHES / m / reconstruction.FILE).is_file()
+                              and not offload_mod.away(q, f"meshes/{m}/{reconstruction.FILE}")], tier) if kept["unkept"] else None
+        return {"result": f"queued {kept['queued']} to be made again from their cameras as they were, the most cut first, at low priority"
+                + (f"; {kept['busy']} busy or queued already" if kept["busy"] else "")
+                + (f"; {full['queued']} that kept no cameras to be made from scratch" if full and full["queued"] else "")
+                + (f" ({full['not_in_area']} of those in no area, left)" if full and full["not_in_area"] else "")}
     got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier, add=bool(body.get("add")))
     return {"result": f"queued {got['queued']} to be made again at low priority" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
             + (f"; {got['not_in_area']} not in any area, left (remake each from its project's card)" if got["not_in_area"] else "")}
