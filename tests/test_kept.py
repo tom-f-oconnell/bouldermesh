@@ -184,7 +184,8 @@ try:
     assert meshinputs.load(server.MESHES / "shrunk")["collapsed"] == {"v": server.COLLAPSED_CHECK, "n": 2, "names": ["yt_1_000.jpg", "yt_1_001.jpg"]}
     t = server.mesh_tiers(fresh=True)
     assert t["ids"]["collapsed"] == ["shrunk"] and "shrunk" not in t["ids"]["roi"] and t["collapsed"] == 1, t["ids"]
-    assert "queued 1" in server.admin_remake_tier({"tier": "collapsed"})["result"]
+    assert server._collapsed_scan["state"] == "done" and server._collapsed_scan["done"] == server._collapsed_scan["of"]
+    assert server.admin_remake_tier({"tier": "collapsed"})["result"].startswith("queued 1 to be placed again from scratch, with old meshes")
     row = server.q("SELECT redo, old_rerun, note FROM campaign_items WHERE source_id='7'", one=True)
     assert (row["redo"], row["old_rerun"]) == ("rebuild", 1) and "collapsed" in row["note"], row
     print("meshes that placed photos collapsed, placed again OK")

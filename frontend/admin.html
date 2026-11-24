@@ -509,7 +509,7 @@ function tiersNote(t){
     <li><b>${t.new_data}</b> with ${t.new_photos} photos they weren't made from</li>
     <li><b>${t.grouping ?? 0}</b> of a climb meshed on its own, on a boulder with more problems and no mesh of its own (made before areas went by the boulder's page)</li>
     <li><b>${t.roi ?? 0}</b> densified while OpenMVS cropped to a region it guessed (Nov 15-24): ${t.roi_urgent ?? 0} lost over 20% of their dense points, ${t.roi_flagged ?? 0} over 10% (tagged "cropped" to editors)${t.roi_unknown ? `, ${t.roi_unknown} by how much isn't known (no job log of them)` : ''}${t.roi_replace ? `; ${t.roi_replace} more couldn't be made again from their cameras (each one's log says why), and need their photos placed again` : ''}</li>
-    <li><b>${t.collapsed ?? 0}</b> placed some photos collapsed (cameras shrunk with their points to a speck), to be placed again from scratch</li></ul>${addsNote(t.adds)}`;
+    <li><b>${t.collapsed ?? 0}</b> placed some photos collapsed (cameras shrunk with their points to a speck), to be placed again from scratch${t.collapsed_scan && t.collapsed_scan.state !== 'done' ? ` <i>(still looking in the meshes' kept reconstructions${t.collapsed_scan.of ? `: ${t.collapsed_scan.done} of ${t.collapsed_scan.of}` : ''}; the button waits for that)</i>` : ''}</li></ul>${addsNote(t.adds)}`;
 }
 // a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
 // also: a second way to go, {label, value} (resolved with value; the main button with true, Cancel with false)
@@ -747,7 +747,7 @@ function render(s){
   $('#abtests').innerHTML = abNote(s.abtests);
   $('#tier-texture').disabled = !s.tiers?.texture; $('#tier-pipeline').disabled = !s.tiers?.pipeline;
   $('#tier-fallback').disabled = !s.tiers?.fallback?.n; $('#tier-new').disabled = $('#tier-add').disabled = !s.tiers?.new_data;
-  $('#tier-grouping').disabled = !s.tiers?.grouping; $('#tier-roi').disabled = !s.tiers?.roi; $('#tier-collapsed').disabled = !s.tiers?.collapsed;
+  $('#tier-grouping').disabled = !s.tiers?.grouping; $('#tier-roi').disabled = !s.tiers?.roi; $('#tier-collapsed').disabled = !s.tiers?.collapsed || s.tiers?.collapsed_scan?.state !== 'done';
   $('#rest-auto').checked = v['boulders.rest_auto'];
   if (document.activeElement !== $('#beta-parallel')) $('#beta-parallel').value = v['beta.parallel'];
   if (document.activeElement !== $('#placed-percent')) $('#placed-percent').value = v['boulders.placed_percent'];

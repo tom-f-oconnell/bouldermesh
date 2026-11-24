@@ -4098,6 +4098,7 @@ def roi_existing_meshes() -> int:
 
 
 COLLAPSED_CHECK = 1     # the version of the look for cameras placed collapsed kept in inputs.json ("collapsed")
+_collapsed_scan = {"state": "waiting", "done": 0, "of": None}    # collapsed_existing_meshes() as it goes, for the admin page
 
 
 def collapsed_existing_meshes() -> int:
@@ -4105,8 +4106,10 @@ def collapsed_existing_meshes() -> int:
     keeping what's found in its inputs.json ("collapsed": {v, n, names}), for the admin page's tier of them. At low
     priority: a few hundred models at under a second each. Returns how many were looked in."""
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
-    n = 0
-    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
+    n, rows = 0, q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'")
+    _collapsed_scan.update(state="running", done=0, of=len(rows))
+    for m in rows:
+        _collapsed_scan["done"] += 1
         d = MESHES / m["id"]
         rec = meshinputs.load(d)
         if rec is None or (rec.get("collapsed") or {}).get("v") == COLLAPSED_CHECK or not (d / reconstruction.FILE).is_file():
@@ -4121,8 +4124,9 @@ def collapsed_existing_meshes() -> int:
             n += 1
         except OSError as e:
             print(f"{m['id']}: keeping whether it placed photos collapsed failed ({e})", flush=True)
+    _collapsed_scan["state"] = "done"
+    tiers_changed()
     if n:
-        tiers_changed()
         print(f"looked for cameras placed collapsed in {n} mesh{'' if n == 1 else 'es'}' kept reconstructions", flush=True)
     return n
 
@@ -14951,7 +14955,7 @@ def admin_state() -> dict:
             "usage": {**_usage, "cap": data_cap() or None, "full": full(), **room_left()}, "timings": timings_summary(),
             "stops": [dict(r) for r in q("SELECT at, kind, id, name, was FROM job_stops ORDER BY at DESC LIMIT 30")],
             "texture_again": texture_again_state(), "black_textures": black_textures(),
-            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "abtests": abtests_state(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"]}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
+            "packing": pack_progress(), "skyline": skyline_progress(), "rest_waiting": len(rest_waiting()), "youtube_research": research_status(), "untied_meshes": len(untied_meshes()), "old_meshes": old_mesh_report(), "abtests": abtests_state(), "video_holds": q("SELECT what, since, coming, notified FROM video_holds ORDER BY since"), "tiers": {k: v for k, v in mesh_tiers().items() if k != "ids"} | {"texture_ids": mesh_tiers()["ids"]["texture"], "collapsed_scan": dict(_collapsed_scan)}, "boulder_shares": boulder_shares(), "cpu_count": len(os.sched_getaffinity(os.getpid())) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
             "offload": offload_mod.state(DATA, q), "backup": backup_state(),
             "manifest": {**manifest_state(), "quiet": manifest_quiet(), "hours": MANIFEST_HOURS}, "lost_blocks": lost_blocks()}
 
@@ -15270,7 +15274,8 @@ def admin_remake_tier(body: dict) -> dict:
                 + (f"; {full['queued']} that kept no cameras to be made from scratch" if full and full["queued"] else "")
                 + (f" ({full['not_in_area']} of those in no area, left)" if full and full["not_in_area"] else "")}
     got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier, add=bool(body.get("add")))
-    return {"result": f"queued {got['queued']} to be made again at low priority" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
+    how = "to be placed again from scratch, with old meshes" if tier == "collapsed" else "to be made again at low priority"
+    return {"result": f"queued {got['queued']} {how}" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
             + (f"; {got['not_in_area']} not in any area, left (remake each from its project's card)" if got["not_in_area"] else "")}
 
 
