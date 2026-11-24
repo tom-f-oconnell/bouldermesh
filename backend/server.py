@@ -5010,6 +5010,13 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
             if kept is not None and kept.parent == pdir:
                 shutil.rmtree(kept, ignore_errors=True)
         carried = carry_kept(from_kept, mid, log) if from_kept else False
+        broken = pipeline.glb_problem(mesh_path) if mesh_path.suffix == ".glb" else None
+        if broken:      # a machine on an older image doesn't look (pipeline.IncompleteOutput): kept aside, as a flat one is
+            aside = pdir / "incomplete-mesh"
+            shutil.rmtree(aside, ignore_errors=True)
+            (MESHES / mid).rename(aside)
+            raise RuntimeError(f"its mesh file came back incomplete ({broken}), as when the disk it was made on filled: "
+                               f"kept in its project's {aside.name}/, not as a mesh; Retry makes it again")
         flat, sheet = meshmetrics.thickness(mesh_path), meshmetrics.sheet_spread(mesh_path)
         if flat is not None and flat < meshmetrics.FLAT_BELOW or sheet is not None and sheet < meshmetrics.SHEET_BELOW:
             aside = pdir / "flat-mesh"      # a photo on a card, flat or bent: a failure, kept aside to look at

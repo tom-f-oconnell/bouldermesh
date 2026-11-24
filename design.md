@@ -1753,6 +1753,18 @@ took 76 s at 3.3 GB, with the same 480,184 features. A photo's SIFT and an OpenM
 so the threads change nothing of what's made. The script's need fell to 12 GB (the rest of a climb stayed under it in
 all but 3 of 489), and a machine short of that for a climb takes filtering, beta and size jobs meanwhile.
 
+## Mesh files cut short (`pipeline.glb_problem()`)
+
+The Chube's Nov 19 mesh (https://boulderme.sh/m/b8180e7d273e) was the first 10 MiB of its GLB, then the GLB's first 20
+bytes again: 10,485,780 bytes where its header said 30,160,288. hal's /data filled while hal-2 meshed it (the worker
+found 0.8 GB free 23 minutes later). TextureMesh writes through tinygltf's `std::ofstream`, whose errors OpenMVS
+doesn't look at: the large write came back short at 10 MiB, and libstdc++, not counting its 20 buffered header bytes as
+written, wrote them again as it closed. TextureMesh said it was saved, the machine sent it, and the server kept it as
+current over the mesh before. Now the pipeline checks the GLB's layout after TextureMesh (`glb_problem()`: header
+length against the file, the JSON chunk's bounds and closing brace, the BIN chunk's end) and fails the job
+(`IncompleteOutput`, not taken as untextured), and the server checks again what any machine sends, keeping a cut-short
+one in the project's `incomplete-mesh/` rather than as a mesh. Of 710 mesh files on Nov 24, it was the only one.
+
 ## Downloading ahead (`server.download_ahead()`)
 
 Mountain Project asks crawlers for 60 s between requests, photos included (robots.txt `Crawl-delay`), and climbs

@@ -196,6 +196,22 @@ try:
     row = server.q("SELECT redo, old_rerun, note FROM campaign_items WHERE source_id='7'", one=True)
     assert (row["redo"], row["old_rerun"]) == ("rebuild", 1) and "collapsed" in row["note"], row
     print("meshes that placed photos collapsed, placed again OK")
+    # a mesh file that came back cut short (a machine's disk filled while TextureMesh wrote it): not kept as a mesh
+    pid = mesh("cut")
+    meshes_before = server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"]
+
+    def cut_short(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None, add_to=None, kept=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        whole = b"glTF" + struct.pack("<II", 2, 30000) + struct.pack("<I", 29972) + b"JSON" + b"{" + b" " * 29970 + b"}"
+        (out_dir / "mesh.glb").write_bytes(whole[:10000] + whole[:20])
+        return out_dir / "mesh.glb", False
+    pipeline.reconstruct = cut_short
+    assert server.run_reconstruct(pid, internet=True) is None
+    assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == meshes_before, "not kept as a mesh"
+    assert "came back incomplete (its header says 30,000 bytes, and the file has 10,020)" in server.read_log(pid)
+    assert (server.PROJECTS / pid / "incomplete-mesh" / "mesh.glb").is_file(), "kept aside to look at"
+    assert server.q("SELECT mesh_id FROM projects WHERE id=?", pid, one=True)["mesh_id"] == "cut", "its mesh before stays"
+    print("a mesh file cut short not kept OK")
     print("ALL KEPT TESTS PASSED")
 finally:
     import shutil

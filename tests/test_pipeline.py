@@ -1395,4 +1395,27 @@ finally:
 assert pipeline.OPTIONS_391["--FeatureExtraction.num_threads"] == "--SiftExtraction.num_threads", "3.9.1's spelling, for A/B tests"
 assert 1 <= pipeline.cpu_budget() <= (os.cpu_count() or 1) and (pipeline.memory_free_gb() or 1) > 0
 print("threads OK")
+
+# ---- a GLB cut short, as TextureMesh's was when hal's disk filled as it wrote: its first bytes, then its header again
+
+
+def glb(json_text: bytes, binary: bytes) -> bytes:
+    j = json_text + b" " * (-len(json_text) % 4)
+    b = binary + b"\0" * (-len(binary) % 4)
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(j) + 8 + len(b)) + struct.pack("<I", len(j)) + b"JSON" + j
+            + struct.pack("<I", len(b)) + b"BIN\0" + b)
+
+
+with tempfile.TemporaryDirectory() as td:
+    good = glb(b'{"asset":{"version":"2.0"}}', b"\1" * 1000)
+    cases = {"good": good, "short": good[:600], "header again": good[:500] + good[:20], "not glb": b"ply\n" + b"x" * 40}
+    got = {}
+    for name, data in cases.items():
+        f = pathlib.Path(td) / f"{name}.glb"
+        f.write_bytes(data)
+        got[name] = pipeline.glb_problem(f)
+    assert got["good"] is None, got
+    assert "header says 1,056 bytes, and the file has 600" in got["short"] and "the file has 520" in got["header again"], got
+    assert got["not glb"] == "not a binary glTF", got
+print("incomplete GLBs found OK")
 print("ALL PIPELINE TESTS PASSED")

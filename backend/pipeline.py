@@ -192,6 +192,43 @@ MVS24_DENSIFY = ["--estimate-roi", "0", "--crop-to-roi", "0", "--fusion-filter",
 MVS24_MESH = ["--crop-to-roi", "0", "--min-point-distance", "2.5"]
 
 
+class IncompleteOutput(RuntimeError):
+    """A tool's output came out cut short, though the tool said it was written (glb_problem())."""
+
+
+def glb_problem(path: Path) -> str | None:
+    """What's wrong with a binary glTF's layout, or None if it hangs together: its header's length the file's own, its
+    JSON chunk inside it and ending in "}", and a BIN chunk after it, if any, ending where the file does. OpenMVS writes
+    through a C++ stream whose errors it doesn't look at: on Nov 18, 2026, hal's /data filled while TextureMesh wrote The
+    Chube's, and the stream wrote its first 10 MiB, then its 20-byte header again (still in its buffer), and said it was
+    saved. Read from its first and last bytes and chunk headers alone, not its JSON."""
+    import struct
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            head = f.read(20)
+            if len(head) < 20 or head[:4] != b"glTF":
+                return "not a binary glTF"
+            total, jlen, jtype = struct.unpack("<I", head[8:12])[0], *struct.unpack("<II", head[12:20])
+            if total != size:
+                return f"its header says {total:,} bytes, and the file has {size:,}"
+            if jtype != 0x4E4F534A or 20 + jlen > size:
+                return "its JSON chunk runs past the file's end"
+            f.seek(20 + jlen - min(jlen, 64))
+            if not f.read(min(jlen, 64)).rstrip(b" \0").endswith(b"}"):
+                return "its JSON chunk doesn't end in }"
+            if 20 + jlen < size:
+                bin_head = f.read(8)
+                if len(bin_head) < 8:
+                    return "its BIN chunk's header is cut short"
+                blen, btype = struct.unpack("<II", bin_head)
+                if btype != 0x004E4942 or 20 + jlen + 8 + blen != size:
+                    return "its BIN chunk doesn't end where the file does"
+    except OSError as e:
+        return f"it can't be read ({e})"
+    return None
+
+
 def texture_args(work: Path, images: Path, mask_args: list[str], log=None) -> list[str]:
     """TextureMesh's arguments after its input, output and work folder, as every mesh is textured (here and by
     textureagain.py)."""
@@ -1747,12 +1784,18 @@ def reconstruct_colmap_openmvs(images: Path, work: Path, out_dir: Path, log: Log
                          (r"Assigning the best view .*completed", 0.3, 0.6), (r"Generating texture atlas .*completed", 0.6, 0.95)))
             glb = work / "scene_dense_mesh_texture.glb"
             if glb.exists():
+                bad = glb_problem(glb)
+                if bad:
+                    raise IncompleteOutput(f"TextureMesh's GLB is incomplete ({bad}), though it said it was saved: "
+                                           "as when its disk fills while it writes")
                 out_dir.mkdir(parents=True, exist_ok=True)
                 keep_orientation()
                 write_record(work, out_dir, texture_record(dense / "images", mask_args))
                 for f in work.glob("scene_dense_mesh_texture_*"):
                     shutil.copyfile(f, out_dir / f.name)
                 return Path(shutil.copyfile(glb, out_dir / "mesh.glb"))
+        except IncompleteOutput:
+            raise
         except Exception as e:  # texturing is optional
             log(f"texturing failed ({e}); keeping untextured mesh")
 
