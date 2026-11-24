@@ -4071,7 +4071,7 @@ function pausedHtml(c){
 function currentHtml(c){
   const running = c.running || (c.current ? [c.current] : []);
   if (!running.length) return (machineWaitHtml(c) || (c.state === 'queued' ? '<div class="status" style="margin-top:6px">Queued: it starts once an area ahead of it finishes, or has nothing to go for now.</div>'
-    : c.status === 'running' && !(c.paused || []).length ? '<div class="status" style="margin-top:6px">Waiting for the next climb to start…</div>' : '')) + pausedHtml(c);
+    : c.status === 'running' && !(c.paused || []).length ? `<div class="status" style="margin-top:6px">${c.idle_why ? `No climb of it is going yet: ${esc(c.idle_why)}.` : 'Waiting for the next climb to start…'}</div>` : '')) + pausedHtml(c);
   const panels = running.filter(r => r.boulder_panel?.rows?.length);
   const allOpen = panels.length && panels.every(r => { const k = `${c.id}|${r.boulder_panel.name}`; return bOpen.has(k) ? bOpen.get(k) : !r.boulder_panel.waiting; });
   const toggle = panels.length ? `<button class="btoggle" data-ball="${esc(c.id)}" data-open="${allOpen ? 0 : 1}" title="Expand or collapse every boulder's climbs here">${allOpen ? '▾' : '▸'} ${panels.length === 1 ? 'its boulder\'s climbs' : `${panels.length} boulders' climbs`}</button>` : '';
