@@ -347,6 +347,10 @@ assert gpu == GPU and tasks == ("beta", "scale", "filter") and small is None, ta
 assert said == ["NVIDIA GeForce RTX 2060 (6.0 GB in all) can't hold reconstruct (7.4 GB), splat (7.8 GB), abtest (7.4 GB): not taking those"], said
 gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2070", 8192, ())
 assert gpu == GPU and tasks == worker.TASKS and said == [], "blackbox: the server fits each job to what's free"
+gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce GTX 1080", 8192, (), 6.1)
+assert gpu == GPU and "splat" not in tasks and "reconstruct" in tasks, "disco: gsplat isn't built for Pascal"
+assert said == ["NVIDIA GeForce GTX 1080 (compute capability 6.1) is too old for splat (7.5 on): not taking those"], said
+assert fit(GPU, "auto", "NVIDIA GeForce RTX 2070", 8192, (), 7.5)[1] == worker.TASKS
 gpu, tasks, _, said = fit(GPU, "auto", "NVIDIA GeForce RTX 2060", 6144, ("reconstruct",))
 assert gpu == GPU and tasks == ("reconstruct",) and "the server won't give it those" in said[0], "--tasks as given, but said"
 gpu, tasks, _, said = fit(GPU, "auto", None, None, ())

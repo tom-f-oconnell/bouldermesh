@@ -601,7 +601,7 @@ assert big.gpu_mb == 6300 + 1000 + 100 * 20 == pullwork.gpu_need_mb("reconstruct
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000})
 assert r["held"] and "its GPU has 4.9 GB free, and the next job may need 9.1 GB" in r["why"] and big.state == "queued", r
 small = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 1500, "gpu_total_mb": 3072})     # a card no job fits on, however free: said as that
-assert not small.get("held") and small["why"] == "nothing for it: only meshing is waiting, which may need 9.1 GB of GPU memory, more than its GPU has (3.0 GB in all)", small
+assert not small.get("held") and small["why"] == "nothing for it: only meshing is waiting, which may need 3.9 GB of GPU memory, more than its GPU has (3.0 GB in all)", small
 assert board.current(box["id"])["state"] == "idle", "not held back: nothing waiting fits it, rather than its owner's use"
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 5000, "gpu_total_mb": 24576})
 assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the same state: only the reason replaced"
@@ -609,8 +609,18 @@ assert board.current(box["id"])["why"].startswith("its GPU has 4.9 GB"), "the sa
 # card) gets no new job; one that says only what it has in all is held to that
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": None})
 assert r["held"] and "its GPU's memory isn't known yet" in r["why"] and big.state == "queued", r
+# a GPU too small for VGGT in all (8 GB) meshes for less (MESH_GPU_MB), and hands the job back if VGGT is needed: it
+# then waits for a GPU big enough, not counted as the machine's failure; a 24 GB card with 5 GB free still waits
+r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 7000, "gpu_total_mb": 8192})
+assert r["job"]["id"] == big.id and big.gpu_least == pullwork.MESH_GPU_MB, r
+failed_before = board.q("SELECT failed FROM machines WHERE id=?", box["id"])[0]["failed"]
+board.finish(mb(), big.id, {"status": "failed", "error": "FAILED: its GPU has 8192 MB in all, and VGGT may need 9300 MB: "
+                                                          "handed back for a bigger GPU (needs_gpu_mb=9300)"})
+assert big.state == "queued" and big.gpu_mb == big.gpu_least == 9300 and big.machine is None, big
+assert board.q("SELECT failed FROM machines WHERE id=?", box["id"])[0]["failed"] == failed_before
+assert board.q("SELECT outcome FROM machine_jobs WHERE id=?", big.id)[0]["outcome"] == "handed back"
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": None, "gpu_total_mb": 8192})
-assert not r.get("held") and "more than its GPU has (8.0 GB in all)" in r["why"] and big.state == "queued", r
+assert not r.get("held") and "may need 9.1 GB of GPU memory, more than its GPU has (8.0 GB in all)" in r["why"] and big.state == "queued", r
 r = board.work(mb(), "10.0.0.9", {**asks, "gpu_free_mb": 12000})
 assert r["job"]["id"] == big.id and board.current(box["id"]) == {**board.current(box["id"]), "state": "working", "why": "big"}
 del board.jobs[big.id]

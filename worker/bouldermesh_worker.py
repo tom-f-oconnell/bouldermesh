@@ -114,7 +114,7 @@ from pathlib import Path
 # 31: sends an A/B test's results even if it exits non-zero after them (not what lost them: compute.follow() didn't
 #     take their result line as one)
 # 32: with memory short for a climb (NEED_RAM_GB, now 12), takes filtering, beta and size jobs still (LIGHT_TASKS)
-VERSION = 32
+VERSION = 33
 SCRIPT_PATH = "/worker/bouldermesh_worker.py"     # where the server serves it
 AGENT = "bouldermesh-worker"
 TASKS = ("reconstruct", "beta", "scale", "filter", "splat", "abtest")    # remote_job.py's: meshing a climb, finding its beta, finding
@@ -124,6 +124,8 @@ TASKS = ("reconstruct", "beta", "scale", "filter", "splat", "abtest")    # remot
 # less than that in all is never given one, so it doesn't take it; with less than any, it works on the CPU instead
 GPU_LEAST_MB = {"reconstruct": 7600, "beta": 4000, "scale": 4000, "filter": 4000, "splat": 8000, "abtest": 7600}
 SMALL_GPU_MB = min(GPU_LEAST_MB.values())
+GPU_LEAST_CAP = {"splat": 7.5}     # the oldest GPUs each kind of job runs on (CUDA compute capability): gsplat is built
+                                    # for 7.5 on (the Dockerfile's TORCH_CUDA_ARCH_LIST), so not a GTX 1080's 6.1
 BOOT_GRACE = 300            # seconds after the computer starts in which a GPU's driver that doesn't answer yet is waited for
 CPU_TASKS = ("filter", "beta")     # what a machine without a GPU takes, unless --tasks says otherwise
 INPUTS = ("photos", "masks", "mesh", "videos", "more", "scenery", "cache.sqlite", "task.json", "kept")   # what a job's folder may hold
@@ -252,6 +254,16 @@ class GpuWatch:
             r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=30)
             return r.stdout.splitlines()[0].strip()[:80] or None
         except (OSError, subprocess.SubprocessError, IndexError):
+            return None
+
+    @staticmethod
+    def compute_capability() -> float | None:
+        """The first GPU's CUDA compute capability (6.1 for a GTX 1080), or None if nvidia-smi doesn't say."""
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"], capture_output=True,
+                               text=True, timeout=30)
+            return float(r.stdout.splitlines()[0].strip())
+        except (OSError, subprocess.SubprocessError, IndexError, ValueError):
             return None
 
     def job_start(self, container: str) -> None:
@@ -1193,7 +1205,8 @@ class Worker:
         first, card = (GpuWatch.sample(), GpuWatch.gpu_name()) if self.gpu else (None, None)
         given = tuple(t for t in TASKS if t in (args.tasks or "").split(","))
         # small_gpu: a GPU there is, too small for any job: what it is, for the server to say
-        self.gpu, self.tasks, self.small_gpu, said = self.fit_gpu(self.gpu, args.gpu, card, first[2] if first else None, given)
+        cap = GpuWatch.compute_capability() if self.gpu else None
+        self.gpu, self.tasks, self.small_gpu, said = self.fit_gpu(self.gpu, args.gpu, card, first[2] if first else None, given, cap)
         for line in said:
             log(line)
         self.gpu_said = f"{card or 'its GPU'}, {first[2] / 1024:.1f} GB" if self.gpu and first else None    # for --check
@@ -1216,11 +1229,12 @@ class Worker:
         return []
 
     @staticmethod
-    def fit_gpu(gpu: list[str], choice: str, card: str | None, total: float | None,
-                given: tuple[str, ...]) -> tuple[list[str], tuple[str, ...], str | None, list[str]]:
-        """What this machine can do with its GPU, by the GPU's memory in all (total, MB; None if nvidia-smi didn't say):
-        the GPU's docker arguments (none: the CPU instead), the kinds of job it takes (given, by --tasks, or those its
-        GPU's memory could ever hold), the small GPU it left out, if any, for the server to say, and what to log."""
+    def fit_gpu(gpu: list[str], choice: str, card: str | None, total: float | None, given: tuple[str, ...],
+                cap: float | None = None) -> tuple[list[str], tuple[str, ...], str | None, list[str]]:
+        """What this machine can do with its GPU, by the GPU's memory in all (total, MB; None if nvidia-smi didn't say)
+        and its compute capability (cap; None: not known, so not held against it): the GPU's docker arguments (none:
+        the CPU instead), the kinds of job it takes (given, by --tasks, or those its GPU could ever do), the small GPU
+        it left out, if any, for the server to say, and what to log."""
         card = card or "its GPU"
         if gpu and total is None and choice == "auto":
             return [], given or CPU_TASKS, None, [f"{card}: nvidia-smi doesn't say how much memory it has, so no job can be "
@@ -1231,12 +1245,16 @@ class Worker:
                                                    "working without it, on the CPU"]
         if not gpu:
             return [], given or CPU_TASKS, None, []
-        fits = tuple(t for t in TASKS if total is None or total >= GPU_LEAST_MB[t])
-        short = [t for t in (given or TASKS) if t not in fits]
+        old = [t for t in TASKS if cap is not None and cap < GPU_LEAST_CAP.get(t, 0)]
+        fits = tuple(t for t in TASKS if (total is None or total >= GPU_LEAST_MB[t]) and t not in old)
+        short = [t for t in (given or TASKS) if t not in fits and t not in old]
+        but = ": the server won't give it those" if given else ": not taking those"
         said = [f"{card} ({total / 1024:.1f} GB in all) can't hold "
-                + ", ".join(f"{t} ({GPU_LEAST_MB[t] / 1024:.1f} GB)" for t in short)
-                + (": the server won't give it those" if given else ": not taking those")] if short else []
-        return gpu, given or fits, None, said
+                + ", ".join(f"{t} ({GPU_LEAST_MB[t] / 1024:.1f} GB)" for t in short) + but] if short else []
+        dropped = [t for t in old if t in (given or TASKS)]     # the server doesn't know its age: never taken
+        said += [f"{card} (compute capability {cap:g}) is too old for "
+                 + ", ".join(f"{t} ({GPU_LEAST_CAP[t]:g} on)" for t in dropped) + ": not taking those"] if dropped else []
+        return gpu, tuple(t for t in given if t not in old) if given else fits, None, said
 
     # -- others using this machine -----------------------------------------------------------------------------------
     def memory_short(self) -> tuple[str, list[str]] | None:

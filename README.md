@@ -1227,9 +1227,11 @@ machine. *Run more on* adds up to that many machines (2 by default):
   keep its GPU busier than 50% (`--busy-gpu-util`; a median over 3 min, and quiet again over 5 before it carries on), or
   while less than 12 GB of memory is free (`--need-ram-gb`; also `BOULDERMESH_NEED_RAM_GB`), taking filtering, beta and
   size jobs meanwhile while 4 GB is, and only one whose GPU
-  memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). It
-  takes only the kinds of job its GPU's memory in all could ever hold (meshing from 7.4 GB, a scenery's splat from 7.8,
-  beta, size and filtering from 3.9), and with less than any, works on the CPU, as without a GPU (`--tasks` takes what it
+  memory fits in what's free (what VGGT may need to place 20 of its photos: 7.6-9.3 GB; 4 GB for beta or size). A GPU
+  too small for VGGT in all (an 8 GB card) meshes in 4 GB free, and hands a climb back for a bigger GPU if VGGT is
+  needed (about 2% of climbs). It takes only the kinds of job its GPU's memory in all could ever hold (meshing from
+  7.4 GB, a scenery's splat from 7.8, beta, size and filtering from 3.9), no splat on GPUs older than compute
+  capability 7.5 (a GTX 1080's 6.1), and with less than any, works on the CPU, as without a GPU (`--tasks` takes what it
   says). It reads that memory before it first asks, and at a computer's start (5 min) waits for a GPU's driver that
   doesn't answer yet, so that a service starting with it doesn't work without the GPU from then on. A machine whose
   script watches its GPU but can't say its memory is given no new job (scripts before 19 could ask before their first

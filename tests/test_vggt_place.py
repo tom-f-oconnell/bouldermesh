@@ -165,4 +165,6 @@ del os.environ["VGGT_FALLBACK"]
 why = vggt_place.unavailable()
 assert why is None or "isn't installed" in why or "GPU" in why, why
 print(f"here: {why or 'VGGT can run'}")
+assert vggt_place.need_mb(1) == 7600 and vggt_place.need_mb(30) == vggt_place.need_mb(20) == 9300
+assert vggt_place.too_small(30) is None or "in all" in vggt_place.too_small(30)
 print("ALL VGGT PLACING TESTS PASSED")

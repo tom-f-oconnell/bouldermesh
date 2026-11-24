@@ -202,6 +202,7 @@ def main() -> int:
     if a.task:
         return task(a.job, a.task, log)
     try:
+        pipeline.HAND_BACK = a.gpu     # this GPU too small for VGGT, when it's needed: for a bigger one (pullwork.py)
         given = json.loads((a.job / "task.json").read_text()) if (a.job / "task.json").exists() else {}
         with meshopts.using(given.get("mapper")):    # an area's settings for the mapper, if it sent any
             kept = a.job / "kept"       # a mesh's kept reconstruction (and features): its model, to add photos to,

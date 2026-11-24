@@ -33,6 +33,7 @@ MIN_PHOTOS = 3
 MIN_INLIERS = 15       # a verified pair with fewer matches doesn't link two photos (COLMAP's own minimum)
 # GPU memory for its camera head alone, measured on hal's 3090: 7.3 GB for 10 photos, 12.1 GB for 60, 15.0 GB for 90
 GPU_BASE_MB, GPU_PER_PHOTO_MB, GPU_SPARE_MB = 6300, 100, 1000
+NEED_PHOTOS = 20        # a job's GPU memory is reckoned for placing this many (it places fewer in less)
 # Rounds of (largest angle error in degrees, largest reprojection error in pixels, whether focal lengths are refined)
 # for triangulating, keeping points and adjusting. The first takes points from placements a few degrees off; each
 # later one, from better ones. experiments/depth/test3.py compares the choices.
@@ -72,6 +73,23 @@ def unavailable() -> str | None:
     if not torch.cuda.is_available() and os.environ.get("VGGT_CPU") != "1":
         return "no CUDA GPU is visible (VGGT_CPU=1 runs it on the CPU, slowly)"
     return None
+
+
+def need_mb(photos: int) -> int:
+    """The GPU memory VGGT is reckoned to need for a job of this many photos: placing NEED_PHOTOS of them (or all, if
+    fewer). A machine's GPU is given a meshing job for this (pullwork.gpu_need_mb()), or hands one back without it."""
+    return GPU_BASE_MB + GPU_SPARE_MB + GPU_PER_PHOTO_MB * max(MIN_PHOTOS, min(photos, NEED_PHOTOS))
+
+
+def too_small(photos: int) -> str | None:
+    """Why this machine's GPU is too small for VGGT to place a job of this many photos (all its memory, however much
+    is free now, short of need_mb()), or None if it isn't, or it has no CUDA GPU."""
+    import torch
+    if not torch.cuda.is_available():
+        return None
+    total = torch.cuda.get_device_properties(0).total_memory // 2 ** 20
+    need = need_mb(photos)
+    return f"its GPU has {total} MB in all, and VGGT may need {need} MB" if total < need else None
 
 
 def capacity() -> tuple[str, int]:

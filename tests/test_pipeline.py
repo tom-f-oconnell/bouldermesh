@@ -8,6 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "backend"))
 os.environ["VGGT_FALLBACK"] = "0"      # VGGT stays out of it, whatever this machine has, unless a test stands it in
 import occlusion
 import pipeline
+import pullwork
 from climbs.common import Cancelled
 from progress import Tracker
 
@@ -313,6 +314,26 @@ try:
             pass
 finally:
     restore(saved)
+# a GPU too small for VGGT hands the job back when VGGT is needed (remote_job.py's HAND_BACK), with the GPU it needs in
+# its error for the server (pullwork.HANDED_BACK); without HAND_BACK, or VGGT not needed, the job goes on as before
+calls, saved = with_vggt(placed=12)
+small = pipeline.vggt_place.too_small
+pipeline.vggt_place.too_small = lambda n: "its GPU has 8192 MB in all, and VGGT may need 9300 MB"
+try:
+    pipeline.HAND_BACK = True
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+            raise AssertionError("should have been handed back")
+        except pipeline.NeedsBiggerGPU as e:
+            assert not calls and pullwork.HANDED_BACK.search(f"FAILED: {e}")[1] == str(e.need_mb) and e.need_mb >= 7600, e
+    assert stops_at([{"models": {"0": 9}}]).endswith("sparse/0"), "enough placed: no VGGT, so nothing handed back"
+    pipeline.HAND_BACK = False
+    assert stops_at([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS).endswith("sparse/vggt") and calls, "not handing back: tried"
+finally:
+    pipeline.HAND_BACK, pipeline.vggt_place.too_small = False, small
+    restore(saved)
+assert pipeline.vggt_place.need_mb(30) == pullwork.gpu_need_mb("reconstruct", 30), "the same need, both sides"
 print("VGGT placing OK")
 
 

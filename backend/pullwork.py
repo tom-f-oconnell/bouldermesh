@@ -31,8 +31,11 @@ A machine says which kinds of job it takes (worker script 13 on): one without a 
 default, and is given a CPU image to run them in (cpu_image): the slim worker one (1.9 GB, x86-64 and ARM64) where built.
 A machine whose owner's work keeps its GPU busy, or whose memory is short, says it's held back, and gets no job; one
 whose memory is short only for a climb says which kinds it takes meanwhile (short_tasks: filtering, beta and size,
-script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_mb()) is held back too, but one whose GPU is smaller than
-any waiting job's need is idle, as nothing waiting is for it. Each machine's state as it asks
+script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_on()) is held back too, but one whose GPU is smaller than
+any waiting job's need is idle, as nothing waiting is for it. A reconstruction's need is VGGT's, should COLMAP not
+place its photos (2% of meshes, Nov 24), but a GPU too small for that in all (as disco's 8 GB GTX 1080, which placed as
+the big ones did, Nov 24) takes it for MESH_GPU_MB: it hands the job back if VGGT is needed after all, and the job
+then waits for a GPU big enough, so every mesh is made as it would be on one. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
 and logged, for the admin page's share of time in each.
 """
@@ -74,8 +77,8 @@ LASTING = ("reconstruct", "abtest", "filter", "beta", "scale")    # the kinds of
 ORPHAN_AFTER = 24 * 3600   # a meshing job kept over a restart that no climb takes up again in this long goes
 AGE_FIRST = 1800            # a beta or size job queued this long goes ahead of meshing (not of filtering), so it isn't starved
 GONE_AFTER = 600            # a machine not heard from for this long has left (presence.py), unless it said goodbye before
-GPU_NEED_PHOTOS = 20        # a reconstruction's GPU memory is reckoned for VGGT placing this many (it places fewer in less)
 OTHER_GPU_MB = 4000         # finding a mesh's beta or size
+MESH_GPU_MB = 4000          # a reconstruction on a GPU too small for VGGT: matching (pipeline.GPU_MIN_FREE_MB) is its most
 GPU_INFO_MAX = 4000         # the most kept of what nvidia-smi said of a machine's GPU (gpu_info)
 DIAG_MAX = 300_000          # the most kept of a machine's diagnostics
 DIAG_PATIENCE = 86400       # an ask for diagnostics lapses after this long unanswered
@@ -139,6 +142,8 @@ class Job:
     task: str = "reconstruct"       # or one of remote_job.py's other tasks: "beta", "scale"
     version: int = 1                # the oldest script that does it
     gpu_mb: int = 0                 # the GPU memory it may need (gpu_need_mb())
+    gpu_least: int = 0              # a reconstruction's on a GPU too small for gpu_mb, which hands it back if VGGT is
+                                    # needed (MESH_GPU_MB); gpu_mb once handed back; 0: only gpu_mb
     owner: int = field(default_factory=threading.get_ident)   # the thread that made it, which waits for it; 0 for none
     same: dict | None = None        # a meshing job's {"rules", "fingerprint"}: kept over a restart while it has both
     result_line: str | None = None  # the "@@result" line its machine sent, kept for whoever takes it up after a restart
@@ -230,7 +235,7 @@ class Board:
             return
         spec = {"input": str(j.input), "size": j.size, "internet": j.internet, "image": j.image, "state": j.state,
                 "machine": j.machine, "machine_name": j.machine_name, "taken": j.taken, "out_size": j.out_size, "error": j.error,
-                "version": j.version, "gpu_mb": j.gpu_mb, "same": j.same, "result_line": j.result_line, "prio": j.prio,
+                "version": j.version, "gpu_mb": j.gpu_mb, "gpu_least": j.gpu_least, "same": j.same, "result_line": j.result_line, "prio": j.prio,
                 "orphaned": j.orphaned}
         self.q("UPDATE machine_jobs SET live=1, spec=? WHERE id=?", json.dumps(spec), j.id)
 
@@ -258,7 +263,7 @@ class Board:
                         image=s["image"], created=r["created"] or now, state=s["state"], machine=s.get("machine"),
                         machine_name=s.get("machine_name"), taken=s.get("taken"), touched=now, out_size=s.get("out_size"),
                         error=s.get("error"), task=r["task"], version=int(s.get("version") or 1), gpu_mb=int(s.get("gpu_mb") or 0),
-                        owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=s.get("orphaned") or now, prio=int(s.get("prio") or 0))
+                        gpu_least=int(s.get("gpu_least") or 0), owner=0, same=s.get("same"), result_line=s.get("result_line"), orphaned=s.get("orphaned") or now, prio=int(s.get("prio") or 0))
             except (TypeError, ValueError, KeyError):
                 self.q("UPDATE machine_jobs SET live=0, outcome=COALESCE(outcome, 'gone'), ended=COALESCE(ended, ?) WHERE id=?", now, r["id"])
                 continue
@@ -602,9 +607,10 @@ class Board:
                 def rank(j):
                     aged = j.task in ("beta", "scale") and now - j.created > AGE_FIRST
                     return j.task != "filter", j.prio, 0 if aged else 1 if j.task == "reconstruct" else 2, j.created
-                mine = min((j for j in could if free is None or j.gpu_mb <= free), key=rank, default=None)
+                total = _number(client.get("gpu_total_mb"))
+                mine = min((j for j in could if free is None or gpu_need_on(j, total) <= free), key=rank, default=None)
                 if not mine and could:      # none fits in the GPU memory free there now
-                    least, total = min(j.gpu_mb for j in could), _number(client.get("gpu_total_mb"))
+                    least = min(gpu_need_on(j, total) for j in could)
                     if total is not None and total < least:     # nothing for it: not its owner's use, as held back is
                         kinds = " and ".join(sorted({TASK_NAMES.get(j.task, j.task) for j in could}))
                         kinds += " is" if len({j.task for j in could}) == 1 else " are"
@@ -754,6 +760,13 @@ class Board:
             if status == "released":
                 self._ended(j, "released")
                 self._requeue(j, f"remote: {j.machine_name} stopped before finishing: waiting for another machine")
+                return {"ok": True}
+            back = HANDED_BACK.search(str(report.get("error") or "")) if status != "ok" and j.task == "reconstruct" else None
+            if back:        # its GPU too small for VGGT, needed after all: for a machine whose GPU is big enough
+                j.gpu_mb = j.gpu_least = max(j.gpu_mb, int(back[1]))
+                self._ended(j, "handed back", str(report.get("error"))[:500])
+                self._requeue(j, f"remote: {j.machine_name} handed it back, its GPU too small for VGGT: waiting for a "
+                                 f"machine with {j.gpu_mb / 1024:.1f} GB")
                 return {"ok": True}
             if status == "ok":
                 if j.out_size is None or not j.output.exists() or j.output.stat().st_size != j.out_size:
@@ -1019,6 +1032,7 @@ class Board:
         photos = sum(1 for _ in files["photos"].iterdir()) if "photos" in files and files["photos"].is_dir() else 0
         job = Job(id=jid, label=label, input=path, size=path.stat().st_size, internet=bool(args.get("internet")), image=image,
                   task=kind, version=max(2 if told else 1, version or 1), gpu_mb=gpu_need_mb(kind, photos),
+                  gpu_least=MESH_GPU_MB if kind == "reconstruct" else 0,
                   same=dict(same) if same and kind in LASTING else None, prio=getattr(_prio, "value", PRIO_OWNER))
         with self.cond:
             self.jobs[jid] = job
@@ -1077,14 +1091,22 @@ def _inputs(files: dict[str, Path]) -> list:
 
 
 def gpu_need_mb(kind: str, photos: int) -> int:
-    """The GPU memory a job may need: for a reconstruction, VGGT placing GPU_NEED_PHOTOS of its photos (or all, if
-    fewer), its largest use, should COLMAP not place them; for the others, OTHER_GPU_MB."""
+    """The GPU memory a job may need: for a reconstruction, VGGT's (vggt_place.need_mb()), its largest use, should
+    COLMAP not place the photos; for the others, OTHER_GPU_MB."""
     if kind == "splat":
         return SPLAT_GPU_MB
     if kind not in ("reconstruct", "abtest"):
         return OTHER_GPU_MB
-    n = max(vggt_place.MIN_PHOTOS, min(photos, GPU_NEED_PHOTOS))
-    return vggt_place.GPU_BASE_MB + vggt_place.GPU_SPARE_MB + vggt_place.GPU_PER_PHOTO_MB * n
+    return vggt_place.need_mb(photos)
+
+
+def gpu_need_on(j: Job, total: float | None) -> int:
+    """The GPU memory free a job needs on a machine whose GPU has `total` in all: its gpu_mb, but only gpu_least (a
+    reconstruction's but VGGT's) on a GPU too small for VGGT, which hands the job back if VGGT is needed after all."""
+    return j.gpu_least if j.gpu_least and total is not None and total < j.gpu_mb else j.gpu_mb
+
+
+HANDED_BACK = re.compile(r"needs_gpu_mb=(\d+)")     # in a reconstruction's error: handed back for a GPU this big
 
 
 def _json(text: str | None):

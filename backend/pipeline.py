@@ -834,13 +834,34 @@ def _round_info(info: dict) -> dict:
     return {**{k: v for k, v in info.items() if k != "why"}, "error": info.get("why")}
 
 
+class NeedsBiggerGPU(RuntimeError):
+    """VGGT is needed, and this machine's GPU is too small for it (HAND_BACK): the job is for a machine with need_mb."""
+
+    def __init__(self, why: str, need_mb: int):
+        super().__init__(f"{why}: handed back for a bigger GPU (needs_gpu_mb={need_mb})")
+        self.need_mb = need_mb
+
+
+HAND_BACK = False   # a GPU too small for VGGT stops the job when VGGT is needed (NeedsBiggerGPU), rather than going
+                    # without it: set by remote_job.py, as pullwork.py gives such GPUs meshing for less memory
+
+
 def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, registered: int) -> None:
     """When the mapper placed too few photos: VGGT's placements, refined by COLMAP, as another model in sparse/ (vggt),
-    for the largest to be chosen from as before. Failing only costs the time."""
+    for the largest to be chosen from as before. Failing only costs the time.
+
+    Raises:
+        NeedsBiggerGPU: with HAND_BACK, this machine's GPU is too small for VGGT however free it is.
+    """
     why = vggt_place.unavailable()
     if why:
         log(f"VGGT could try placing them instead, but not here: {why}")
         return
+    photos = sum(1 for p in images.iterdir() if p.is_file())
+    small = vggt_place.too_small(photos) if HAND_BACK else None
+    if small:
+        log(f"VGGT could try placing them, as COLMAP's mapper placed only {registered}, but {small}")
+        raise NeedsBiggerGPU(small, vggt_place.need_mb(photos))
     log(f"== VGGT: placing the photos, as COLMAP's mapper placed only {registered}")
     tracker.update("mapper", 0, "placing them with VGGT")
     try:
@@ -1316,6 +1337,8 @@ def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log,
             if m2 is not None and min_registered <= r2 < n_images:
                 m2, r2 = _place_rest(db, m2, work, log, tracker, r2, n_images)
             j2 = _judge_placing(m2, db) if m2 is not None else None
+        except NeedsBiggerGPU:
+            raise
         except Exception as e:  # noqa: BLE001 - the global mapper's placing stands
             log(f"the incremental mapper failed ({type(e).__name__}: {e})")
         better = j2 is not None and (j2["keep"] > j["keep"] or (j2["ok"] and j2["keep"] >= 0.9 * j["keep"]))
