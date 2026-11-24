@@ -168,6 +168,26 @@ try:
     assert server.take_job(True)["mid"] == "worse"
     assert server.q("SELECT redo FROM campaign_items WHERE source_id='1'", one=True)["redo"] == "rebuild"
     print("the admin page's Remake the cropped OK")
+
+    # meshes that placed photos collapsed: found once in their kept reconstructions, placed again from scratch with old meshes
+    pid = mesh("shrunk")
+    server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,project_id,status) VALUES('c1','7',7,'7',?,'done')", pid, write=True)
+    saved = modelcheck.collapsed_kept
+    looked: list[str] = []
+    modelcheck.collapsed_kept = lambda d: looked.append(d.name) or (["yt_1_000.jpg", "yt_1_001.jpg"] if d.name == "shrunk" else [])
+    try:
+        assert server.collapsed_existing_meshes() >= 1 and "shrunk" in looked
+        looked.clear()
+        assert server.collapsed_existing_meshes() == 0 and not looked, "looked in once"
+    finally:
+        modelcheck.collapsed_kept = saved
+    assert meshinputs.load(server.MESHES / "shrunk")["collapsed"] == {"v": server.COLLAPSED_CHECK, "n": 2, "names": ["yt_1_000.jpg", "yt_1_001.jpg"]}
+    t = server.mesh_tiers(fresh=True)
+    assert t["ids"]["collapsed"] == ["shrunk"] and "shrunk" not in t["ids"]["roi"] and t["collapsed"] == 1, t["ids"]
+    assert "queued 1" in server.admin_remake_tier({"tier": "collapsed"})["result"]
+    row = server.q("SELECT redo, old_rerun, note FROM campaign_items WHERE source_id='7'", one=True)
+    assert (row["redo"], row["old_rerun"]) == ("rebuild", 1) and "collapsed" in row["note"], row
+    print("meshes that placed photos collapsed, placed again OK")
     print("ALL KEPT TESTS PASSED")
 finally:
     import shutil

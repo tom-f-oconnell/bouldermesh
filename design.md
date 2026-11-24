@@ -1712,10 +1712,22 @@ it does decide: a model that fails is solved again from another start.
 cameras) shrunk to a speck with their points: each camera's points at under 1% of the model's usual depth, against
 0.36 or more on Nov 20. Their links to the rest were a few hundred points through two Mountain Project photos, and
 scaling a block's cameras and points together changes no turn and no reprojection, so the check passed it (98.7% of
-its cameras agreeing). `collapsed()` finds such cameras: their points' median depth under 2% of the model's median
-over its cameras. Of 280 current meshes on Nov 24, 9 had any, 4 had 10% or more. For now only making a mesh again
-from its cameras uses it, refusing them; whether the check fails such a model, and the consistent-cameras step drops
-those cameras to be placed again, waits on the user.
+its cameras agreeing). `collapsed()` finds such cameras: their points' median depth under 2% of the usual, the median
+over the cameras, or where depths fall apart by over 50 times with a fifth of the cameras or more above the gap, the
+median of those (a block may hold half the cameras; one photo from far off mustn't set the usual). Of 280 current
+meshes on Nov 24, 9 had any, 4 had 10% or more.
+
+What's done with them (the user's yes, Nov 24): the check fails a model with 3 or more ("collapsed"; fewer are said),
+and the consistent-cameras step, after any mapper, drops them (`image_deleter`) and tries their photos again against
+the rest of the model (`_place_rest()`), whose points are at their true depth. Only those it places whose turns agree
+with the cameras kept stay (3 or more verified pairs with them, at a median within the check's 5 degrees); any
+collapsing again are left out too (`mapper.json`'s `consistent.collapsed`, `placed_again`, `collapsed_again`). On
+Swing Dance's Nov 23 model, run for real on hal: 32 of the 72 were placed again, 31 of those 14-130 degrees off
+their pairs, so 80 cameras were kept, at 3.1 degrees and passing (47 s); placing the 32 back unjudged had failed the
+check at 6.3. Judging GPU SIFT's placing against the CPU's leaves the
+failure out, as either placing has them placed again, for far less than placing every photo again. Current meshes are
+looked in once (`collapsed_existing_meshes()`, kept in `inputs.json`), and the admin page's *Place again the
+collapsed* remakes those with any from scratch, with old meshes; a mesh made again from its cameras refuses them.
 
 ## Made again from its cameras (`server.run_kept()`, `pipeline._use_kept()`)
 

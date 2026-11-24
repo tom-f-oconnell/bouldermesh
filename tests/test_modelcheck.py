@@ -43,9 +43,10 @@ def quat(R):
 
 
 def cameras(seed=0):
-    """Twelve cameras: each its turn, where it stands (as COLMAP's t) and focal length."""
+    """Twelve cameras: each its turn, where it stands (as COLMAP's t: the points, all at the origin, 6-12 in front of
+    each) and focal length."""
     rng = np.random.default_rng(seed)
-    return [(rot(rng.normal(size=3), rng.uniform(5, 40)), rng.normal(size=3) * 2, 900.0 + 40 * i) for i in range(N)]
+    return [(rot(rng.normal(size=3), rng.uniform(5, 40)), rng.normal(size=3) * 2 + [0, 0, 9], 900.0 + 40 * i) for i in range(N)]
 
 
 def write_model(d: pathlib.Path, cams, err=0.8, colmap4=False) -> None:
@@ -184,11 +185,23 @@ with tempfile.TemporaryDirectory() as tmp:
         [(np.eye(3), np.array([0.0, 0.0, 0.05]), 1000.0), (np.eye(3), np.array([0.0, 0.0, 0.001]), 1000.0)]
     write_model(tmp / "collapsed" / "model", flat)
     m = tmp / "collapsed" / "model"
-    assert modelcheck.collapsed((m / "images.bin").read_bytes(), (m / "points3D.bin").read_bytes()) == ["p10.jpg", "p11.jpg"]
+    assert modelcheck.collapsed(m) == ["p10.jpg", "p11.jpg"]
+    c = modelcheck.check(m, tmp / "right0" / "db.db")
+    assert c["collapsed"] == 2 and "collapsed" not in c["failed"] and "2 of its cameras are placed collapsed" in c["why"], \
+        "two are said, not failed"
+    assert modelcheck.verdict({**c, "collapsed": 3})["failed"][-1] == "collapsed"
     assert reconstruction.keep(m, tmp / "right0" / "db.db", tmp / "cmesh", lambda m: None, "COLMAP x", {"args": [], "device": "cpu"})
     assert modelcheck.collapsed_kept(tmp / "cmesh") == ["p10.jpg", "p11.jpg"] and modelcheck.collapsed_kept(tmp / "out2") is None
+    # a block collapsed with most of the cameras, and one photo from far off
+    most = [(np.eye(3), np.array([0.0, 0.0, 5.0 + i]), 1000.0) for i in range(4)] + \
+        [(np.eye(3), np.array([0.0, 0.0, 0.01 + 0.001 * i]), 1000.0) for i in range(6)]
+    write_model(tmp / "most" / "model", most)
+    assert modelcheck.collapsed(tmp / "most" / "model") == [f"p{i:02d}.jpg" for i in range(4, 10)]
+    far = [(np.eye(3), np.array([0.0, 0.0, 5.0 + i % 3]), 1000.0) for i in range(11)] + [(np.eye(3), np.array([0.0, 0.0, 400.0]), 1000.0)]
+    write_model(tmp / "far" / "model", far)
+    assert modelcheck.collapsed(tmp / "far" / "model") == [], "a photo from far off isn't the usual"
     write_model(tmp / "apart" / "model", flat[:10])
     m = tmp / "apart" / "model"
-    assert modelcheck.collapsed((m / "images.bin").read_bytes(), (m / "points3D.bin").read_bytes()) == [], "none, all at their depths"
+    assert modelcheck.collapsed(m) == [], "none, all at their depths"
     print("collapsed cameras OK")
 print("ALL MODEL CHECK TESTS PASSED")

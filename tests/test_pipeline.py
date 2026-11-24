@@ -1260,6 +1260,36 @@ r, how, fell, calls, logged, before = consistent(SPLIT, None, mapper="incrementa
 assert not calls and r == 179 and before is None and "dropped" not in how["consistent"], "the incremental mapper's own: left whole"
 print("only consistent cameras kept OK")
 
+# cameras placed collapsed, from any mapper: dropped, their photos placed again against the rest; any collapsing again left out
+looks, dropped, rest = [], [], []
+saved = pipeline._collapsed, pipeline._drop_cameras, pipeline._place_rest
+pipeline._drop_cameras = lambda model, names, work, log, what: dropped.append((what, names)) or True
+pipeline._place_rest = lambda db, model, work, log, tracker, placed, n: rest.append(placed) or (model, placed + 70)
+import modelcheck  # noqa: E402
+saved_judge, saved_read = pipeline._disagreeing, modelcheck.read_model
+modelcheck.read_model = lambda model: ({f"yt_a_{i:03d}.jpg": {} for i in range(40)} | {"v1.jpg": {}, "v2.jpg": {}}, [], 0.0)
+pipeline._disagreeing = lambda db, model, names, untrusted: [n for n in names if n.endswith(("_001.jpg", "_002.jpg"))]
+try:
+    for found, case in ((([f"yt_a_{i:03d}.jpg" for i in range(72)], []), "block"), ((["v1.jpg", "v2.jpg"], ["v2.jpg"]), "again"), (([], []), "none")):
+        pipeline._collapsed = lambda model, log, found=list(found): found.pop(0) if found else []
+        dropped.clear(), rest.clear()
+        record, said = {}, []
+        m, r = pipeline._replace_collapsed(pathlib.Path("db"), pathlib.Path("sparse/0"), pathlib.Path("w"), said.append, Tracker([]),
+                                           151, 183, 6, record)
+        if case == "none":
+            assert (r, dropped, rest, record) == (151, [], [], {}), "none: nothing done"
+        elif case == "block":   # 40 of the 72 placed again, 2 of those off the model's turns: left out
+            assert [w for w, _ in dropped] == ["collapsed", "placed_again_off"] and dropped[1][1] == ["yt_a_001.jpg", "yt_a_002.jpg"], dropped
+            assert rest == [79] and r == 149 - 2 and len(record["placed_again"]) == 38 and "collapsed_again" not in record, (rest, r, record)
+            assert "dropped 72 camera(s) placed collapsed" in said[0] and "38 of them placed again in agreement" in said[-1], said
+        else:
+            assert [w for w, _ in dropped] == ["collapsed", "collapsed_again"] and record["collapsed_again"] == ["v2.jpg"] and r == 218, (dropped, r)
+            assert record["placed_again"] == ["v1.jpg", "v2.jpg"]
+finally:
+    pipeline._collapsed, pipeline._drop_cameras, pipeline._place_rest = saved
+    pipeline._disagreeing, modelcheck.read_model = saved_judge, saved_read
+print("collapsed cameras placed again OK")
+
 # --- which mapper: MAPPER where the image sets it, else the site's choice (the admin page's mesh.mapper), sent with jobs
 saved_mapper = pipeline.MAPPER
 try:

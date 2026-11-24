@@ -316,6 +316,13 @@ reconstruction is made from scratch instead. One that placed some photos collaps
 speck together, which the model check can't see) isn't made again this way, and the admin page counts it as needing
 its photos placed again.
 
+**Cameras placed collapsed.** COLMAP can place a block of photos (a video, say) shrunk with its points to a speck,
+which leaves every angle and reprojection error as it was. The model check fails a model with 3 or more such cameras,
+and after placing, any are dropped and their photos tried again against the rest of the model, keeping only those
+that then agree with it. The admin page counts
+the current meshes that have any (looked for once in each kept reconstruction), and *Place again the collapsed* remakes
+them from scratch, with old meshes.
+
 **A/B tests of COLMAP.** *Queue A/B tests of COLMAP* on the admin page meshes projects' photos with COLMAP 3.9.1 and
 4.2.1, one after the other on one machine (which goes first alternates from test to test), as machines' work after
 everyone's own and before meshes made again as theirs are old; nothing is meshed for the site. Empty, it queues the

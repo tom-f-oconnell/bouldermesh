@@ -13,8 +13,9 @@ each other the way their pairs say; one that doesn't, hasn't.
                           panoramic: the angle between the turn from one camera to the other in the model and the
                           nearer of the two their fundamental matrix allows through the model's lenses); odd_lenses
                           (focal length outside 0.3-6 of the picture's longer side, or the principal point over a
-                          quarter of it from the middle); untied (cameras seeing fewer than UNTIED of its points)
-    verdict(numbers)      {ok, failed: ["error", "pairs", "lenses"], why}, by THRESHOLDS
+                          quarter of it from the middle); untied (cameras seeing fewer than UNTIED of its points);
+                          collapsed (cameras whose points' median depth is under COLLAPSED_BELOW of the model's)
+    verdict(numbers)      {ok, failed: ["error", "pairs", "split", "lenses", "collapsed"], why}, by THRESHOLDS
     check(model, db)      the two together
     of_mesh(mesh_dir)     the same for a mesh that kept its reconstruction (reconstruction.py), any time later
     save(out_dir, check), load(mesh_dir)     check.json beside the mesh
@@ -34,7 +35,7 @@ import time
 from pathlib import Path
 
 FILE = "check.json"
-VERSION = 2     # 2: a model split into groups that disagree fails ("split")
+VERSION = 3     # 2: a model split into groups that disagree fails ("split"); 3: one with cameras placed collapsed fails
 MAX_IMAGE_ID = 2147483647   # COLMAP's pair_id is this times the smaller image id, plus the larger
 MIN_INLIERS = 20            # the pairs the mapper itself goes by (the app's min_num_matches)
 UNTIED = 15                 # a camera seeing fewer of the model's points than this isn't tied to it
@@ -42,6 +43,12 @@ UNTIED = 15                 # a camera seeing fewer of the model's points than t
 # mapper's last steps have held a few of 1e150 px and more among points otherwise a pixel or two off (atlas, Nov 15)
 ERR_MOST_PX = 1e4
 NUM_PARAMS = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8, 5: 8, 6: 12, 7: 5, 8: 4, 9: 5, 10: 12}     # by COLMAP's camera model id
+
+# A placed camera whose points' median depth is under this share of the model's median over its cameras: placed
+# collapsed, cameras and points shrunk together to a speck, which leaves every turn and reprojection as it was, so
+# nothing above sees it. Swing Dance Boulder's Nov 23 model placed its two longest videos so (72 cameras, each
+# under 1% of the model's median, against 0.36 or more on Nov 20), and OpenMVS's region of interest then shrank to them.
+COLLAPSED_BELOW = 0.02
 
 # From the mapper benchmark's models of four boulders, with the 3.9.1 baseline and seven other methods (hal's 29 models
 # and atlas's; experiments/mapper/incr/README.md, design.md). First guesses from few boulders, to be revisited.
@@ -68,12 +75,17 @@ THRESHOLDS = {
     # lenses that can't be real were 0-6% of a sound model's, and up to 21% of the others'
     "odd_lens_share": 0.2,
     "min_cameras": 10,
+    # cameras placed collapsed (collapsed_names()): a model with this many fails; fewer are only said (the pipeline drops
+    # any it has and places them again, _keep_consistent()). Swing Dance Boulder's Nov 23 model had 72; of 280 current
+    # meshes on Nov 24, 9 had any, 4 had 10% or more of their cameras so
+    "collapsed": 3,
 }
 
 
 def read_model(model: Path) -> tuple[dict[str, dict], list[float], float]:
-    """A binary COLMAP model's cameras by photo name ({R: world to camera, f, cx, cy, w, h, seen}), its points'
-    reprojection errors, and its mean track length. COLMAP 4's extra files (rigs.bin, frames.bin) aren't needed."""
+    """A binary COLMAP model's cameras by photo name ({R: world to camera, f, cx, cy, w, h, seen, depth: the median
+    depth of the points it sees, or None}), its points' reprojection errors, and its mean track length. COLMAP 4's extra
+    files (rigs.bin, frames.bin) aren't needed."""
     import numpy as np
     lenses = {}
     with open(model / "cameras.bin", "rb") as f:
@@ -82,6 +94,20 @@ def read_model(model: Path) -> tuple[dict[str, dict], list[float], float]:
             w, h = struct.unpack("<QQ", f.read(16))
             p = struct.unpack(f"<{NUM_PARAMS[mid]}d", f.read(8 * NUM_PARAMS[mid]))
             lenses[cid] = ((p[0], p[1], p[2]) if mid in (0, 2, 3) else ((p[0] + p[1]) / 2, p[2], p[3])) + (w, h)
+    errs, lens, ids, xyz = [], [], [], []
+    with open(model / "points3D.bin", "rb") as f:
+        for _ in range(struct.unpack("<Q", f.read(8))[0]):
+            pid, x, y, z = struct.unpack("<Q3d", f.read(32))
+            f.read(3)
+            errs.append(struct.unpack("<d", f.read(8))[0])
+            k = struct.unpack("<Q", f.read(8))[0]
+            f.read(8 * k)
+            lens.append(k)
+            ids.append(pid)
+            xyz.append((x, y, z))
+    ids_a, xyz_a = np.asarray(ids, np.int64), np.asarray(xyz, float).reshape(-1, 3)
+    order = np.argsort(ids_a)
+    ids_a, xyz_a = ids_a[order], xyz_a[order]
     cams = {}
     with open(model / "images.bin", "rb") as f:
         for _ in range(struct.unpack("<Q", f.read(8))[0]):
@@ -97,16 +123,12 @@ def read_model(model: Path) -> tuple[dict[str, dict], list[float], float]:
                           [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
             if v[8] not in lenses:
                 continue
+            seen = obs["p"][obs["p"] != -1]
+            at = np.minimum(np.searchsorted(ids_a, seen), max(len(ids_a) - 1, 0))
+            at = at[ids_a[at] == seen] if len(ids_a) else at[:0]
+            depth = float(np.median((xyz_a[at] @ R.T + np.asarray(v[5:8]))[:, 2])) if len(at) else None
             fl, cx, cy, wd, ht = lenses[v[8]]
-            cams[name.decode()] = {"R": R, "f": fl, "cx": cx, "cy": cy, "w": wd, "h": ht, "seen": int((obs["p"] != -1).sum())}
-    errs, lens = [], []
-    with open(model / "points3D.bin", "rb") as f:
-        for _ in range(struct.unpack("<Q", f.read(8))[0]):
-            f.read(8 + 24 + 3)
-            errs.append(struct.unpack("<d", f.read(8))[0])
-            k = struct.unpack("<Q", f.read(8))[0]
-            f.read(8 * k)
-            lens.append(k)
+            cams[name.decode()] = {"R": R, "f": fl, "cx": cx, "cy": cy, "w": wd, "h": ht, "seen": int(len(seen)), "depth": depth}
     return cams, errs, (sum(lens) / len(lens) if lens else 0.0)
 
 
@@ -189,7 +211,8 @@ def numbers_of(cams: dict[str, dict], errs, track: float, db: Path) -> dict:
             "err_p90": round(float(np.percentile(errs, 90)), 3) if len(errs) else None, "err_unread": unread,
             "pairs": len(ang), "pair_med_deg": round(float(np.median(ang)), 2) if ang else None,
             "pair_p90_deg": round(float(np.percentile(ang, 90)), 2) if ang else None,
-            "odd_lenses": int(odd), "untied": sum(1 for c in cams.values() if c.get("seen", UNTIED) < UNTIED)}
+            "odd_lenses": int(odd), "untied": sum(1 for c in cams.values() if c.get("seen", UNTIED) < UNTIED),
+            "collapsed": len(collapsed_names(cams)) if any("depth" in c for c in cams.values()) else None}
 
 
 def numbers(model: Path, db: Path) -> dict:
@@ -197,8 +220,8 @@ def numbers(model: Path, db: Path) -> dict:
 
 
 def verdict(n: dict, thresholds: dict = THRESHOLDS) -> dict:
-    """Whether a model's numbers pass: {ok, failed (of "error", "pairs", "split", "lenses"), why: the numbers in words, what
-    failed first}."""
+    """Whether a model's numbers pass: {ok, failed (of "error", "pairs", "split", "lenses", "collapsed"), why: the numbers
+    in words, what failed first}."""
     t = thresholds
     failed, said = [], []
     mean, p90 = n.get("err_mean"), n.get("err_p90")
@@ -234,6 +257,13 @@ def verdict(n: dict, thresholds: dict = THRESHOLDS) -> dict:
         said.append((True, f"{odd} of its {placed} lenses can't be real"))
     elif odd:
         said.append((False, f"{odd} odd lens{'es' if odd != 1 else ''}"))
+    gone = n.get("collapsed") or 0
+    if gone:
+        bad = gone >= t["collapsed"]
+        if bad:
+            failed.append("collapsed")
+        said.append((bad, f"{gone} of its cameras {'are' if gone != 1 else 'is'} placed collapsed, shrunk with their points to a "
+                     f"speck (under {COLLAPSED_BELOW:.0%} of its usual depth)"))
     return {"ok": not failed, "failed": failed, "why": "; ".join(s for _, s in sorted(said, key=lambda x: not x[0]))}
 
 
@@ -277,56 +307,39 @@ def of_mesh(mesh_dir: Path, write: bool = False) -> dict | None:
     return c
 
 
-# A placed camera whose points' median depth is under this share of the model's median over its cameras: placed
-# collapsed, cameras and points shrunk together to a speck, which leaves every turn and reprojection as it was, so
-# nothing above sees it. Swing Dance Boulder's Nov 23 model placed its two longest videos so (72 cameras, each
-# under 1% of the model's median, against 0.36 or more on Nov 20), and OpenMVS's region of interest then shrank to them.
-COLLAPSED_BELOW = 0.02
+COLLAPSED_ABOVE_LEAST = 0.2    # the share of cameras above a collapsed block's gap in depth for theirs to be the usual
 
 
-def collapsed(images_bin: bytes, points_bin: bytes) -> list[str]:
-    """The photos a binary COLMAP model placed collapsed (COLLAPSED_BELOW), from its images.bin and points3D.bin."""
-    import numpy as np
-    n, o = struct.unpack_from("<Q", points_bin, 0)[0], 8
-    ids, xyz = np.empty(n, np.int64), np.empty((n, 3))
-    for k in range(n):
-        ids[k] = struct.unpack_from("<Q", points_bin, o)[0]
-        xyz[k] = struct.unpack_from("<3d", points_bin, o + 8)
-        o += 51 + 8 * struct.unpack_from("<Q", points_bin, o + 43)[0]
-    order = np.argsort(ids)
-    ids, xyz = ids[order], xyz[order]
-    depths: dict[str, float] = {}
-    m, o = struct.unpack_from("<Q", images_bin, 0)[0], 8
-    for _ in range(m):
-        w, x, y, z = struct.unpack_from("<4d", images_bin, o + 4)
-        t = np.array(struct.unpack_from("<3d", images_bin, o + 36))
-        o += 64
-        end = images_bin.index(b"\0", o)
-        name, o = images_bin[o:end].decode(), end + 1
-        k = struct.unpack_from("<Q", images_bin, o)[0]
-        obs = np.frombuffer(images_bin, np.dtype([("x", "<f8"), ("y", "<f8"), ("p", "<i8")]), count=k, offset=o + 8)
-        o += 8 + 24 * k
-        p = obs["p"][obs["p"] != -1]
-        j = np.minimum(np.searchsorted(ids, p), max(len(ids) - 1, 0))
-        p = j[ids[j] == p] if len(ids) else j[:0]
-        if not len(p):
-            continue
-        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
-        depths[name] = float(np.median((xyz[p] @ R.T + t)[:, 2]))
+def collapsed_names(cams: dict[str, dict]) -> list[str]:
+    """The cameras read_model() read that were placed collapsed: their depth under COLLAPSED_BELOW of the usual. That's
+    the median over the cameras, or, where depths fall apart by more than 1 / COLLAPSED_BELOW at one place with at least
+    COLLAPSED_ABOVE_LEAST of the cameras above it, theirs: a block collapsed may hold half its cameras (Swing Dance
+    Boulder's held 72 of 151), and one photo taken from far off (a long lens from across a valley) mustn't set it."""
+    depths = {n: c["depth"] for n, c in cams.items() if c.get("depth") is not None and c["depth"] > 0}
     if len(depths) < 3:
         return []
-    usual = float(np.median(list(depths.values())))
+    ds = sorted(depths.values())
+    usual = ds[len(ds) // 2]
+    gap, at = max((math.log10(ds[i + 1] / ds[i]), i) for i in range(len(ds) - 1))
+    if gap >= -math.log10(COLLAPSED_BELOW) and len(ds) - at - 1 >= COLLAPSED_ABOVE_LEAST * len(ds):
+        above = ds[at + 1:]
+        usual = above[len(above) // 2]
     return sorted(n for n, d in depths.items() if d < COLLAPSED_BELOW * usual)
 
 
+def collapsed(model: Path) -> list[str]:
+    """The photos a binary COLMAP model placed collapsed (COLLAPSED_BELOW)."""
+    return collapsed_names(read_model(Path(model))[0])
+
+
 def collapsed_kept(mesh_dir: Path) -> list[str] | None:
-    """collapsed() of a mesh's kept reconstruction (reconstruction.tar.gz), read from it as it is; None if it kept none."""
+    """collapsed() of a mesh's kept reconstruction (reconstruction.tar.gz), its model read out of it; None if it kept none."""
     import tarfile
     import reconstruction
     path = mesh_dir / reconstruction.FILE
     if not path.is_file():
         return None
-    with tarfile.open(path, "r:gz") as tar:
-        return collapsed(tar.extractfile("model/images.bin").read(), tar.extractfile("model/points3D.bin").read())
+    with tempfile.TemporaryDirectory() as d, tarfile.open(path, "r:gz") as tar:
+        for name in ("cameras.bin", "images.bin", "points3D.bin"):
+            (Path(d) / name).write_bytes(tar.extractfile(f"model/{name}").read())
+        return collapsed(Path(d))

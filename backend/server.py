@@ -4097,6 +4097,36 @@ def roi_existing_meshes() -> int:
     return n
 
 
+COLLAPSED_CHECK = 1     # the version of the look for cameras placed collapsed kept in inputs.json ("collapsed")
+
+
+def collapsed_existing_meshes() -> int:
+    """Look in each current mesh's kept reconstruction, once, for cameras placed collapsed (modelcheck.collapsed()),
+    keeping what's found in its inputs.json ("collapsed": {v, n, names}), for the admin page's tier of them. At low
+    priority: a few hundred models at under a second each. Returns how many were looked in."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    n = 0
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
+        d = MESHES / m["id"]
+        rec = meshinputs.load(d)
+        if rec is None or (rec.get("collapsed") or {}).get("v") == COLLAPSED_CHECK or not (d / reconstruction.FILE).is_file():
+            continue
+        try:
+            gone = modelcheck.collapsed_kept(d) or []
+        except Exception as e:  # noqa: BLE001 - only this mesh's record
+            print(f"{m['id']}: looking for cameras placed collapsed failed ({type(e).__name__}: {e})", flush=True)
+            continue
+        try:
+            meshinputs.save(d, {**(meshinputs.load(d) or rec), "collapsed": {"v": COLLAPSED_CHECK, "n": len(gone), "names": gone[:20]}})
+            n += 1
+        except OSError as e:
+            print(f"{m['id']}: keeping whether it placed photos collapsed failed ({e})", flush=True)
+    if n:
+        tiers_changed()
+        print(f"looked for cameras placed collapsed in {n} mesh{'' if n == 1 else 'es'}' kept reconstructions", flush=True)
+    return n
+
+
 def roi_order(share: float | None) -> tuple:
     """Where a possibly cropped mesh goes in remaking them: those cut most first (over roicrop.URGENT), then those
     whose cut isn't known, then the rest, most cut first."""
@@ -4108,7 +4138,7 @@ TIERS_EVERY = 600       # seconds mesh_tiers() is kept before it's worked out ag
 _tiers: dict = {"at": 0.0, "report": None}
 # remade by the admin page's buttons at low priority, after old meshes (old_rerun 1) and YouTube's re-searches (2):
 # old_rerun's value for each, the order _claim_old() takes them in
-REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4, "roi": 3}
+REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4, "roi": 3, "collapsed": 1}
 ROI_URGENT_RANK = 1     # a mesh OpenMVS cut over roicrop.URGENT of goes with old meshes
 
 
@@ -4166,11 +4196,13 @@ def mesh_tiers(fresh: bool = False) -> dict:
         {pipeline_version, texture_version, meshes, rules, pipeline, fallback: {n, why: {why: n}}, texture,
         texture_unkept, new_data, new_photos, grouping, roi (possibly cropped by OpenMVS: roicrop.py), roi_urgent,
         roi_flagged, roi_unknown, roi_replace (cropped, whose cameras couldn't be taken as they were: run_kept()),
-        ids: {pipeline, fallback, texture, new_data, grouping, roi (those cut most first), roi_replace}}.
+        collapsed (that placed photos collapsed: collapsed_existing_meshes()), ids: {pipeline, fallback, texture,
+        new_data, grouping, roi (those cut most first), roi_replace, collapsed}}.
     """
     if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
         return _tiers["report"]
-    ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier()}
+    ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier(),
+                                 "collapsed": []}
     rules, unkept, why, photos = 0, 0, collections.Counter(), 0
     cropped: list[tuple[str, float | None]] = []
     replace: list[str] = []     # cropped, but not to be made from their cameras as they were (run_kept())
@@ -4186,7 +4218,9 @@ def mesh_tiers(fresh: bool = False) -> dict:
             ids["fallback"].append(m["id"])
             why[pipeline.fallback_tier(made)] += 1
         roi = rec.get("roi") or {}
-        if roi.get("affected") and roi.get("kept") in ("unusable", "failed"):
+        if (rec.get("collapsed") or {}).get("n"):     # placed again from scratch: not from its cameras, whatever else
+            ids["collapsed"].append(m["id"])
+        elif roi.get("affected") and roi.get("kept") in ("unusable", "failed"):
             replace.append(m["id"])
         elif roi.get("affected") and roi.get("kept") != "made":
             cropped.append((m["id"], roi.get("share")))
@@ -4208,7 +4242,7 @@ def mesh_tiers(fresh: bool = False) -> dict:
     adds = adds_summary()
     report = {"roi": len(cropped), "roi_urgent": sum(s is not None and s > roicrop.URGENT for s in shares),
               "roi_flagged": sum(s is not None and s > roicrop.FLAG for s in shares), "roi_unknown": shares.count(None),
-              "roi_replace": len(replace),
+              "roi_replace": len(replace), "collapsed": len(ids["collapsed"]),
               "pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
@@ -4278,7 +4312,7 @@ def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
     out = {"queued": 0, "busy": 0, "not_in_area": 0}
     note = {"pipeline": "made by an older pipeline", "fallback": "made from the CPU's SIFT without GPU SIFT's being tried or judged",
             "new_data": "it has new photos", "grouping": "meshed on its own, on a boulder with more problems",
-            "roi": "OpenMVS cropped it to a region it guessed"}[tier]
+            "roi": "OpenMVS cropped it to a region it guessed", "collapsed": "it placed some photos collapsed, shrunk to a speck"}[tier]
     free = "ci.status IN ('done','skipped','failed') AND ci.redo IS NULL AND ci.blocked IS NULL"
     for mid in dict.fromkeys(mids):
         rec = meshinputs.load(MESHES / mid) or {}
@@ -15221,7 +15255,7 @@ def admin_abtest(body: dict) -> dict:
 
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
-    {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi", "add": true to add new photos to meshes' models rather than
+    {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi" | "collapsed", "add": true to add new photos to meshes' models rather than
     remake}."""
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
@@ -15297,8 +15331,8 @@ def main() -> None:
     threading.Thread(target=rest_existing_meshes, daemon=True).start()
     threading.Thread(target=timings_existing_meshes, daemon=True).start()
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
-    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes(), roi_existing_meshes()), daemon=True,
-                     name="inputs-backfill").start()
+    threading.Thread(target=lambda: (inputs_existing_meshes(), pipeline_existing_meshes(), roi_existing_meshes(),
+                                     collapsed_existing_meshes()), daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
     carried = carry_sets_existing()
     if carried:

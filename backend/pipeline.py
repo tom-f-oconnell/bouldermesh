@@ -1106,7 +1106,9 @@ def matched_photos(db: Path, least: int = 20) -> int:
 
 def placing_summary(model: Path | None, registered: int, db: Path, log: Log) -> dict:
     """What a placing came to, to judge it and to compare two: {placed, matched (photos with verified matches, or
-    None), ok (its model's own check, or None if it couldn't be made), why (the check's words)}."""
+    None), ok (its model's own check, or None if it couldn't be made), why (the check's words)}. Cameras placed
+    collapsed don't fail it here: whichever placing is kept, they're placed again (_replace_collapsed()), for far
+    less than placing every photo again from the CPU's SIFT."""
     out = {"placed": registered if model is not None else 0, "matched": None, "ok": None, "why": None}
     try:
         out["matched"] = matched_photos(db)
@@ -1118,7 +1120,7 @@ def placing_summary(model: Path | None, registered: int, db: Path, log: Log) -> 
     try:
         import modelcheck
         c = modelcheck.check(model, db)
-        out["ok"], out["why"] = bool(c.get("ok")), c.get("why")
+        out["ok"], out["why"] = not [f for f in c.get("failed") or [] if f != "collapsed"], c.get("why")
     except Exception as e:  # noqa: BLE001
         log(f"GPU SIFT: the model couldn't be checked ({type(e).__name__}: {e})")
     return out
@@ -1185,14 +1187,15 @@ def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log,
     one with more consistent cameras is kept. Then, where the global mapper's placing stands, the cameras outside the
     largest agreeing group are dropped (image_deleter), so that no surface is made from them; an incremental placing
     is left whole, as every mesh was made before Nov 15 (the share agreeing is no measure of an incremental model:
-    experiments/mapper/global-mapper-issues.md). Said in the log, in mapper.json ("consistent") and, for a
-    placing done again, in fallbacks.json. Returns the model and how many photos it places."""
+    experiments/mapper/global-mapper-issues.md). From any mapper, cameras placed collapsed are placed again
+    (_replace_collapsed()). Said in the log, in mapper.json ("consistent") and, for a placing done again, in
+    fallbacks.json. Returns the model and how many photos it places."""
     how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
     try:
         j = _judge_placing(model, db)
     except Exception as e:  # noqa: BLE001 - a check that can't be made decides nothing
         log(f"placing not judged ({type(e).__name__}: {e})")
-        return model, registered
+        return _replace_collapsed(db, model, work, log, tracker, registered, n_images, min_registered, {})
     log(f"placing: {j['why']}")
     record = {"first": {k: j[k] for k in ("ok", "failed", "share", "placed", "keep")}, "mapper": how.get("mapper")}
     if how.get("mapper") == "global" and not j["ok"] and {"pairs", "split"} & set(j["failed"]):
@@ -1251,8 +1254,101 @@ def _keep_consistent(db: Path, images: Path, sparse: Path, work: Path, log: Log,
                 f"{modelcheck_agree_deg():g} degrees off it): {', '.join(j['out'][:8])}{'...' if len(j['out']) > 8 else ''}")
         except RuntimeError as e:
             log(f"couldn't drop the cameras that disagree ({e}); meshing from all of them")
+    if model is not None:
+        model, registered = _replace_collapsed(db, model, work, log, tracker, registered, n_images, min_registered, record)
     how = json.loads((work / MAPPER_FILE).read_text()) if (work / MAPPER_FILE).exists() else {}
     (work / MAPPER_FILE).write_text(json.dumps({**how, "consistent": record}, indent=1))
+    return model, registered
+
+
+def _collapsed(model: Path, log: Log) -> list[str]:
+    """modelcheck.collapsed() of a model, or none where it can't be read (said in the log)."""
+    try:
+        import modelcheck
+        return modelcheck.collapsed(model)
+    except Exception as e:  # noqa: BLE001 - not looked for, so none dropped
+        log(f"collapsed cameras not looked for ({type(e).__name__}: {e})")
+        return []
+
+
+def _drop_cameras(model: Path, names: list[str], work: Path, log: Log, what: str) -> bool:
+    """Take these photos' cameras out of a model (COLMAP's image_deleter), the model before kept in work/. Whether it did."""
+    listed = work / f"{what}.txt"
+    listed.write_text("\n".join(names) + "\n")
+    out = work / f"without_{what}"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir()
+    try:
+        _run([COLMAP, "image_deleter", "--input_path", str(model), "--output_path", str(out), "--image_names_path", str(listed)], work, log)
+    except RuntimeError as e:
+        log(f"couldn't drop the {what} cameras ({e}); meshing from all of them")
+        return False
+    before = work / f"before_{what}_{model.name}"
+    shutil.rmtree(before, ignore_errors=True)
+    model.rename(before)
+    out.rename(model)
+    return True
+
+
+REPLACED_PAIRS_LEAST = 3   # verified pairs with the cameras kept that a photo placed again needs to be judged by
+
+
+def _disagreeing(db: Path, model: Path, names: list[str], untrusted: set[str]) -> list[str]:
+    """Of these cameras, those whose turns don't agree with the model's others (all but untrusted): under
+    REPLACED_PAIRS_LEAST verified pairs with them, or those pairs a median over the check's pair_med_deg off the model."""
+    import statistics
+    import modelcheck
+    cams = modelcheck.read_model(model)[0]
+    per: dict[str, list[float]] = {n: [] for n in names if n in cams}
+    for a, b, ang in modelcheck.pair_list(cams, db):
+        if a in per and b not in untrusted:
+            per[a].append(ang)
+        if b in per and a not in untrusted:
+            per[b].append(ang)
+    most = modelcheck.THRESHOLDS["pair_med_deg"]
+    return sorted(n for n, v in per.items() if len(v) < REPLACED_PAIRS_LEAST or statistics.median(v) > most)
+
+
+def _replace_collapsed(db: Path, model: Path, work: Path, log: Log, tracker: Tracker, registered: int, n_images: int,
+                       min_registered: int, record: dict) -> tuple[Path, int]:
+    """Cameras placed collapsed (modelcheck.collapsed(): a block shrunk with its points to a speck, which no turn or
+    reprojection error shows: Swing Dance Boulder's Nov 23 model had 72) are dropped from any placing, and their photos
+    tried again against the rest of the model (_place_rest()), from its points at their true depth. Of those it places,
+    only the ones whose turns agree with the cameras kept are left in (_disagreeing()): on Swing Dance, 1 of the 32 it
+    placed again (the others 14-130 degrees off their pairs); any collapsing again are left out too. Said in the log
+    and in the record ("collapsed", "placed_again", "collapsed_again"). The model and how many photos it places."""
+    gone = _collapsed(model, log)
+    if not gone or not _drop_cameras(model, gone, work, log, "collapsed"):
+        return model, registered
+    registered -= len(gone)
+    record["collapsed"] = gone
+    log(f"dropped {len(gone)} camera(s) placed collapsed, shrunk with their points to a speck: "
+        f"{', '.join(gone[:8])}{'...' if len(gone) > 8 else ''}; placing them again against the rest")
+    if min_registered <= registered < n_images:
+        before = registered
+        model, registered = _place_rest(db, model, work, log, tracker, registered, n_images)
+        if registered > before:
+            try:
+                import modelcheck
+                back = [n for n in gone if n in modelcheck.read_model(model)[0]]
+                off = _disagreeing(db, model, back, set(gone))
+            except Exception as e:  # noqa: BLE001 - then none of them is trusted
+                log(f"the photos placed again couldn't be judged ({type(e).__name__}: {e}): leaving them out")
+                back, off = [], None
+            if off is None:     # the model as it was with them dropped, which _place_rest() kept aside
+                shutil.rmtree(model, ignore_errors=True)
+                (work / f"mapper_{model.name}").rename(model)
+                registered = before
+            elif off and _drop_cameras(model, off, work, log, "placed_again_off"):
+                registered -= len(off)
+            record["placed_again"] = [n for n in back if n not in (off or [])]
+            log(f"{len(record['placed_again'])} of them placed again in agreement with the rest"
+                + (f"; {len(off)} left out, their turns off the model's" if off else ""))
+    again = _collapsed(model, log)
+    if again and _drop_cameras(model, again, work, log, "collapsed_again"):
+        registered -= len(again)
+        record["collapsed_again"] = again
+        log(f"{len(again)} of them collapsed again, and are left out")
     return model, registered
 
 
