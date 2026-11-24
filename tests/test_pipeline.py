@@ -57,6 +57,8 @@ w = pipeline._geometric(t1, passes=1)       # GEOMETRIC_ITERS: one pass is the w
 w("Geometric-consistent estimated depth-maps 33 (50.00%, 9s, ETA 9s)...")
 assert abs(t1.snapshot()["steps"][0]["frac"] - 0.65) < 1e-6, t1.snapshot()
 assert pipeline.MVS24_DENSIFY[-2:] == ["--geometric-iters", "1"], pipeline.MVS24_DENSIFY
+# no region of interest guessed, so nothing of the rock is cropped (as in 2.3)
+assert pipeline.MVS24_DENSIFY[:2] == ["--estimate-roi", "0"], pipeline.MVS24_DENSIFY
 
 w = pipeline._phases(t, "mesh", (r"Points inserted \d+ \(([\d.]+)%", 0, 0.5), (r"Points weighted \d+ \(([\d.]+)%", 0.5, 0.9))
 w("Points inserted 600000 (50.00%, 3s, ETA 3s)...")

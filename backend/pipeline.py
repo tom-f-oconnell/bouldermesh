@@ -177,8 +177,12 @@ def gpu_choice(allowed: bool = True) -> tuple[bool, str]:
 # one geometric-consistency pass over the depth maps where both make two (Tom's yes, Nov 15): in the mapper benchmark
 # ("as23g1") the dense step went from 161 to 101 s on Drifter and 66 to 52 s on 31de, with the surface as close to
 # two passes' as two runs of two passes are to each other, and the points within 2%.
+# 2.4 also guesses a region of interest from the cameras and sparse points (--estimate-roi 1.1), and DensifyPointCloud
+# and ReconstructMesh then crop to it, where 2.3 kept every point. From photos scattered around a boulder, that guess can
+# be a sliver: on Swing Dance Boulder (Nov 23) it was 0.1 x 0.26 x 5 and cut 93% of the dense points, leaving 15,757
+# faces where the mesh before had 1.05M. So it's off, as in 2.3; pieces apart from the rock are hidden by meshclean.py.
 GEOMETRIC_ITERS = 1
-MVS24_DENSIFY = ["--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7",
+MVS24_DENSIFY = ["--estimate-roi", "0", "--fusion-filter", "1", "--number-views-fuse", "3", "--postprocess-dmaps", "7",
                  "--geometric-iters", str(GEOMETRIC_ITERS)]
 MVS24_MESH = ["--min-point-distance", "2.5"]
 
