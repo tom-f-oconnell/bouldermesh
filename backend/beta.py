@@ -393,15 +393,25 @@ def holds(found: dict[str, list[dict]], radius: float, ground: float | None = No
         near["_ps"].append(p)
         near["_p"] = np.mean(near["_ps"], axis=0)
         near["contacts"].append({"limb": limb, "t0": c["t0"], "t1": c["t1"]})
-    hands = [(c["t0"], c["t1"], c["limb"], i) for i, g in enumerate(groups) for c in g["contacts"] if LIMBS[c["limb"]][0] == "hand"]
+    given = roles([g["contacts"] for g in groups])
+    return [{"id": i, "role": given[i], "p": [round(float(x), 6) for x in g["_p"]], "contacts": g["contacts"]} for i, g in enumerate(groups)]
+
+
+def roles(held: list[list[dict]]) -> list[str]:
+    """Each hold's role, from when each hand and foot held it: each hand's first hold is a start hold, each hand's
+    last a finish hold (a start hold stays one), other hands' holds hand holds, and those only feet held foot holds.
+
+    Args:
+        held: each hold's contacts, [{limb, t0, t1}].
+    """
+    hands = [(c["t0"], c["t1"], c["limb"], i) for i, cs in enumerate(held) for c in cs if LIMBS[c["limb"]][0] == "hand"]
     first = {min((x for x in hands if x[2] == limb), default=None) for limb in ("lh", "rh")} - {None}
     last = {max((x for x in hands if x[2] == limb), key=lambda x: x[1], default=None) for limb in ("lh", "rh")} - {None}
     starts, finishes = {x[3] for x in first}, {x[3] for x in last}
     out = []
-    for i, g in enumerate(groups):
-        handed = any(LIMBS[c["limb"]][0] == "hand" for c in g["contacts"])
-        role = "start" if i in starts else "finish" if i in finishes else "hand" if handed else "foot"
-        out.append({"id": i, "role": role, "p": [round(float(x), 6) for x in g["_p"]], "contacts": g["contacts"]})
+    for i, cs in enumerate(held):
+        handed = any(LIMBS[c["limb"]][0] == "hand" for c in cs)
+        out.append("start" if i in starts else "finish" if i in finishes else "hand" if handed else "foot")
     return out
 
 
@@ -1051,9 +1061,14 @@ def visible(sets: list[dict], user: str | None = None, every: bool = False) -> l
 
 
 def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | None = None, owner: str | None = None,
-            shared: bool = True) -> dict:
+            shared: bool = True, found: dict | None = None) -> dict:
     """Add a set of beta to a mesh: blank, or a copy of another of its sets ({"set": id}) or of the holds a video's
     climber was found to use ({"video": its url or tag}).
+
+    Args:
+        found: the mesh's beta as it's shown (its record, with the holds off their climbs' lines marked off and the
+            rest's roles as the lines give them: betalines.shown()), to copy a video's holds as they're seen; else as
+            they were found.
 
     Returns:
         The set made.
@@ -1075,10 +1090,10 @@ def new_set(mesh_dir: Path, name=None, climb=None, author=None, source: dict | N
         holds, came, like = [dict(h) for h in other["holds"]], {"set": other["id"]}, f"{other['name']} (copy)"
         climb = climb if climb is not None else other.get("climb")
     elif isinstance(source, dict) and source.get("video"):
-        video = next((v for v in (load(mesh_dir) or {}).get("videos", []) if source["video"] in (v.get("url"), v.get("tag"))), None)
+        video = next((v for v in (found or load(mesh_dir) or {}).get("videos", []) if source["video"] in (v.get("url"), v.get("tag"))), None)
         if video is None:
             raise ValueError("there's no such video's beta to copy")
-        holds = _checked([{"p": h["p"], "role": h.get("role")} for h in video.get("holds") or [] if h.get("role") in ROLES])
+        holds = _checked([{"p": h["p"], "role": h.get("role")} for h in video.get("holds") or [] if h.get("role") in ROLES and not h.get("off")])
         came, like = {"video": video.get("url")}, f"From {video.get('title') or 'a video'}"
     taken = {s["name"] for s in sets}
     base = _text(name, SET_NAME_MAX) or _text(like, SET_NAME_MAX) or "Beta"

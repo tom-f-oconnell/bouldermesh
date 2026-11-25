@@ -121,6 +121,50 @@ near_top = np.array([[1.1, y, 0] for y in np.linspace(2.5, 4, 16)])
 at = bl.label_at(line, [near_top])
 assert 12 <= at <= 16, f"by its lower part, the other line being by its upper: {at}"
 
+# ---- holds by the lines: those further than a reach from their climb's line are off, and the rest's roles given again
+held = lambda limb, t0, t1: {"limb": limb, "t0": t0, "t1": t1}  # noqa: E731
+found_holds = [
+    {"id": 0, "role": "start", "p": [3.4, 0.4, 0], "contacts": [held("lh", 0, 1), held("rh", 0, 1)]},     # a touch of the rock, walking in
+    {"id": 1, "role": "hand", "p": [0.8, 0.7, 0], "contacts": [held("lh", 5, 8)]},
+    {"id": 2, "role": "hand", "p": [1.3, 0.9, 0], "contacts": [held("rh", 5, 9)]},
+    {"id": 3, "role": "hand", "p": [0.9, 2.0, 0], "contacts": [held("lh", 9, 14), held("rf", 16, 18)]},
+    {"id": 4, "role": "hand", "p": [1.2, 3.3, 0], "contacts": [held("rh", 14, 18)]},
+    {"id": 5, "role": "hand", "p": [1.0, 3.5, 0], "contacts": [held("lh", 15, 18)]},
+    {"id": 6, "role": "foot", "p": [1.1, 0.3, 0], "contacts": [held("lf", 5, 9)]},
+    {"id": 7, "role": "finish", "p": [3.5, 3.0, 0], "contacts": [held("lh", 30, 31), held("rh", 30, 31)]},  # walking off the top
+    {"id": 8, "role": "foot", "p": [3.0, 0.2, 0], "contacts": [held("rf", 0, 2)]},
+    {"id": 9, "role": "foot", "p": [0.9, 1.2, 0], "contacts": [held("rf", 9, 13)]},
+    {"id": 10, "role": "foot", "p": [1.1, 2.4, 0], "contacts": [held("lf", 14, 18)]}]
+up_one = np.array([[1.0, y, 0.0] for y in np.linspace(0.5, 3.5, 31)])
+with_holds = [{"url": "a1", "holds": found_holds}, {"url": "a2", "holds": [dict(found_holds[0], id=0), dict(found_holds[3], id=1, role="finish")]},
+              {"url": "none", "holds": []}, {"url": "both", "holds": [dict(found_holds[0], id=0), dict(found_holds[8], id=1)]}]
+by = {"A": ["a1", "a2", "none", "both"], "B": ["both"], "C": []}
+agreed = {"A": {"p": up_one, "near": ["a1", "none"], "agree": 2}}
+got = bl.holds_by_lines(with_holds, by, agreed, 1.0)
+assert got["a1"] == {"off": [0, 7, 8], "roles": {"1": "start", "2": "start", "4": "finish", "5": "finish"}}, got["a1"]
+assert got["a2"] == {"off": [0], "roles": {"1": "start"}}, "a line two videos agree on speaks for the climb's others too"
+assert got["both"] == {"off": [0, 1], "roles": {}} and "none" not in got
+alone = bl.holds_by_lines(with_holds, by, {"A": {"p": up_one, "near": ["a1"], "agree": 1}}, 1.0)
+assert set(alone) == {"a1"}, "a line from one video says nothing of the others' holds"
+also_b = bl.holds_by_lines(with_holds, by, {**agreed, "B": {"p": up_one + [2.4, 0, 0], "near": ["both"], "agree": 1}}, 1.0)
+assert "both" not in also_b, "a video of two climbs keeps a hold near either's line (and its roles stay)"
+assert bl.holds_by_lines(with_holds, by, {}, 1.0) == {} and bl.holds_by_lines(with_holds, by, agreed, 9.0) == {}
+# a line checks itself: a third of its own videos' holds beyond a reach of it, and it says nothing of holds
+assert abs(bl.astray(with_holds, agreed, 1.0)["A"] - 3 / 11) < 1e-9 and bl.astray(with_holds, {"A": {**agreed["A"], "near": ["none"]}}, 1.0) == {"A": 0.0}
+short = {"A": {"p": up_one[:8], "near": ["a1"], "agree": 2}}        # a line that stops at 1.2 of the 3.5 its climb goes up
+assert bl.astray(with_holds, short, 1.0)["A"] > bl.ASTRAY and bl.holds_by_lines(with_holds, by, short, 1.0) == {}, "its top's holds aren't off"
+assert abs(bl._from_line([1.5, 2.0, 0], up_one) - 0.5) < 1e-9 and abs(bl._from_line([1.0, 4.5, 0], up_one) - 1.0) < 1e-9
+# a reach: in metres where the scale is known, within bounds of the rock's size; else a share of it
+assert bl.reach(4.0) == bl.REACH * 4.0 and abs(bl.reach(4.0, 1.0) - bl.REACH_M) < 1e-9 and abs(bl.reach(4.0, 2.5) - bl.REACH_M / 2.5) < 1e-9
+assert bl.reach(4.0, 0.1) == bl.REACH_BOUNDS[1] * 4.0 and bl.reach(4.0, 50.0) == bl.REACH_BOUNDS[0] * 4.0 and bl.reach(4.0, 0) == bl.reach(4.0)
+# a record as shown: off marked, roles given, what was found kept; nothing changed without lines for it
+rec = {"videos": [{"url": "a1", "holds": json.loads(json.dumps(found_holds))}, {"url": "zz", "holds": [dict(found_holds[1])]}]}
+seen = bl.shown(rec, {"holds": got})
+h = {x["id"]: x for x in seen["videos"][0]["holds"]}
+assert seen is rec and [i for i, x in h.items() if x.get("off")] == [0, 7, 8] and h[0]["role"] == "start", "an off hold keeps the role found"
+assert (h[1]["role"], h[1]["found_role"], h[5]["role"], h[3]["role"]) == ("start", "hand", "finish", "hand") and "found_role" not in h[3]
+assert seen["videos"][1]["holds"] == [found_holds[1]] and bl.shown(None, None) is None and bl.shown({"videos": [{"url": "a1"}]}, None) == {"videos": [{"url": "a1"}]}
+
 # ---- a mesh's: made from its beta and which videos are of which climb, kept, and known to be of them still
 with tempfile.TemporaryDirectory() as td:
     d = pathlib.Path(td)
@@ -141,6 +185,16 @@ with tempfile.TemporaryDirectory() as td:
     assert bl.key(bl.tracks({**record, "status": "queued", "progress": "video 2 of 3"}), of) == k, "the same tracks, written again"
     assert bl.key(bl.tracks(record), {**of, "D": ["off"]}) != k, "a video now of another climb"
     assert bl.key(bl.tracks({"videos": videos[:-2]}), of) != k, "a video's track gone"
+    assert bl.key(bl.tracks({"videos": [dict(videos[0], holds=found_holds), *videos[1:]]}), of) != k, "its holds found again"
+    assert bl.key(bl.tracks(record), of, "", 1.5) != k and bl.key(bl.tracks(record), of, "", 1.5) == bl.key(bl.tracks(record), of, "", 1.50001), "its scale"
+    # its holds by its lines, by its scale: the wall's size is 3.6, so a reach is 1.08 of its units unsized, 0.7 at 2.5 m a unit
+    some = [{"id": 0, "role": "finish", "p": [0.8, 0.7, 0], "contacts": [held("lh", 5, 8)]},
+            {"id": 1, "role": "start", "p": [2.0, 0.6, 0], "contacts": [held("lh", 0, 1), held("rh", 0, 1)]},
+            {"id": 2, "role": "foot", "p": [1.1, 0.6, 0], "contacts": [held("lf", 5, 8)]}, {"id": 3, "role": "foot", "p": [0.9, 1.5, 0], "contacts": [held("rf", 5, 8)]}]
+    beta.save(d, {"status": "done", "videos": [dict(videos[0], holds=some), *videos[1:]]})
+    assert bl.make(d, of)["holds"] == {}, "1.0 from the line: within a reach of 1.08, and its roles as found"
+    assert bl.make(d, of, metres_per_unit=2.5)["holds"] == {"a1": {"off": [1], "roles": {"0": "start"}}}, "and beyond one of 0.7"
+    beta.save(d, record)
     assert bl.key(bl.tracks(record), {c: list(reversed(u)) for c, u in reversed(list(of.items()))}) == k, "in whatever order"
     os.remove(d / bl.FILE)
     none = bl.make(d, {"A": []})
@@ -149,7 +203,7 @@ with tempfile.TemporaryDirectory() as td:
     os.remove(d / "mesh.ply")
     assert bl.make(d, {"A": ["x"]})["lines"] == {}, "with no tracks, the mesh isn't read"
     beta.save(d, record)
-    assert bl.make(d, of) == {"key": k, "lines": {}}, "no mesh to read: none, kept as made"
+    assert bl.make(d, of) == {"key": k, "lines": {}, "holds": {}}, "no mesh to read: none, kept as made"
 
 # ---- a piece its cleanup hides: a fragment in front of the wall's foot, which the start of a track lands on. Its
 # points there are dropped, and the line laid on the wall alone

@@ -47,8 +47,13 @@ def up(x: float) -> list:
     return [[[0.5 * k, x, 0.5 + 0.1 * k, 0.0] for k in range(31)]]
 
 
-def video(url: str, x: float) -> dict:
-    return {"url": url, "tag": url[-2:], "status": "done", "holds": [], "tracks": {}, "centre": up(x)}
+def video(url: str, x: float, holds=()) -> dict:
+    return {"url": url, "tag": url[-2:], "status": "done", "holds": list(holds), "tracks": {}, "centre": up(x)}
+
+
+def hold(i: int, role: str, p: list, *held) -> dict:
+    """A hold as beta.json has it; held: (limb, t0, t1)."""
+    return {"id": i, "role": role, "p": p, "contacts": [{"limb": limb, "t0": t0, "t1": t1} for limb, t0, t1 in held]}
 
 
 try:
@@ -70,9 +75,16 @@ try:
     assert not server.make_lines("aa11") and server._lines_wanted.empty()
 
     # ---- which videos are of which climb: those in its beta, by climb_videos, for the climbs the mesh is of
-    record = {"status": "done", "videos": [video("yt/a1", 1.0), video("yt/a2", 1.1), video("yt/b1", 3.0), video("yt/stray", 2.0)]}
+    # a1's holds: one touched 2.45 from its climb's line (walking in), one 0.85 from it, the rest on it
+    a1 = [hold(0, "start", [3.5, 0.5, 0], ("lh", 0, 1), ("rh", 0, 1)), hold(1, "hand", [1.0, 1.0, 0], ("lh", 3, 6)),
+          hold(2, "finish", [1.1, 3.0, 0], ("rh", 5, 9)), hold(3, "finish", [1.9, 2.0, 0], ("lh", 7, 9)),
+          hold(4, "foot", [0.9, 0.6, 0], ("lf", 3, 6)), hold(5, "foot", [1.1, 1.4, 0], ("rf", 5, 9)), hold(6, "foot", [1.0, 2.2, 0], ("lf", 7, 9))]
+    record = {"status": "done", "videos": [video("yt/a1", 1.0, a1), video("yt/a2", 1.1), video("yt/b1", 3.0), video("yt/stray", 2.0)]}
     beta_mod.save(d, record)
     assert server.lines_of("aa11", record) == {"ca": ["yt/a1", "yt/a2"], "cb": ["yt/b1"], "cc": []}
+    as_found = server.beta_shown("aa11", beta_mod.load(d))
+    assert as_found == record and server._lines_wanted.get_nowait() == "aa11", "no lines yet: its beta as found, and they're asked for"
+    server._lines_queued.clear()
 
     # ---- asked for before they're made: none yet, pending, and queued once however often asked
     first = server.mesh_lines("aa11")
@@ -90,6 +102,30 @@ try:
     a, b = got["lines"]
     assert all(abs(p[0] - 1.05) < 0.1 and abs(p[2]) < 0.01 for p in a["p"]) and all(abs(p[0] - 3) < 0.05 for p in b["p"])
     assert len(a["p"]) == len(a["n"]) and 0 < a["at"] < len(a["p"]) and min(p[1] for p in a["p"]) < 0.7 < 3.3 < max(p[1] for p in a["p"])
+
+    # ---- its beta as shown: the hold far from its climb's line off, and the roles of the rest from what's left
+    # (the wall's size is 3.6 and it has no scale, so a reach is 1.08 of its units)
+    seen = {h["id"]: h for h in server.beta_shown("aa11", beta_mod.load(d))["videos"][0]["holds"]}
+    assert [i for i, h in seen.items() if h.get("off")] == [0] and seen[0]["role"] == "start"
+    assert [(seen[i]["role"], seen[i].get("found_role")) for i in (1, 2, 3)] == [("start", "hand"), ("start", "finish"), ("finish", None)], seen
+    assert all("off" not in h and "found_role" not in h for h in beta_mod.load(d)["videos"][0]["holds"]), "beta.json itself is as found"
+    made = beta_mod.new_set(d, source={"video": "yt/a1"}, found=server.beta_shown("aa11", beta_mod.load(d)))
+    assert [(h["p"][0], h["role"]) for h in made["holds"]] == [(1.0, "start"), (1.1, "start"), (1.9, "finish"), (0.9, "foot"), (1.1, "foot"), (1.0, "foot")], \
+        "a copy of a video's holds: those shown"
+    assert len(beta_mod.new_set(d, source={"video": "yt/a1"})["holds"]) == 7, "or, not given what's shown, as found"
+    # its size found, 3 m a unit: a reach is 0.58 of its units, so the hold 0.85 from the line is off too, once made again
+    (d / "scale.json").write_text('{"status": "done", "metres_per_unit": 3.0}')
+    stale = server.beta_shown("aa11", beta_mod.load(d))
+    assert not any(h.get("off") for h in stale["videos"][0]["holds"]) and server._lines_wanted.get_nowait() == "aa11", "not by lines made for another scale"
+    server._lines_queued.clear()
+    assert server.mesh_lines("aa11")["pending"] and server._lines_wanted.get_nowait() == "aa11"
+    server._lines_queued.clear()
+    assert server.make_lines("aa11") and not server.mesh_lines("aa11")["pending"]
+    seen = {h["id"]: h for h in server.beta_shown("aa11", beta_mod.load(d))["videos"][0]["holds"]}
+    assert [i for i, h in seen.items() if h.get("off")] == [0, 3] and (seen[1]["role"], seen[2]["role"]) == ("start", "start")
+    assert next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")["astray"] == round(2 / 7, 3)
+    (d / "scale.json").unlink()
+    assert server.make_lines("aa11")
 
     # ---- beta.json written again with the same tracks (as it is every few seconds while more is found): still theirs
     time.sleep(0.02)

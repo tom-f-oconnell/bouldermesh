@@ -1448,6 +1448,63 @@ they were made from (the tracks, which videos are of which climb, the cleanup, a
 server knows when to make them again, and raising `VERSION` remakes them all. They need no mesh made
 again.
 
+**Holds by the line.** Measured on the 20 current meshes of several climbs with the most videos (83
+lines, 334 videos, 6,117 holds found), in metres by each mesh's size as found.
+
+- Hands are a median 0.77 m from their climber's centre while held, and feet 1.06 m.
+- Holds of the videos a line keeps near are a median 0.58 m from it, 75% within 0.98 m and 90% within
+  1.69 m. Counted by 0.25 m, they fall away to a flat tail from about 1.75 m (112 between 1.5 and
+  1.75 m, 79 in the next 0.25 m, then 38 to 50 in each out to 3 m). So a reach from the line is 1.75 m:
+  an arm or a leg, and how far a climber strays from where the videos agree. Nearer than that a hold is
+  more likely the climb's than not, and further, not.
+- 775 holds (13%) are further. Of those, 22% were over 1.75 m from their own climber's centre when
+  held (a ray past the rock), 48% were held by a climber who was off the line then (34% before or
+  between stretches on it, 14% after the last), and for 31% the centre wasn't followed at the time.
+- A line checks itself by its own videos' holds. For most lines few are beyond a reach (median 4%,
+  three quarters of lines under 13%). For 11 of 83 a third or more are. Those are of three kinds, which
+  can't be told apart from here: a line that stops short (Not So Thin Lizzy: 1.0 m of a climb whose
+  holds go 3.5 m up), a line where the climb isn't, and a climb whose holds are mostly stray (Saigon,
+  49%, where the line looks right). Such a line hides nothing. With that, 427 holds (7%) are hidden,
+  and 8 of 331 videos are left with none.
+- Roles are given again from the holds left (86 change: 57 hand holds become finish holds and 29 start
+  holds), as otherwise a video whose start or finish hold is hidden has none.
+
+The mesh's size as found is trusted for this within 8% to 50% of the rock's size. Hands' distances
+from their climbers' centres, in metres by it, ran from 0.47 to 1.26 m across the 20 boulders, so it's
+right to within about half as much again.
+
+**Start and finish holds: what goes wrong, by the tracks.** Beta gives each hand's first hold as a
+start hold and its last as a finish, over the first 150 s of a video, whatever the climber is doing.
+The videos weren't watched for this: causes are read from where each hold is by the line, and where
+its climber's centre was then, before and after. Over 236 videos of one climb that their line keeps
+near:
+
+- *Finish holds* (411). 4% are lower than the video's start holds, and 22% lower than one of the three
+  hand holds held before them. Of those 91: 38 were held after the climber was last on the line (off
+  the top, or walking off), 21 are over 1.75 m off the line, 7 were held when the climber had been over
+  1 m further up and was back down (after a fall, or on another go), and 16 are the last hold seen held
+  with the climber no further up after (the lower hand at the top, or last moves too quick to count as
+  held). In all, 45% of finish holds were held after the climber was last on the line. Some of those
+  are right, which is why a low finish isn't always wrong: the top is where the centre's ray leaves the
+  rock.
+- *Start holds* (392). 73% are in the first third of the line. 9% are over 1.75 m off it. 5% are in
+  videos that first show the climber over a third of the way up (a tenth of videos do). 2% are holds
+  the same hand then went back down from (a touch, or a reach, before setting off). 10% are further up
+  for no reason the tracks give. A video's two start holds are a median 0.23 m apart along the line,
+  and over 1 m apart in 9%.
+- *Between videos of a climb.* A video's start (the middle of its start holds) is a median 0.54 m from
+  the middle of its climb's other videos' starts, over 1 m for 29% and over 2 m for 12%. Its finish:
+  1.02 m, 50% and 21%. With holds off the line hidden and roles given again: starts 0.47 m, 25% and 8%;
+  finishes 0.78 m, 39% and 11%.
+
+Two rules were tried on the same videos and not applied, as each changes what a start or finish hold
+is:
+
+- A finish as each hand's hold furthest along the line, not its last: a median 0.60 m from the other
+  videos' finishes, 31% over 1 m and 3% over 2 m, with 11% lower than one of the three holds before.
+- No start holds for a video that first shows its climber over a third of the way up: 0.34 m, 15% and
+  2%, with 26 of the 236 videos left without a start.
+
 **Drawing them.** A line is a ribbon 1.6% of the rock's size across, flat against the rock by the
 normals, so that it thins when seen edge on, as paint would. It's drawn 3% of the rock's size nearer
 the camera than it is, along the line of sight, as holds' rings are: rock a little proud of a flat

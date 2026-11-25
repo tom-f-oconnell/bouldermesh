@@ -2543,9 +2543,10 @@ def heading_existing_meshes() -> None:
 
 # ---------------------------------------------------------------------------------------------- climbs' lines
 # A mesh's climbs' lines (betalines.py) are made from its beta's centre tracks, by which of its videos are of which
-# climb, on the pieces of it that its cleanup shows. They're made again when any of those changes: once its beta is
-# found, at startup (lines_existing_meshes()), and when they're asked for and aren't of what's there now
-# (mesh_lines()). One mesh at a time, on a thread of its own at the lowest CPU priority: each reads its whole mesh.
+# climb, on the pieces of it that its cleanup shows; with them, which of its videos' holds are off their climbs' lines
+# (by its scale), and the roles of the rest. They're made again when any of those changes: once its beta is found, at
+# startup (lines_existing_meshes()), and when they're asked for and aren't of what's there now (mesh_lines(),
+# beta_shown()). One mesh at a time, on a thread of its own at the lowest CPU priority: each reads its whole mesh.
 _lines_wanted: "queue.Queue[str]" = queue.Queue()
 _lines_queued: set[str] = set()
 _lines_lock = threading.Lock()
@@ -2578,7 +2579,7 @@ def _lines_key(mid: str, record: dict, of: dict[str, list[str]]) -> str:
     had = _lines_tracks.get(mid)
     if not had or had[0] != stamp:
         had = _lines_tracks[mid] = (stamp, betalines.tracks(record))
-    return betalines.key(had[1], of, betalines.shown_stamp(MESHES / mid))
+    return betalines.key(had[1], of, betalines.shown_stamp(MESHES / mid), metres_per_unit(mid))
 
 
 def want_lines(mid: str) -> None:
@@ -2597,10 +2598,10 @@ def make_lines(mid: str) -> bool:
     record = beta_mod.load(d)
     if not d.is_dir() or not record or record.get("status") == "running":
         return False
-    of = lines_of(mid, record)
-    if (betalines.load(d) or {}).get("key") == betalines.key(betalines.tracks(record), of, betalines.shown_stamp(d)):
+    of, scale = lines_of(mid, record), metres_per_unit(mid)
+    if (betalines.load(d) or {}).get("key") == betalines.key(betalines.tracks(record), of, betalines.shown_stamp(d), scale):
         return False
-    betalines.make(d, of, record)
+    betalines.make(d, of, record, scale)
     return True
 
 
@@ -2616,6 +2617,21 @@ def lines_worker() -> None:
             make_lines(mid)
         except Exception as e:  # never let the thread die
             print(f"climbs' lines for mesh {mid} failed ({type(e).__name__}: {e})", flush=True)
+
+
+def beta_shown(mid: str, record: dict | None) -> dict | None:
+    """A mesh's beta as it's shown (betalines.shown()): its record, changed in place, with the holds its climbs' lines
+    leave out marked off and the rest's roles as the lines give them. Only by lines made from that beta, its climbs'
+    videos, its cleanup and its scale as they are now: otherwise it's as found, and the lines are made again
+    (want_lines()) unless its beta is still being found."""
+    if not record or not record.get("videos"):
+        return record
+    kept = betalines.load(MESHES / mid)
+    if kept and kept.get("key") == _lines_key(mid, record, lines_of(mid, record)):
+        return betalines.shown(record, kept)
+    if record.get("status") != "running":
+        want_lines(mid)
+    return record
 
 
 def mesh_lines(mid: str) -> dict:
@@ -13486,7 +13502,7 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
-                found = beta_mod.load(MESHES / m[1])
+                found = beta_shown(m[1], beta_mod.load(MESHES / m[1]))     # its holds as its climbs' lines leave them
                 setting = settings().get("site.sources")
                 for v in (found or {}).get("videos", []):     # a video's frames, drawn on, are copies of it
                     access = policy.source_access(setting, video_entry(v["url"]))
@@ -14204,9 +14220,10 @@ class Handler(BaseHTTPRequestHandler):
                     seen = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), me["id"])
                     if not any(one["id"] == source["set"] for one in seen):
                         return self.send_json({"error": "there's no such set to copy"}, 400)
-                try:    # an account's set is its own, under its name
+                try:    # an account's set is its own, under its name; a video's holds are copied as they're shown
+                    seen = beta_shown(m[1], beta_mod.load(MESHES / m[1])) if isinstance(source, dict) and source.get("video") else None
                     return self.send_json(beta_mod.new_set(MESHES / m[1], body.get("name"), body.get("climb"), me["name"] or body.get("author"), source,
-                                                           owner=me["id"], shared=body.get("shared", True) is not False), 201)
+                                                           owner=me["id"], shared=body.get("shared", True) is not False, found=seen), 201)
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
@@ -15731,6 +15748,7 @@ def main() -> None:
     if not diagnostics.allow_tracing():     # so that py-spy can attach to it, from a stall's dump or inside its container
         print("diagnostics: couldn't let py-spy attach to this process; a thread dump will only have Python's side", flush=True)
     threading.Thread(target=stall_watch, daemon=True, name="stall-watch").start()
+    threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()   # storyboards' checks, by today's comparison
     again = requeue_waiting()
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)

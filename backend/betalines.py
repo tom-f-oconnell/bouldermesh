@@ -19,10 +19,20 @@ mostly agree where it goes, though, and a climb's line is where they do:
   4. it's laid on the mesh, on what of it shows: each point moved onto the surface nearest it, with the surface's
      normal there, which the viewer draws it flat against
 
-lines.json  {key, lines: {climb id: {p: [[x, y, z]], n: [[x, y, z]], at, videos, agree}}}: p the line's points on the
-            mesh (in its coordinates, as beta.json's), n the surface's unit normal at each, at the index of the point its
-            name goes by (the one furthest from the mesh's other lines), videos how many of the climb's videos had a
-            run, and agree how many of those the line keeps near (itself included); key is what it was made from (key())
+A line also says which of its videos' holds are the climb's (holds_by_lines()). A hold further than a reach (REACH_M)
+from the line isn't: it's a ray past the rock's edge, or the climber was somewhere else then (walking in, off the
+top, on another climb). Those are marked off, which the viewer hides, and the roles of the rest are given again from
+what's left, as beta.py gives them (beta.roles()): each hand's first hold on the line is a start hold, and its last a
+finish hold, rather than wherever that hand was first and last seen still. A line checks itself first: if a third of
+its own videos' holds are beyond a reach of it (astray()), it and they disagree, and it says nothing of holds.
+
+lines.json  {key, lines: {climb id: {p: [[x, y, z]], n: [[x, y, z]], at, videos, agree, astray}}, holds: {video url:
+            {off: [hold id], roles: {hold id: role}}}}: p the line's points on the mesh (in its coordinates, as
+            beta.json's), n the surface's unit normal at each, at the index of the point its name goes by (the one
+            furthest from the mesh's other lines), videos how many of the climb's videos had a run, agree how many of
+            those the line keeps near (itself included), and astray the share of those videos' holds beyond a reach of
+            it; holds has the videos with a hold off their climbs' lines or given another role by them (shown()
+            applies it to a beta record); key is what it was made from (key())
 """
 from __future__ import annotations
 
@@ -31,7 +41,7 @@ import json
 from pathlib import Path
 
 FILE = "lines.json"
-VERSION = 1             # raised when lines would come out differently, so that they're made again
+VERSION = 2             # raised when lines would come out differently, so that they're made again
 STEP = 0.02             # between a line's points, as a share of the rock's size (as every length here)
 SMOOTH_SECONDS = 1.0    # a track is smoothed over about this long either side
 CHAIN_SECONDS = 4.0     # pieces of a track this close in time,
@@ -47,6 +57,10 @@ SMOOTH = 0.04           # a line is smoothed along its length over about this
 ROUNDS = 2              # times a line's points are moved to the middle of the videos near them
 PATCH = 0.025           # the surface a point is laid on is fitted to the mesh's vertices this near it
 LABEL = (0.3, 0.8)      # a line's name goes by a point this far along it
+REACH_M = 1.75          # metres: a hold further than this from its climb's line isn't one of the climb's
+REACH = 0.3             # the same where a mesh's size in metres isn't known, as a share of the rock's size
+REACH_BOUNDS = (0.08, 0.5)      # and the least and most it is, as shares of the rock's size, whatever the scale found says
+ASTRAY = 1 / 3          # a line this share of whose own videos' holds are beyond a reach of it says nothing of holds
 
 
 # ------------------------------------------------------------------ runs
@@ -195,10 +209,12 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
         size: the rock's size.
 
     Returns:
-        {points: n x 3, videos, agree}, or None with no run to go by: videos is how many had a run, agree how many of
-        them the line keeps near (itself included).
+        {points: n x 3, videos, agree, near}, or None with no run to go by: videos is how many had a run, agree how
+        many of them the line keeps near (itself included), and near which: indices into own followed by others, as
+        given.
     """
     import numpy as np
+    given = [k for k, v in enumerate(list(own) + list(others)) if v]     # where each video with a run was in those given
     own = [v for v in own if v]
     others = [v for v in others if v]
     if not own:
@@ -229,7 +245,7 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
         if len(line) < 3 or _reach(line) < MIN_RUN * size:
             line = whole
     rest = [c for j, c in enumerate(clouds) if j != i]
-    agree = 1 + sum(bool(_near(line, c, R).mean() >= AGREE) for c in rest)
+    near = [j for j, c in enumerate(clouds) if j == i or _near(line, c, R).mean() >= AGREE]
     for _ in range(ROUNDS if rest else 0):
         moved = line.copy()
         for k, p in enumerate(line):
@@ -245,7 +261,7 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
     line = _resampled(_smooth_along(_unhooked(line), SMOOTH * size), step)
     if len(line) < 3 or _reach(line) < MIN_RUN * size:
         return None
-    return {"points": line, "videos": len(clouds), "agree": agree}
+    return {"points": line, "videos": len(clouds), "agree": len(near), "near": [given[j] for j in near]}
 
 
 def lines(videos: list[dict], of: dict[str, list[str]], size: float) -> dict[str, dict]:
@@ -257,7 +273,8 @@ def lines(videos: list[dict], of: dict[str, list[str]], size: float) -> dict[str
         size: the rock's size.
 
     Returns:
-        {climb id: climb_line()'s}, for the climbs with one.
+        {climb id: {points, videos, agree, near}}, as climb_line() gives them, near being the urls of the videos the
+        line keeps near; for the climbs with a line.
     """
     climbs_of: dict[str, set] = {}
     for cid, urls in of.items():
@@ -267,10 +284,111 @@ def lines(videos: list[dict], of: dict[str, list[str]], size: float) -> dict[str
     out = {}
     for cid, urls in of.items():
         mine = [u for u in dict.fromkeys(urls) if ran.get(u)]
-        one = climb_line([ran[u] for u in mine if len(climbs_of[u]) == 1], [ran[u] for u in mine if len(climbs_of[u]) > 1], size)
+        own, others = [u for u in mine if len(climbs_of[u]) == 1], [u for u in mine if len(climbs_of[u]) > 1]
+        one = climb_line([ran[u] for u in own], [ran[u] for u in others], size)
         if one:
-            out[cid] = one
+            out[cid] = {**one, "near": [(own + others)[k] for k in one["near"]]}
     return out
+
+
+# ------------------------------------------------------------------ holds by the lines
+def reach(size: float, metres_per_unit: float | None = None) -> float:
+    """How far from its climb's line a hold can be and still be the climb's, in the mesh's units: REACH_M where its
+    scale is known (scale.py), kept within REACH_BOUNDS of the rock's size, as a scale found is sometimes far out; else
+    REACH of the rock's size."""
+    if not metres_per_unit or metres_per_unit <= 0:
+        return REACH * size
+    return min(max(REACH_M / metres_per_unit, REACH_BOUNDS[0] * size), REACH_BOUNDS[1] * size)
+
+
+def _from_line(p, P) -> float:
+    """How far a point is from a line (its points P, joined)."""
+    import numpy as np
+    p, A, B = np.asarray(p, float), P[:-1], P[1:]
+    AB = B - A
+    t = np.clip(((p - A) * AB).sum(axis=1) / np.maximum((AB * AB).sum(axis=1), 1e-18), 0.0, 1.0)
+    return float(np.linalg.norm(A + t[:, None] * AB - p, axis=1).min())
+
+
+def astray(videos: list[dict], laid: dict[str, dict], far: float) -> dict[str, float]:
+    """For each line, the share of the holds of the videos it keeps near that are further than `far` from it. Mostly
+    a few in a hundred. Where it's a third or more, the line and its own videos' holds disagree: it stops short of the
+    climb's top, or is somewhere the climb isn't, or the holds are mostly stray; there's no telling which from here.
+
+    Args:
+        videos, laid, far: as holds_by_lines().
+
+    Returns:
+        {climb id: share}, 0 for a line whose videos have no holds.
+    """
+    import numpy as np
+    holds = {v.get("url"): v.get("holds") or [] for v in videos}
+    out = {}
+    for cid, one in laid.items():
+        P = np.asarray(one["p"], float)
+        off = [_from_line(h["p"], P) > far for u in one["near"] for h in holds.get(u, ())]
+        out[cid] = float(np.mean(off)) if off else 0.0
+    return out
+
+
+def holds_by_lines(videos: list[dict], of: dict[str, list[str]], laid: dict[str, dict], far: float) -> dict[str, dict]:
+    """Which of each video's holds its climbs' lines leave out, and the roles of those they keep.
+
+    A line speaks for a video's holds if it's agreed by two videos or more, or it came from that video; a line from
+    one video alone says nothing of the climb's other videos, which may be the ones that are right. Nor does a line
+    speak for any if too many (ASTRAY) of its own videos' holds are beyond a reach of it (astray()): then the line
+    itself is in doubt. A hold is off if it's further than `far` from every line that speaks for its video. The rest
+    are given roles again (beta.roles()) from when each was held, as if the holds that are off had never been found.
+
+    Args:
+        videos: beta.json's, each with its url and holds ([{id, role, p, contacts}]).
+        of: each climb's videos' urls, by its id.
+        laid: each climb's line, {p: its points (n x 3), near: the urls of the videos it keeps near, agree}.
+        far: reach().
+
+    Returns:
+        {url: {off: [hold id], roles: {hold id (as text, as JSON keeps it): role}}}: the videos with a hold off, or one
+        whose role is no longer the one found; roles has only those that changed.
+    """
+    import numpy as np
+    import beta
+    doubt = astray(videos, laid, far)
+    sure = {cid: one for cid, one in laid.items() if doubt[cid] < ASTRAY}
+    out = {}
+    for v in videos:
+        u, holds = v.get("url"), v.get("holds") or []
+        by = [np.asarray(one["p"], float) for cid, one in sure.items() if u in of.get(cid, ()) and (one["agree"] >= 2 or u in one["near"])]
+        if not holds or not by:
+            continue
+        off = [h["id"] for h in holds if min(_from_line(h["p"], P) for P in by) > far]
+        kept = [h for h in holds if h["id"] not in off]
+        given = beta.roles([h["contacts"] for h in kept])
+        changed = {str(h["id"]): role for h, role in zip(kept, given) if role != h.get("role")}
+        if off or changed:
+            out[u] = {"off": off, "roles": changed}
+    return out
+
+
+def shown(record: dict | None, kept: dict | None) -> dict | None:
+    """A mesh's beta as it's shown: its record (changed in place, and returned) with each hold its lines leave out
+    marked off, and each they give another role given it (its own kept as found_role).
+
+    Args:
+        record: beta.json's.
+        kept: lines.json's, made from that record (the caller's to check: key()); None changes nothing.
+    """
+    changes = (kept or {}).get("holds") or {}
+    for v in (record or {}).get("videos") or []:
+        one = changes.get(v.get("url"))
+        if not one:
+            continue
+        off, given = set(one.get("off") or []), one.get("roles") or {}
+        for h in v.get("holds") or []:
+            if h.get("id") in off:
+                h["off"] = True
+            elif str(h.get("id")) in given:
+                h["found_role"], h["role"] = h.get("role"), given[str(h["id"])]
+    return record
 
 
 # ------------------------------------------------------------------ on the mesh
@@ -461,18 +579,20 @@ def on_rock(centre: list, surface: Surface) -> list:
 
 
 def tracks(record: dict | None) -> str:
-    """What says a mesh's beta's centre tracks are the same ones: not when beta.json was written, which is every few
-    seconds while beta is found."""
+    """What says a mesh's beta's centre tracks and holds are the same ones: not when beta.json was written, which is
+    every few seconds while beta is found."""
     said = hashlib.sha1()
     for v in sorted((record or {}).get("videos") or [], key=lambda v: str(v.get("url"))):
-        said.update(json.dumps([v.get("url"), v.get("centre")]).encode())
+        said.update(json.dumps([v.get("url"), v.get("centre"), v.get("holds")]).encode())
     return said.hexdigest()
 
 
-def key(tracked: str, of: dict[str, list[str]], shown: str = "") -> str:
-    """What a mesh's lines are made from, to tell when they need making again: its videos' centre tracks (tracks()),
-    which videos are of which climb, which of its pieces show (shown_stamp()), and VERSION."""
-    said = json.dumps([VERSION, tracked, sorted((c, sorted(set(u))) for c, u in of.items()), shown])
+def key(tracked: str, of: dict[str, list[str]], shown: str = "", metres_per_unit: float | None = None) -> str:
+    """What a mesh's lines are made from, to tell when they need making again: its videos' centre tracks and holds
+    (tracks()), which videos are of which climb, which of its pieces show (shown_stamp()), its scale (a hold's reach
+    is in metres), and VERSION."""
+    scale = round(float(metres_per_unit), 4) if metres_per_unit else None
+    said = json.dumps([VERSION, tracked, sorted((c, sorted(set(u))) for c, u in of.items()), shown, scale])
     return hashlib.sha1(said.encode()).hexdigest()[:16]
 
 
@@ -483,22 +603,23 @@ def load(mesh_dir: Path) -> dict | None:
         return None
 
 
-def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None) -> dict:
-    """Make a mesh's lines and keep them (FILE). The mesh is only read if its beta has tracks; if it can't be, it has
-    no lines.
+def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, metres_per_unit: float | None = None) -> dict:
+    """Make a mesh's lines, and what they say of its videos' holds, and keep them (FILE). The mesh is only read if its
+    beta has tracks; if it can't be, it has no lines.
 
     Args:
         of: each climb's videos' urls, by its id: every climb on the mesh.
         record: its beta.json, if it's been read already.
+        metres_per_unit: its scale, if it's known (reach()).
 
     Returns:
-        The record kept: {key, lines}.
+        The record kept: {key, lines, holds}.
     """
     import numpy as np
     import beta
     record = record if record is not None else beta.load(mesh_dir) or {}
-    made_from = key(tracks(record), of, shown_stamp(mesh_dir))     # before the mesh is read: a change meanwhile makes them again
-    out = {}
+    made_from = key(tracks(record), of, shown_stamp(mesh_dir), metres_per_unit)     # before the mesh is read: a change meanwhile makes them again
+    out, changes = {}, {}
     wanted = {u for urls in of.values() for u in urls}
     videos = [v for v in record.get("videos") or [] if v.get("url") in wanted and v.get("centre")]
     try:
@@ -520,7 +641,11 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None) -
             P, normals = laid[cid]
             out[cid] = {"p": [[round(float(x), 5) for x in p] for p in P], "n": [[round(float(x), 3) for x in n] for n in normals],
                         "at": label_at(P, [laid[c][0] for c in laid if c != cid]), "videos": one["videos"], "agree": one["agree"]}
-    kept = {"key": made_from, "lines": out}
+        by, far = {cid: {**found[cid], "p": laid[cid][0]} for cid in found}, reach(size, metres_per_unit)
+        changes = holds_by_lines(record.get("videos") or [], of, by, far)
+        for cid, share in astray(record.get("videos") or [], by, far).items():
+            out[cid]["astray"] = round(share, 3)
+    kept = {"key": made_from, "lines": out, "holds": changes}
     tmp = mesh_dir / (FILE + ".tmp")
     tmp.write_text(json.dumps(kept))
     tmp.replace(mesh_dir / FILE)

@@ -538,8 +538,19 @@ agree on. What's off is left out on the way:
 A climb with one video gets that video's longest stretch, and a climb whose only videos are also of other
 climbs on the mesh gets no line, as there's no telling which climb is which in them. Lines are made once a
 mesh's beta is found, for every mesh with beta when the server starts (a second or two each, at the
-lowest CPU priority), and again when its beta, its hidden pieces, or which videos are of which climb
-change. design.md has how, and what was measured.
+lowest CPU priority), and again when its beta, its hidden pieces, its size, or which videos are of which
+climb change. design.md has how, and what was measured.
+
+**Holds by the line.** A hold found over a reach (1.75 m, by the mesh's size as found; 30% of the rock's
+size where it isn't) from its climb's line isn't shown: it's where a hand or foot seemed to be while
+the climber walked in, was off the top or on other rock, or a point that fell past the rock's edge. On
+20 boulders that was 7% of holds. The roles of the rest are given again from what's left, so each
+hand's first hold on the line is its start hold and its last its finish. *Show N off their climbs'
+lines*, in the list over the view, shows the hidden ones faint. A line agreed by two videos or more
+speaks for all its climb's videos, and a line from one video only for that video's holds. A line a third
+of whose own videos' holds are beyond a reach of it hides none: then it's the line that's in doubt
+(11 of 83). *Copy to a set* copies a video's holds as shown. The holds given to the phone apps for
+captures are still all those found.
 
 ## How big a boulder is
 
@@ -1559,8 +1570,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/hide {why}                    hide it from visitors as a failure, its area climbs failed ({why: null}: show it)
     POST /api/meshes/{id}/label {label}                 what an editor says it is: rock, card, landscape, ground, indoor or other (null: forget)
     GET  /api/labels                                    editors: every current mesh, its label and shape measures, for /label
-    GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
-    GET  /api/meshes/{id}/lines                         its climbs' lines: {lines: [{climb, name, grade, p, n, at, videos, agree}], climbs, pending}
+    GET|POST /api/meshes/{id}/beta                      the holds found in its videos (off: beyond a reach of its climb's line; found_role: its role before the line gave it another), and those marked; POST finds them
+    GET  /api/meshes/{id}/lines                         its climbs' lines: {lines: [{climb, name, grade, p, n, at, videos, agree, astray}], climbs, pending}
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET /api/account                                    who this token is, the terms as they stand, the limits
     POST /api/account/join {invite, name} · /pair/take {code}     an account from an invite; a device from a pairing code
@@ -1659,8 +1670,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses
     python3 tests/test_beta.py        # offline: cameras, rays, contacts and roles for beta; waiting out YouTube and carrying on
-    python3 tests/test_betalines.py   # offline: climbs' lines from their videos' tracks: what's left out, laying them on a mesh
-    python3 tests/test_climb_lines.py # offline: lines as the server keeps them: made when asked for, and again when what they're from changes
+    python3 tests/test_betalines.py   # offline: climbs' lines from their videos' tracks: what's left out, laying them on a mesh, the holds off them
+    python3 tests/test_climb_lines.py # offline: lines as the server keeps them: made when asked for, and again when what they're from changes; beta as shown
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
     python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker; registering, approval, held meshes
