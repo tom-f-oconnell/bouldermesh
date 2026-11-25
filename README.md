@@ -1079,7 +1079,10 @@ be shown to hold: what's to go is marked (`data/offload.list`, which the backup 
 does), and each of its files recorded with its size, time and SHA-1; it's deleted once a manifest from the backup shows it
 holds each file as recorded. A job that needs photos that went (rebuilding, a boulder's mesh pooling a climb's, finding
 beta or size) asks for them back and waits, as for a machine; the backup sends them back (into `data/restore-inbox/`,
-which the server puts in place). Areas' cards, the boulder panels and the old meshes' report say ahead of time how many
+which the server puts in place within 15 s). Each running area's next 6 climbs, those harvested for their boulder's mesh,
+and the next old meshes being remade, have theirs asked for ahead of their turn, so that they rarely wait: only while
+what's asked fits under the offload %, so that bringing it back never sends something else away. How long each wait was
+is kept in `data/restore-waits.jsonl`, and the day's summary says what came back and what's waited 2 h or more. Areas' cards, the boulder panels and the old meshes' report say ahead of time how many
 climbs need data from the backup. *Room for data* shows what's offloaded, marked, and asked back.
 
 **Checking the backup.** After each night's copy, backup.sh sends the server a manifest of every file it holds of what's
@@ -1100,6 +1103,9 @@ which the server takes only for the handshake
     printf 'command="python3 /home/tom/bouldermesh/deploy/backup-handshake.py",restrict %s\n' "$(cat ~/.ssh/bouldermesh_handshake.pub)" | ssh bouldermesh 'cat >> ~/.ssh/authorized_keys'
     sudo cp deploy/bouldermesh-restore.service deploy/bouldermesh-restore.timer /etc/systemd/system/
     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.timer     # what's wanted back, every 5 min
+
+Where the backup runs on the server itself, `deploy/bouldermesh-restore.path` also starts a restore the moment something
+is asked for (install as its header says).
 
 Without that key nothing is offloaded, and the server can't know of any backup. backup.sh finds it as
 `~/.ssh/bouldermesh_handshake` (`BACKUP_HANDSHAKE_KEY`). Through it each night's copy also says how it went

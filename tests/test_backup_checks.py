@@ -294,6 +294,25 @@ try:
     text, late = server.restore_note()
     assert not late and "Back from the backup in the last day: 1" in text, text
     print("waits on the backup recorded OK")
+
+    # --- asked ahead: what an area's next climbs will use, while it fits under the offload % ---------------------------
+    server.q("INSERT INTO offloads(path, kind, ref, bytes, marked, done) VALUES(?,?,?,?,?,?)", path, "photos", pid, 5 * 2**30, 1, 2, write=True)
+    server.q("UPDATE campaigns SET status='running' WHERE id=?", c["id"], write=True)
+    server.q("UPDATE campaign_items SET status='pending', paused=NULL, blocked=NULL WHERE name='Beta'", write=True)
+    assert "Beta" in [i["name"] for i in server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id=?", c["id"], one=True))]
+    cap_was, usage_was = server.data_cap, dict(server._usage)
+    try:
+        server.data_cap = lambda: 100 * 2**30
+        server._usage["total"] = 68 * 2**30     # 2 GB under 70%: no room for its 5 GB
+        assert server.want_ahead() == [] and offload.waiting(server.q) == []
+        server._usage["total"] = 50 * 2**30
+        assert server.want_ahead() == [path] and [w["path"] for w in offload.waiting(server.q)] == [path]
+        assert server.want_ahead() == [], "asked once"
+    finally:
+        server.data_cap = cap_was
+        server._usage.clear()
+        server._usage.update(usage_was)
+    print("asked ahead for what areas' next climbs need OK")
     print("ALL BACKUP CHECKS TESTS PASSED")
 finally:
     import shutil

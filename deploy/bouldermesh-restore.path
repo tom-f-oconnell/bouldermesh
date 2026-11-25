@@ -1,0 +1,15 @@
+# Starts bouldermesh-restore.service as soon as the server's list of what it wants back from the backup changes
+# (data/offload-wanted.list, rewritten only when it does), rather than at the timer's next run (kept as well, for
+# anything asked while a run was going). Only where the backup runs on the server itself, as the list must be on this
+# machine: edit the path below to the server's data/, then
+#     sudo cp deploy/bouldermesh-restore.path /etc/systemd/system/
+#     sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.path
+[Unit]
+Description=BoulderMesh: send back what the server wants from the backup as soon as it asks
+
+[Path]
+PathChanged=/home/tom/bouldermesh/data/offload-wanted.list
+Unit=bouldermesh-restore.service
+
+[Install]
+WantedBy=multi-user.target

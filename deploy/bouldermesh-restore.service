@@ -1,5 +1,6 @@
 # Sends back to the public server what it wants back of what it offloaded to the backup here (deploy/backup.sh
-# --restore-only), run every half hour by bouldermesh-restore.timer, so that a job waiting for photos the server offloaded
+# --restore-only), run every 5 minutes by bouldermesh-restore.timer, and at once
+# when the server asks for something by bouldermesh-restore.path (where the backup runs on the server), so that a job waiting for photos the server offloaded
 # needn't wait for the night's backup. It uses the handshake's key (README, "Backups"). Edit User, SCRIPT, SOURCE and
 # BACKUP_DIR below as in bouldermesh-backup.service, then:
 #     sudo cp deploy/bouldermesh-restore.service deploy/bouldermesh-restore.timer /etc/systemd/system/

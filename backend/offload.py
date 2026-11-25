@@ -135,8 +135,14 @@ def write_lists(data: Path, q: Q) -> None:
                        (WANTED, sorted({r["path"] for r in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL "
                                                            "AND lost IS NULL")} | {r["path"] for r in q("SELECT path FROM archive_wants")})),
                        (SAMPLE, sample(q))):
+        text = "".join(p + "\n" for p in rows)
+        try:
+            if (data / name).read_text() == text:
+                continue    # unchanged: what's wanted back starts a restore when it changes (bouldermesh-restore.path)
+        except OSError:
+            pass
         tmp = data / (name + ".tmp")
-        tmp.write_text("".join(p + "\n" for p in rows))
+        tmp.write_text(text)
         tmp.replace(data / name)
 
 

@@ -6147,6 +6147,7 @@ def run_boulder(pid: str, resume: bool = False, fetch: bool = True, keep_better:
 # ------------------------------------------------------------------ campaigns: mesh a whole area
 _outages: list[tuple[str, str]] = []    # (campaign, climb) failing in a row before finishing a harvest
 COMPUTE_WAIT = 300      # seconds a worker whose machine couldn't be had waits before trying again
+BACKUP_WAIT = 60        # and one whose climb's photos were asked back from the backup
 
 
 def use_processing_cores() -> None:
@@ -7593,12 +7594,72 @@ def archive_came(path: str) -> None:
         VOLUNTEERS.fulfil(t["id"])
 
 
+# What areas are about to use is asked back from the backup ahead of its turn, rather than by the job that needs it, which
+# then waits a restore (5 min at best) and is queued again: the photos and masks of what each running area's next
+# BACKUP_AHEAD climbs pool (and what areas' climbs being remade as old will, as _claim_old() takes them), and of climbs
+# harvested for their boulder's mesh. Only while what's asked fits under the share of the cap that starts offloading,
+# so that bringing it back never makes room by sending other things away. Those are all in play (_in_play()), so not
+# offloaded again before they're used.
+BACKUP_AHEAD = 6
+
+
+def _item_projects(it: dict) -> list[str]:
+    """The projects whose photos an area's climb will use: its own harvest, and those of its boulder's climbs (or its
+    pool's) where it's meshed with them, as need_back() asks for them."""
+    pids = [it["project_id"]] if it.get("project_id") else []
+    key = it.get("pool") or it.get("boulder")
+    if key and (it.get("pool") or (it.get("redo") or "").split("+")[0] in ("boulder", "pool") or it.get("status") == "harvested"
+                or pools_whole(key)):
+        pids += [h for c in boulder_climbs(key) for h in climb_harvests(c["id"])]
+    return list(dict.fromkeys(pids))
+
+
+def want_ahead(log=None) -> list[str]:
+    """Ask the backup now for what areas' next climbs will need (BACKUP_AHEAD). Returns the paths newly asked for."""
+    cap, pct = data_cap(), settings().get("storage.offload_percent")
+    room = None
+    if cap and pct and "total" in _usage:
+        coming = sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL AND lost IS NULL"))
+        room = cap * pct / 100 - _usage["total"] - coming
+        if room <= 0:
+            return []
+    cols = "source_id, project_id, boulder, pool, redo, status"
+    items = []
+    for camp in q("SELECT * FROM campaigns ORDER BY priority, created"):
+        sids = [i["source_id"] for i in (ordered_pending(camp)[:BACKUP_AHEAD] if camp["status"] == "running" else [])]
+        sids += [i["source_id"] for i in ordered_pending(camp, old=True) if i["old_rerun"]][:BACKUP_AHEAD]
+        items += [dict(r) for r in q(f"SELECT {cols} FROM campaign_items WHERE campaign_id=? AND status IN ('running','harvested')", camp["id"])]
+        items += [dict(r) for sid in dict.fromkeys(sids)
+                  for r in q(f"SELECT {cols} FROM campaign_items WHERE campaign_id=? AND source_id=?", camp["id"], sid)]
+    asked = []
+    for it in items:
+        for pid in _item_projects(it):
+            for part in ("photos", "masks"):
+                path = f"projects/{pid}/{part}"
+                row = q("SELECT bytes FROM offloads WHERE path=? AND done IS NOT NULL AND wanted IS NULL AND approved IS NULL AND lost IS NULL",
+                        path, one=True)
+                if not row:
+                    continue
+                if room is not None:
+                    if (row["bytes"] or 0) > room:
+                        continue
+                    room -= row["bytes"] or 0
+                asked += offload_mod.want(DATA, q, [path])
+    if asked:
+        (log or log_server)(f"offload: asked the backup ahead for {plural(len(asked), 'folder')} areas' next climbs will need")
+    return asked
+
+
 def offload_step() -> dict:
     """What making room does after each measuring: put back what the backup sent back; and above storage.offload_percent
     of the cap, or with fetched videos past VIDEO_CACHE_GB, delete what was marked before the backup's last good copy
     began and is still to go, the web cache's old pages (for the cap only), and mark more to go, down to that % (and
     videos first, down to VIDEO_CACHE_GB). Videos are never dropped otherwise (youtube.TRIM). Returns what it did."""
-    did = {"back": offload_mod.take_restores(DATA, q, log_server, came=archive_came)}
+    did = {"back": take_restores()}
+    try:
+        did["ahead"] = want_ahead()
+    except Exception as e:  # noqa: BLE001 - only asking early is lost: each job still asks as its turn comes
+        print(f"offload: asking ahead failed: {e!r}", flush=True)
     did["manifest"] = take_manifest()
     cap, pct = data_cap(), settings().get("storage.offload_percent")
     marked = q("SELECT path, bytes FROM offloads WHERE done IS NULL")
@@ -7803,6 +7864,28 @@ def log_server(line: str) -> None:
     print(line, flush=True)
 
 
+_restore_lock = threading.Lock()
+RESTORE_LOOK = 15.0     # seconds between looks in the restore inbox, for what the backup sent back (watch_restores())
+
+
+def take_restores() -> list[str]:
+    """Put back what the backup sent back (offload.take_restores()), one thread at a time."""
+    with _restore_lock:
+        return offload_mod.take_restores(DATA, q, log_server, came=archive_came)
+
+
+def watch_restores() -> None:
+    """A thread: put back what the backup sends back as soon as it's in the inbox, rather than at the next measuring."""
+    inbox = DATA / offload_mod.INBOX
+    while True:
+        time.sleep(RESTORE_LOOK)
+        try:
+            if inbox.is_dir() and any(inbox.iterdir()):
+                take_restores()
+        except Exception as e:  # noqa: BLE001 - never let the thread die
+            print(f"restore error: {e!r}", flush=True)
+
+
 def watch_usage() -> None:
     """Measure DATA_DIR now and every USAGE_EVERY seconds, while there's a cap, say when it's nearly reached, and make room
     by offloading to the backup; and put back what the backup sends back, cap or not."""
@@ -7972,7 +8055,8 @@ def next_campaign_step(low: bool | None = None) -> bool:
         w.error = w.waiting = None
         settle_boulder(camp["id"], item.get("boulder"))
     except compute.ComputeUnavailable as e:     # the climb waits; so does this worker, for a while
-        w.error, w.wait_until = f"{time.strftime('%H:%M')}: {e}", time.time() + COMPUTE_WAIT
+        # photos asked back come within a few minutes (the restore starts when they're asked for), a machine maybe not
+        w.error, w.wait_until = f"{time.strftime('%H:%M')}: {e}", time.time() + (BACKUP_WAIT if isinstance(e, PhotosAway) else COMPUTE_WAIT)
         since = min([x.waiting["since"] for x in _workers if x.waiting and x.waiting["campaign"] == camp["id"]] + [time.time()])
         w.waiting = {"campaign": camp["id"], "climb": item["name"], "since": since, "why": str(e),
                      "boulder": (item.get("redo") or "").split("+")[0] in ("boulder", "pool")}
@@ -16037,6 +16121,7 @@ def main() -> None:
         print(f"finding beta again for {plural(again, 'video')} that had only their first 150 s looked at", flush=True)
     _beta_spawn()
     threading.Thread(target=watch_usage, daemon=True).start()
+    threading.Thread(target=watch_restores, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=drain_watch, daemon=True, name="drain-watch").start()
     threading.Thread(target=frames_worker, daemon=True).start()
