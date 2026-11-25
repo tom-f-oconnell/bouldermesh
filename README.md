@@ -485,10 +485,9 @@ blue hand holds, magenta foot-only holds and red finish holds (start and hand ho
 too). *Find beta* looks at each video with frames placed in the mesh. It finds the climber's hands and
 feet with a pose model, casts them onto the mesh, and keeps the points where one stayed still for at
 least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
-only feet touched are foot holds. Each video has its own holds and tracks (hands white, feet yellow, and
-the climber's centre cyan: halfway between the middles of their shoulders and hips; spikes and short
-glitches left out), which can be shown or hidden, and a picture of its frame with the tracks and holds
-drawn on it. Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
+only feet touched are foot holds. Each video has its own holds, which can be shown or hidden, and a picture
+of its frame with its tracks and holds drawn on it. Where its climber went is drawn as its climb's line
+(below), not as a line for each hand and foot. Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
 where their photos were placed, so they need rebuilding first. Each new mesh with video frames placed in it
 has its beta found straight after, while its videos are still kept (*Find beta in each new mesh* on the
 admin page's *Areas*); on machines that connect here, meshing comes first, then beta and size.
@@ -517,6 +516,30 @@ about 1.4 s a frame on 4 cores, so 5 to 10 minutes a video), up to *Meshes to fi
 (3), each with its own bar. Each runs on a thread of its own at the lowest CPU
 priority, so it never holds up meshing, and a restart only pauses it. 148 meshes had 364 videos to look
 at (Nov 2026): about 10 hours on the CPU, more while meshing runs alongside.
+
+### Climbs' lines
+
+A mesh of several climbs shows a line for each climb that has beta, drawn on the rock in cyan with the
+climb's name beside it, as a guidebook's topo has them. *Lines*, by the *Beta* button, hides and shows
+them. A mesh of one climb shows its line with its beta. Clicking a name picks that line out, the others
+going faint, and *Open climb* then goes to that climb; clicking it again undoes it.
+
+A line is where the climbers in the climb's videos went: each video's track of its climber's centre (halfway
+between the middles of their shoulders and hips, cast onto the rock), and of those the part the videos
+agree on. What's off is left out on the way:
+
+- points on pieces of the mesh its cleanup hides (stray fragments, far scenery: where a ray past the
+  rock's edge lands);
+- stretches that end up where they started (someone standing, or walking over and back);
+- whole videos that go nowhere near the others (another climb, or frames matched to the wrong place);
+- the ends of the video the line starts from that no other video shares, unless they carry on the way
+  the line was going (a walk in comes from the side; a climber filmed for longer goes on up).
+
+A climb with one video gets that video's longest stretch, and a climb whose only videos are also of other
+climbs on the mesh gets no line, as there's no telling which climb is which in them. Lines are made once a
+mesh's beta is found, for every mesh with beta when the server starts (a second or two each, at the
+lowest CPU priority), and again when its beta, its hidden pieces, or which videos are of which climb
+change. design.md has how, and what was measured.
 
 ## How big a boulder is
 
@@ -1463,6 +1486,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/viewpoints.py          where each climb on a boulder's own mesh is seen from
     backend/bundle.py              moving boulders' meshes and their harvests from one copy of the data to another
     backend/beta.py                the holds climbers use, from their hands and feet in videos
+    backend/betalines.py           a line for each climb on a mesh, from where its videos' climbers went
     backend/scale.py               how big a mesh is, from the people in its photos and Mountain Project's height
     backend/admin.py               the admin page's server; frontend/admin.html is the page
     backend/settings.py            the admin page's settings, and credentials kept encrypted
@@ -1536,6 +1560,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/label {label}                 what an editor says it is: rock, card, landscape, ground, indoor or other (null: forget)
     GET  /api/labels                                    editors: every current mesh, its label and shape measures, for /label
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos, and those marked; POST finds them
+    GET  /api/meshes/{id}/lines                         its climbs' lines: {lines: [{climb, name, grade, p, n, at, videos, agree}], climbs, pending}
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET /api/account                                    who this token is, the terms as they stand, the limits
     POST /api/account/join {invite, name} · /pair/take {code}     an account from an invite; a device from a pairing code
@@ -1634,6 +1659,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_scale.py       # offline: sizing people, objects and the rock on scenes built with known sizes
     python3 tests/test_youtube.py     # offline: telling a climb's videos apart, climbers' sizes in text, leaving YouTube alone when it refuses
     python3 tests/test_beta.py        # offline: cameras, rays, contacts and roles for beta; waiting out YouTube and carrying on
+    python3 tests/test_betalines.py   # offline: climbs' lines from their videos' tracks: what's left out, laying them on a mesh
+    python3 tests/test_climb_lines.py # offline: lines as the server keeps them: made when asked for, and again when what they're from changes
     python3 tests/test_provenance.py  # offline: where each mesh's photos came from
     python3 tests/test_compute.py     # offline: running reconstructions on other machines, through stand-ins for ssh and AWS
     python3 tests/test_pullwork.py    # offline: machines that connect here for work, through the script and a stand-in for docker; registering, approval, held meshes

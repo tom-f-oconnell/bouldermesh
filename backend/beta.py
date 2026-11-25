@@ -194,6 +194,28 @@ def read_ply(path: Path):
     return V, np.asarray(F, dtype=np.int64)
 
 
+def geometry(mesh_dir: Path):
+    """A mesh's vertices and triangles: from its GLB, or the untextured mesh.ply a reconstruction keeps when texturing
+    fails. Both are in the frame its cameras were placed in."""
+    import meshclean
+    path = meshclean.mesh_file(mesh_dir)
+    if path:
+        V, F, _ = meshclean._geometry(*meshclean._read_glb(path))
+    elif (mesh_dir / "mesh.ply").exists():
+        V, F = read_ply(mesh_dir / "mesh.ply")
+    else:
+        raise ValueError("no GLB or PLY mesh to read")
+    return V, F
+
+
+def rock_size(V) -> float:
+    """How big a mesh's rock is: the most its vertices span along any axis, without the furthest twentieth either way
+    (stray pieces, the ground around it)."""
+    import numpy as np
+    lo, hi = np.percentile(V, 5, axis=0), np.percentile(V, 95, axis=0)
+    return float(max(hi - lo))
+
+
 class Mesh:
     """A mesh's triangles, ready to cast rays at, and its size."""
 
@@ -208,23 +230,13 @@ class Mesh:
         self.r = np.sqrt(np.max([np.einsum("ij,ij->i", d, d) for d in (self.v0 - self.c, self.e1 + self.v0 - self.c,
                                                                          self.e2 + self.v0 - self.c)], axis=0))
         self.cc = np.einsum("ij,ij->i", self.c, self.c)
-        lo, hi = np.percentile(V, 5, axis=0), np.percentile(V, 95, axis=0)
-        self.size = float(max(hi - lo))
+        self.size = rock_size(V)
         self.ground = float(np.percentile(V[:, 1], 2))    # +Y is up in a levelled mesh
 
     @classmethod
     def load(cls, mesh_dir: Path) -> "Mesh":
-        """A mesh's GLB, or the untextured mesh.ply a reconstruction keeps when texturing fails: both are in the
-        frame its cameras were placed in."""
-        import meshclean
-        path = meshclean.mesh_file(mesh_dir)
-        if path:
-            V, F, _ = meshclean._geometry(*meshclean._read_glb(path))
-        elif (mesh_dir / "mesh.ply").exists():
-            V, F = read_ply(mesh_dir / "mesh.ply")
-        else:
-            raise ValueError("no GLB or PLY mesh to read")
-        return cls(V, F)
+        """A mesh as geometry() reads it."""
+        return cls(*geometry(mesh_dir))
 
     def hit(self, origin, direction):
         """The nearest point where a ray meets the mesh, or None (Möller-Trumbore, on the triangles whose

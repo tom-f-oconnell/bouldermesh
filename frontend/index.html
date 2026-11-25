@@ -276,9 +276,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   /* Beta at the bottom left, one height in each layout, so the stray pieces sit above it with the gap between buttons */
   #viewer{--vbeta-h:22px} #vbl{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;align-items:center;gap:10px}
   /* the view's bottom row of buttons (Beta, Rate, the notes' and report buttons) all one height */
-  #vbeta,#vbadd,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
-  #vbeta[hidden],#vbadd[hidden],#vcorner>button[hidden]{display:none}
-  #vbeta[aria-pressed=true],#vbadd[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+  #vbeta,#vbadd,#vlines,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
+  #vbeta[hidden],#vbadd[hidden],#vlines[hidden],#vcorner>button[hidden]{display:none}
+  #vbeta[aria-pressed=true],#vbadd[aria-pressed=true],#vlines[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   #vbadd{min-width:var(--vbeta-h);padding-left:6px;padding-right:6px;font-weight:600;margin-left:-6px}
   #vbeta.none{opacity:.75;cursor:default}
   hr.bsep{border:0;border-top:1px solid var(--line);margin:6px 0}
@@ -465,7 +465,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     #vtop{display:flex;flex-direction:column;align-items:stretch;gap:6px;position:absolute;top:6px;left:8px;right:8px;max-height:calc(100% - 60px);z-index:3;pointer-events:none}
     #vtop>*{pointer-events:auto} #vtopr{position:static;max-width:none;min-height:44px;pointer-events:none}
     #pieces{max-width:100%;max-height:35vh} #vtop #orient,#vtop #viewnote{position:static;flex:none}
-    #viewer{--vbeta-h:30px} #vbl{left:8px} #vbeta{font-size:14px;padding:0 12px} #vbadd{font-size:16px}
+    #viewer{--vbeta-h:30px} #vbl{left:8px} #vbeta,#vlines{font-size:14px;padding:0 12px} #vbadd{font-size:16px}
     #vbetavids{left:8px;bottom:56px;max-height:30%;font-size:13px}
     #ratebtn{font-size:14px;padding:0 12px} #vcorner #vinfo,#vcorner #vreport{padding:0 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
@@ -486,7 +486,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   html.app #orient,html.app #viewnote{top:54px} html.app #vtopr{top:54px} html.app #vtop{top:50px} html.app #vtopr{min-height:0}
   /* its buttons all one height, a finger's: Rate and Beta with their words, the icons' scaled up as they are drawn
      elsewhere (a little wider than high), and share at the left of settings */
-  html.app #ratebtn,html.app #vbeta,html.app #vbadd{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
+  html.app #ratebtn,html.app #vbeta,html.app #vbadd,html.app #vlines{font-size:14px;height:34px;padding:0 12px;box-sizing:border-box} html.app #viewer{--vbeta-h:34px}
   html.app #vcorner #vinfo,html.app #vcorner #vreport,html.app #appbar>button:not([hidden]){height:34px;min-width:39px;padding:0 10px;box-sizing:border-box;
     display:inline-flex;align-items:center;justify-content:center}
   html.app #vinfo svg,html.app #vreport svg,html.app #vshare svg{width:16px;height:16px;vertical-align:0}
@@ -778,6 +778,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       <div id="vbl">
         <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
         <button class="sm sec" id="vbadd" hidden aria-pressed="false" aria-label="Add beta" title="Add beta: click the rock to mark a start hold, then click a hold again for hand, finish, foot, then none. Press again to stop.">+</button>
+        <button class="sm sec" id="vlines" hidden aria-pressed="true">Lines</button>
         <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       </div>
       <div id="vcorner">
@@ -1580,7 +1581,7 @@ renderer.setAnimationLoop(now => {
   if (controls.update() || sway || splat?.viewer) lastMove = now;     // moving, easing, swaying, or a splat to sort
   if (now - lastMove > STILL_MS && now - lastDraw < STILL_EVERY_MS) return;
   lastDraw = now;
-  liftRings();
+  liftRings(); placeLineLabels();
   if (splat?.viewer && current) splat.viewer.matrix.copy(current.matrixWorld);   // the splat is in the mesh's own frame
   const near = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 50, 1e-4, .01);   // so a close surface isn't clipped
   if (near !== camera.near) { camera.near = near; camera.updateProjectionMatrix(); }
@@ -1597,7 +1598,7 @@ function mainBox(obj){
   obj.updateMatrixWorld(true);
   const axes = [[], [], []], v = new THREE.Vector3();
   obj.traverse(o => {
-    if (!o.isMesh || o.userData.hiddenPieces) return;
+    if (!o.isMesh || o.userData.hiddenPieces || o.userData.beta) return;
     const p = o.geometry.attributes.position, idx = o.geometry.index?.array, n = idx ? idx.length : p.count;   // the index, as hidden pieces' vertices stay in the buffer
     for (let i = 0, step = Math.max(1, Math.floor(n / 200000)); i < n; i += step) {
       v.fromBufferAttribute(p, idx ? idx[i] : i).applyMatrix4(o.matrixWorld); axes[0].push(v.x); axes[1].push(v.y); axes[2].push(v.z);
@@ -1770,7 +1771,7 @@ async function attachPieces(gltf, id, lod = null, v = null){
     if (start !== all.length) throw new Error('it doesn\'t match this mesh');
     const parts = [];
     gltf.scene.traverse(o => {
-      if (!o.isMesh || o.userData.hiddenPieces) return;
+      if (!o.isMesh || o.userData.hiddenPieces || o.userData.beta) return;     // not what's drawn over the mesh (climbs' lines)
       const at = gltf.parser.associations.get(o), slice = at && slices.find(s => s.mesh === at.meshes && s.primitive === at.primitives);
       if (!slice || !o.geometry.index || o.geometry.index.count !== slice.faces * 3) throw new Error('it doesn\'t match this mesh');
       if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();   // while all of it is there, for a grey material
@@ -1808,6 +1809,7 @@ function applyPieces(){
     part.hidden.visible = pieces.editing;
   }
   if (betaState?.group) drawBeta();     // holds on faces hidden now go with them, and those shown again come back
+  refreshLines();     // its climbs' lines are laid on what shows
 }
 function pieceLabel(p){ return `${p.faces.toLocaleString()} faces · ${p.size.map(x => x < 10 ? x.toFixed(1) : x.toFixed(0)).join(' × ')}${p.id === 0 ? ' · main' : ''}`; }
 function renderPieces(){
@@ -2135,7 +2137,7 @@ function standOnGrid(obj){
   obj.updateMatrixWorld(true);
   let lowest = Infinity;
   obj.traverse(o => {
-    if (!o.isMesh || o.userData.hiddenPieces) return;
+    if (!o.isMesh || o.userData.hiddenPieces || o.userData.beta) return;
     const p = o.geometry.attributes.position, idx = o.geometry.index?.array, n = idx ? idx.length : p.count, e = o.matrixWorld.elements;
     for (let i = 0; i < n; i++) {
       const v = idx ? idx[i] : i, y = e[1] * p.getX(v) + e[5] * p.getY(v) + e[9] * p.getZ(v) + e[13];
@@ -2274,7 +2276,8 @@ function showQuiet(){
   if (!quiet) $('#vinfo').classList.remove('dot');
 }
 showQuiet();
-$('#vclimb').onclick = () => { const id = viewedClimb || $('#vclimb').dataset.climb; if (id) openClimb(id); };
+// the climb whose line is picked out (drawLines()), else the one the mesh was opened for, else its first
+$('#vclimb').onclick = () => { const id = (lineState?.mid === shownMesh && lineState.pick) || viewedClimb || $('#vclimb').dataset.climb; if (id) openClimb(id); };
 $('#vinfo').onclick = () => {
   quiet = !quiet;
   if (quiet) { viewNote(''); setRateOpen(false); }
@@ -2666,6 +2669,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
     if (detail) moreDetail(detail);
     $('#vnearby').disabled = !(id && meshesById[id]?.lat != null);
     if (betaState?.mid === id) drawBeta();     // the same mesh opened again: its markers go on the new copy
+    startLines(id);
     requestAnimationFrame(() => requestAnimationFrame(() => {   // a texture too big for the card's memory shows black, not grey
       const gl = renderer.getContext();
       if (gl.getError() === gl.OUT_OF_MEMORY) viewNote('The graphics card ran out of memory for this texture, so it may show black.', again);
@@ -5400,7 +5404,7 @@ function stopBeta(){
   if (betaState.group) betaState.group.parent?.remove(betaState.group);
   closeBetaDebug();
   betaState = null; clearInterval(betaPoll);
-  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); renderBetaVids(); woke();
+  $('#beta-open').innerHTML = ''; showMarkButton(); renderBetaList(); showBetaButton(); renderBetaVids(); drawLines(); woke();
 }
 // ---- the owner's look at one video's beta beside the video (the Debug button on its row over the view, for an editor):
 // the climber the pose model found in each frame looked at and the holds called drawn over the video, a timeline of
@@ -5410,7 +5414,7 @@ function stopBeta(){
 // and points in the frame are those of the nearest one looked at, as finding beta saw them. dbg: {mid, tag, data (the
 // server's beta.frames_seen(), with the video's signed link or where it is), t, video, group, loop, seen}
 const LIMB_NAME = { lh: 'L hand', rh: 'R hand', lf: 'L foot', rf: 'R foot' };
-const LIMB_COLOR = { lh: '#f4f4f4', rh: '#b8b8b8', lf: '#ffd25a', rf: '#e0960f' };    // as the view's lines: hands white, feet yellow
+const LIMB_COLOR = { lh: '#f4f4f4', rh: '#b8b8b8', lf: '#ffd25a', rf: '#e0960f' };    // hands white, feet yellow
 async function openBetaDebug(tag){
   const b = betaState;
   if (!b) return;
@@ -5781,23 +5785,11 @@ function drawBeta(){
     for (const h of chosenHolds(betaState)) if (!onHiddenFace(h.p, node)) ring(h.p, h.role || 'hand', h.kind, left.has(h.id)).userData.choice = h.id;
     node.add(g);
     Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite), markers: [] });
-    return liftRings(), renderBetaVids();
+    return liftRings(), renderBetaVids(), drawLines();
   }
+  // each video's holds; where its climber went is its climb's line (drawLines()), not a line for each hand and foot
   for (const v of betaState.found?.videos || []) {
     if (!betaState.shown.has(v.tag)) continue;
-    // each limb's track in pieces; beta not yet redrawn (beta.redraw_lines()) has one, unfiltered
-    for (const [limb, track] of Object.entries(v.tracks || {})) for (const piece of typeof track[0]?.[0] === 'number' ? [track] : track) {
-      if (piece.length < 2) continue;
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(piece.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
-        new THREE.LineBasicMaterial({ color: limb.endsWith('h') ? 0xe8e8e8 : 0xffc83c, transparent: true, opacity: .55 }));
-      line.userData.beta = true; g.add(line);
-    }
-    for (const piece of v.centre || []) {     // the climber's body: halfway between the middles of their shoulders and hips
-      if (piece.length < 2) continue;
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(piece.map(t => new THREE.Vector3(t[1], t[2], t[3]))),
-        new THREE.LineBasicMaterial({ color: 0x46c8ff, transparent: true, opacity: .8 }));
-      line.userData.beta = true; g.add(line);
-    }
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
     const cf = betaState.climbFocus, outside = cf != null && !(cf === '' ? !(v.climbs || []).some(id => betaState.climbs?.[id]) : (v.climbs || []).includes(cf));
     for (const h of v.holds || []) if (!onHiddenFace(h.p, node)) ring(h.p, h.role, 'found', outside || (!!betaState.focus && betaState.focus !== v.tag)).userData.hold = `${v.tag}/${h.id}`;
@@ -5818,7 +5810,7 @@ function drawBeta(){
   });
   node.add(g);
   Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite) });
-  liftRings(); renderBetaVids();
+  liftRings(); renderBetaVids(); drawLines();
 }
 const eye = new THREE.Vector3();
 function liftRings(){
@@ -5830,6 +5822,220 @@ function liftRings(){
     r.scale.setScalar(size * (r.userData.boost || 1) * (d - lift) / d);     // nearer by `lift`, so smaller by as much: the same on screen
   }
 }
+// ---- climbs' lines: where each climb on the mesh goes, as the climbers in its videos went (backend/betalines.py),
+// drawn flat on the rock with the climb's name beside it, as a guidebook's topo has them. On a mesh of several climbs
+// they show with it, until the Lines button hides them; on a mesh of one, its line shows with its beta.
+// Each is a ribbon LINE_WIDTH across (a share of the boulder's size, as the rest), raised LINE_RAISE off the rock and
+// drawn LINE_LIFT nearer the camera than it is, along the line from the camera, as holds' rings are: so rock a little
+// proud of it doesn't cut through it, and a line round the back stays hidden. Where it crosses a gap in the rock (its
+// points LINE_GAP times further apart than they mostly are) it's left open. A name is a sprite the same size on screen
+// however far off, drawn over the rock whole (rock in front of part of one would cut it off mid-word): it fades as
+// the rock at its point turns edge on, and is hidden while that faces away, while a nearer line's name is in its
+// place, and while its point is behind other rock. That last is asked of the graphics card (lineProbe()), which has
+// drawn the rock already. Picked (again to undo), its line shows alone, the rest faint, and Open climb goes to that
+// climb.
+const LINE_COLOR = '#46c8ff', LINE_WIDTH = .016, LINE_RAISE = .003, LINE_LIFT = .03, LINE_GAP = 3, LINE_RETRY_MS = 4000;
+const LABEL_FACING = [.08, .3];      // a name fades in between these cosines of the rock's facing the camera
+const lineLift = { value: 0 };      // LINE_LIFT in the scene's units, shared by every line's material
+// {mid, lines: [{climb, name, grade, p, n, at}], climbs: how many the mesh is of, group, node, labels, pick, tries}
+let lineState = null;
+let linesOn = true; try { linesOn = localStorage.getItem('bm_lines') !== '0'; } catch {}
+const LINE_MAP = (() => {       // across a line: a dark edge either side, so it shows on pale rock and sky alike
+  const c = document.createElement('canvas'); c.width = 64; c.height = 4;
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgba(6,22,34,.9)'; x.fillRect(0, 0, 64, 4);
+  x.fillStyle = LINE_COLOR; x.fillRect(8, 0, 48, 4);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+function lineMaterial(faint){
+  const m = new THREE.MeshBasicMaterial({ map: LINE_MAP, side: THREE.DoubleSide, transparent: true, opacity: faint ? .2 : .95, depthWrite: false });
+  m.onBeforeCompile = sh => {
+    sh.uniforms.lineLift = lineLift;
+    sh.vertexShader = 'uniform float lineLift;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      { float d = length(mvPosition.xyz); mvPosition.xyz *= max(d - lineLift, d * .5) / d; gl_Position = projectionMatrix * mvPosition; }`);
+  };
+  return m;
+}
+// a line's ribbon: two vertices at each of its points, either side of it across the rock there, with a round end; in
+// stretches, where it crosses a gap
+function lineRibbon(line, width, raise){
+  const P = line.p.map((p, i) => new THREE.Vector3(...p).addScaledVector(new THREE.Vector3(...line.n[i]), raise));
+  const steps = P.slice(1).map((p, i) => p.distanceTo(P[i])), usual = [...steps].sort((a, b) => a - b)[steps.length >> 1];
+  const pos = [], uv = [], idx = [], along = new THREE.Vector3();
+  for (let a = 0, b; a < P.length; a = b + 1) {
+    for (b = a; b < P.length - 1 && steps[b] <= LINE_GAP * usual; b++);
+    if (b === a) continue;      // a point on its own, between two gaps
+    const sides = [], ways = [], first = pos.length / 3;
+    for (let i = a; i <= b; i++) {
+      along.subVectors(P[Math.min(i + 1, b)], P[Math.max(i - 1, a)]).normalize();
+      const side = new THREE.Vector3().crossVectors(along, new THREE.Vector3(...line.n[i]));
+      if (side.lengthSq() < 1e-8) side.copy(sides[sides.length - 1] || new THREE.Vector3(1, 0, 0)); else side.normalize();
+      sides.push(side); ways.push(along.clone());
+      pos.push(...P[i].clone().addScaledVector(side, width / 2).toArray(), ...P[i].clone().addScaledVector(side, -width / 2).toArray());
+      uv.push(0, 0, 1, 0);
+      const k = first + 2 * (i - a);
+      if (i > a) idx.push(k - 2, k - 1, k, k - 1, k + 1, k);
+    }
+    for (const [i, out] of [[a, -1], [b, 1]]) {      // half a disc past each end: its middle, then its rim
+      const mid = pos.length / 3, n = 8, side = sides[i - a], way = ways[i - a];
+      pos.push(...P[i].toArray()); uv.push(.5, 0);
+      for (let k = 0; k <= n; k++) {
+        const t = Math.PI * k / n;
+        pos.push(...P[i].clone().addScaledVector(side, Math.cos(t) * width / 2).addScaledVector(way, out * Math.sin(t) * width / 2).toArray());
+        uv.push(0, 0);
+        if (k) idx.push(mid, mid + k, mid + k + 1);
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  return g;
+}
+function lineLabel(text, faint){
+  const k = 2, c = document.createElement('canvas'), x = c.getContext('2d'), font = `600 ${12 * k}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+  x.font = font;
+  const w = Math.ceil(x.measureText(text).width / k) + 12, h = 20;
+  c.width = w * k; c.height = h * k;
+  x.fillStyle = 'rgba(16,18,22,.82)'; x.beginPath();
+  x.roundRect ? x.roundRect(0, 0, c.width, c.height, 5 * k) : x.rect(0, 0, c.width, c.height);
+  x.fill();
+  x.font = font; x.textBaseline = 'middle'; x.fillStyle = '#fff'; x.fillText(text, 6 * k, c.height / 2 + k);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false }));
+  sprite.center.set(-8 / w, .5);      // to the right of its point, a little off the line (placeLineLabels() may flip it)
+  sprite.userData = { beta: true, w, h, most: faint ? .35 : 1 };
+  return sprite;
+}
+// Whether a name's point can be seen: a few pixels drawn there (as far nearer the camera as its line is drawn), of no
+// colour, with the card counting whether any got past the rock already drawn (an occlusion query, in WebGL 2). Its
+// answer comes a frame or so later: label.userData.seen, null until the first. Without WebGL 2, names aren't hidden
+// by rock in front.
+const lineGl = renderer.getContext(), lineQueries = typeof WebGL2RenderingContext !== 'undefined' && lineGl instanceof WebGL2RenderingContext;
+function lineProbe(label){
+  if (!lineQueries) return null;
+  const probe = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, colorWrite: false, depthWrite: false, sizeAttenuation: false }));
+  const q = label.userData.query = { id: lineGl.createQuery(), on: false, wait: false };
+  probe.userData.beta = true; probe.renderOrder = 6;
+  probe.onBeforeRender = () => { if (!q.wait && !q.on) { lineGl.beginQuery(lineGl.ANY_SAMPLES_PASSED, q.id); q.on = true; } };
+  probe.onAfterRender = () => { if (q.on) { lineGl.endQuery(lineGl.ANY_SAMPLES_PASSED); q.on = false; q.wait = true; } };
+  label.userData.seen = null;
+  return label.userData.probe = probe;
+}
+// whether the lines of the mesh in view are to show now
+function linesWanted(){
+  const st = lineState;
+  if (!st?.lines?.length || thumbMode || !current || current.userData.meshId !== st.mid || betaState?.choose) return false;
+  return st.climbs > 1 ? linesOn : betaState?.mid === st.mid;
+}
+function showLinesButton(){
+  const b = $('#vlines'), st = lineState;
+  b.hidden = !(st?.lines?.length && st.climbs > 1 && st.mid === shownMesh) || !!thumbMode;
+  b.setAttribute('aria-pressed', String(linesOn));
+  b.title = linesOn ? "Each climb's line, where the climbers in its videos went: press to hide them. A name picks its line out, and Open climb then goes to it."
+    : "Show each climb's line: where the climbers in its videos went";
+}
+function clearLines(){
+  const st = lineState;
+  if (!st?.group) return;
+  st.group.parent?.remove(st.group);
+  st.group.traverse(o => { if (o.isMesh) o.geometry.dispose(); if (o.isSprite) o.material.map?.dispose(); if (o.isMesh || o.isSprite) o.material.dispose(); });
+  for (const l of st.labels) if (l.userData.query) lineGl.deleteQuery(l.userData.query.id);
+  st.group = null; st.labels = [];
+}
+function drawLines(){
+  const st = lineState;
+  clearLines(); showLinesButton(); woke();
+  if (!linesWanted()) return;
+  const node = meshNode(), g = new THREE.Group(), scale = node.getWorldScale(new THREE.Vector3()).x;
+  // the boulder's size as the view frames it, in the units of the node the lines are in (drawBeta()'s)
+  const unit = Math.max(...mainBox(current).getSize(new THREE.Vector3()).toArray()) / scale;
+  lineLift.value = unit * scale * LINE_LIFT;
+  const cf = betaState?.mid === st.mid ? betaState.climbFocus : null, only = cf != null ? cf : st.pick;
+  for (const line of st.lines) {
+    if (line.p.length < 2) continue;
+    const faint = only != null && only !== line.climb;
+    const ribbon = new THREE.Mesh(lineRibbon(line, unit * LINE_WIDTH, unit * LINE_RAISE), lineMaterial(faint));
+    ribbon.renderOrder = 2; ribbon.userData.beta = true; g.add(ribbon);
+    const label = lineLabel(named(line), faint);
+    Object.assign(label.userData, { climb: line.climb, at: new THREE.Vector3(...line.p[line.at]), normal: new THREE.Vector3(...line.n[line.at]) });
+    label.position.copy(label.userData.at); label.renderOrder = 5; g.add(label); st.labels.push(label);
+    const probe = lineProbe(label);
+    if (probe) g.add(probe);
+  }
+  node.add(g);
+  Object.assign(st, { group: g, node, lift: unit * LINE_LIFT });
+  placeLineLabels();
+}
+const lineEye = new THREE.Vector3(), lineAt = new THREE.Vector3(), lineView = new THREE.Vector2();
+function placeLineLabels(){
+  const st = lineState;
+  if (!st?.group || !st.labels.length) return;
+  st.node.updateWorldMatrix(true, false);
+  st.node.worldToLocal(lineEye.copy(camera.position));
+  renderer.getSize(lineView);
+  const k = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / lineView.y / st.node.getWorldScale(lineAt).x, taken = [];
+  for (const [d, l] of st.labels.map(l => [lineEye.distanceTo(l.userData.at), l]).sort((a, b) => a[0] - b[0])) {
+    const { at, normal, w, h, most, probe, query } = l.userData;
+    if (query?.wait && !lineGl.isContextLost() && lineGl.getQueryParameter(query.id, lineGl.QUERY_RESULT_AVAILABLE)) {
+      l.userData.seen = !!lineGl.getQueryParameter(query.id, lineGl.QUERY_RESULT); query.wait = false;
+    }
+    const facing = lineAt.copy(lineEye).sub(at).dot(normal) / Math.max(d, 1e-9);     // how squarely the rock there faces the camera
+    l.visible = facing > LABEL_FACING[0];
+    if (probe) {     // asked only while it might show
+      probe.visible = l.visible;
+      probe.position.copy(lineEye).sub(at).setLength(Math.min(st.lift, d / 2)).add(at); probe.scale.setScalar(6 * k);
+      l.visible &&= l.userData.seen === true;
+    }
+    if (!l.visible) continue;
+    l.material.opacity = most * THREE.MathUtils.smoothstep(facing, ...LABEL_FACING);
+    l.scale.set(w * k, h * k, 1);
+    const p = lineAt.copy(at).applyMatrix4(st.node.matrixWorld).project(camera);
+    const px = (p.x + 1) / 2 * lineView.x, y = (1 - p.y) / 2 * lineView.y - h / 2;
+    const flip = px + 8 + w > lineView.x - 4 && px - 8 - w >= 4, x = flip ? px - 8 - w : px + 8;     // to its point's left, where its right would run off the view
+    l.center.x = flip ? 1 + 8 / w : -8 / w;
+    l.visible = p.z < 1 && !taken.some(r => x < r[0] + r[2] && r[0] < x + w && y < r[1] + h && r[1] < y + h);    // not over a nearer one
+    if (l.visible) taken.push([x, y, w]);
+  }
+}
+// The lines of the mesh just put in view: asked for if it has beta from videos. While the server is still making them
+// (the first time they're asked for, or its beta, its climbs' videos or its hidden pieces have changed since), asked
+// for again.
+function startLines(id){
+  clearLines(); clearTimeout(lineState?.timer);
+  lineState = null; showLinesButton();
+  if (!id || thumbMode || !meshesById[id]?.beta?.videos) return;
+  const st = lineState = { mid: id, lines: [], climbs: 0, labels: [], pick: null, tries: 0 };
+  st.ask = async () => {
+    let r;
+    try { r = await api(`/api/meshes/${id}/lines`); } catch { return; }      // none shown: nothing to say
+    if (lineState !== st) return;
+    const same = JSON.stringify(r.lines) === JSON.stringify(st.lines);
+    Object.assign(st, { lines: r.lines || [], climbs: r.climbs || 0 });
+    if (!same || !st.group) drawLines();
+    if (r.pending && ++st.tries <= 5) st.timer = setTimeout(st.ask, LINE_RETRY_MS);
+  };
+  st.ask();
+}
+// asked for again, as what they're made from has changed (which pieces of the mesh show): those drawn stay meanwhile
+function refreshLines(){
+  const st = lineState;
+  if (!st || st.mid !== shownMesh) return;
+  clearTimeout(st.timer); st.tries = 0; st.ask();
+}
+$('#vlines').onclick = () => {
+  linesOn = !linesOn; try { localStorage.setItem('bm_lines', linesOn ? '1' : '0'); } catch {}
+  drawLines();
+};
+renderer.domElement.addEventListener('click', ev => {     // a name picks its line out; again, or another's, undoes it
+  const st = lineState;
+  if (!st?.group || betaState?.marking || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
+  const on = raycaster.intersectObjects(st.labels.filter(l => l.visible), false)[0]?.object.userData.climb;
+  if (!on) return;
+  st.pick = st.pick === on ? null : on;
+  drawLines();
+});
 function roleCounts(holds){
   const n = {}; for (const h of holds) n[h.role] = (n[h.role] || 0) + 1;
   return ROLE_CYCLE.filter(r => n[r]).map(r => `<span class="swatch" style="background:${ROLES[r].color}"></span>${n[r]} ${ROLES[r].name.toLowerCase()}`).join(' · ') || 'none';

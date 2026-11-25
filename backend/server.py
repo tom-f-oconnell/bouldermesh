@@ -55,6 +55,7 @@ import admin as admin_mod  # noqa: E402
 import areamatch  # noqa: E402
 import accounts as accounts_mod  # noqa: E402
 import beta as beta_mod  # noqa: E402
+import betalines  # noqa: E402
 import captureplan  # noqa: E402
 import locateapi  # noqa: E402
 import reconstruction  # noqa: E402
@@ -2540,22 +2541,125 @@ def heading_existing_meshes() -> None:
             time.sleep(0.05)
 
 
-def lines_existing_meshes() -> None:
-    """Filter the lines of beta found before they were (beta.redraw_lines()): its limbs' tracks, and a centre track
-    added from its kept poses; newest mesh first, at the lowest CPU priority."""
+# ---------------------------------------------------------------------------------------------- climbs' lines
+# A mesh's climbs' lines (betalines.py) are made from its beta's centre tracks, by which of its videos are of which
+# climb, on the pieces of it that its cleanup shows. They're made again when any of those changes: once its beta is
+# found, at startup (lines_existing_meshes()), and when they're asked for and aren't of what's there now
+# (mesh_lines()). One mesh at a time, on a thread of its own at the lowest CPU priority: each reads its whole mesh.
+_lines_wanted: "queue.Queue[str]" = queue.Queue()
+_lines_queued: set[str] = set()
+_lines_lock = threading.Lock()
+_lines_tracks: dict[str, tuple[float, str]] = {}    # betalines.tracks() of each mesh's beta.json, by when it was written
+
+
+def lines_of(mid: str, record: dict) -> dict[str, list[str]]:
+    """Which of the videos of a mesh's beta are of each climb the mesh is of (climb_videos), for its climbs' lines:
+    {climb id: [url]}. A mesh of one climb's videos are all of it."""
+    climbs = list(climb_names(mid))
+    urls = [v["url"] for v in record.get("videos") or [] if v.get("url")]
+    if len(climbs) == 1:
+        return {climbs[0]: urls}
+    of: dict[str, list[str]] = {cid: [] for cid in climbs}
+    if climbs and urls:
+        here = set(urls)
+        for r in q(f"SELECT climb_id, url FROM climb_videos WHERE climb_id IN ({','.join('?' * len(climbs))}) ORDER BY url", *climbs):
+            if r["url"] in here:
+                of[r["climb_id"]].append(r["url"])
+    return of
+
+
+def _lines_key(mid: str, record: dict, of: dict[str, list[str]]) -> str:
+    """betalines.key() of a mesh's beta and climbs as they are now, its tracks hashed again only once beta.json has
+    been written again."""
+    try:
+        stamp = (MESHES / mid / beta_mod.FILE).stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    had = _lines_tracks.get(mid)
+    if not had or had[0] != stamp:
+        had = _lines_tracks[mid] = (stamp, betalines.tracks(record))
+    return betalines.key(had[1], of, betalines.shown_stamp(MESHES / mid))
+
+
+def want_lines(mid: str) -> None:
+    """Have a mesh's climbs' lines made, soon (lines_worker())."""
+    with _lines_lock:
+        if mid in _lines_queued:
+            return
+        _lines_queued.add(mid)
+    _lines_wanted.put(mid)
+
+
+def make_lines(mid: str) -> bool:
+    """Make a mesh's climbs' lines (betalines.py), unless those kept are of its beta and its climbs' videos as they are
+    now, or its beta is still being found (its tracks are still coming). Whether it made them."""
+    d = MESHES / mid
+    record = beta_mod.load(d)
+    if not d.is_dir() or not record or record.get("status") == "running":
+        return False
+    of = lines_of(mid, record)
+    if (betalines.load(d) or {}).get("key") == betalines.key(betalines.tracks(record), of, betalines.shown_stamp(d)):
+        return False
+    betalines.make(d, of, record)
+    return True
+
+
+def lines_worker() -> None:
+    """Makes the lines asked for (want_lines()), one mesh at a time, at the lowest CPU priority."""
     os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
-    n = 0
+    while True:
+        mid = _lines_wanted.get()
+        with _lines_lock:
+            _lines_queued.discard(mid)
+        try:
+            use_processing_cores()
+            make_lines(mid)
+        except Exception as e:  # never let the thread die
+            print(f"climbs' lines for mesh {mid} failed ({type(e).__name__}: {e})", flush=True)
+
+
+def mesh_lines(mid: str) -> dict:
+    """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree}], climbs,
+    pending}, in the order of its climbs' names; climbs is how many the mesh is of. pending: those kept aren't of its
+    beta and its climbs' videos as they are now (or none are kept yet), so they're being made again: asked for again
+    in a few seconds, they're the new ones."""
+    d = MESHES / mid
+    record = _beta_record(d)
+    if not record.get("videos"):
+        return {"lines": [], "climbs": 0, "pending": False}
+    of = lines_of(mid, record)
+    had = betalines.load(d) or {}
+    pending = record.get("status") != "running" and had.get("key") != _lines_key(mid, record, of)
+    if pending:
+        want_lines(mid)
+    kept = had.get("lines") or {}
+    ids = [cid for cid in of if cid in kept]
+    rows = {r["id"]: r for r in q(f"SELECT id, name, grade FROM climbs WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", *ids)}
+    return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **kept[cid]} for cid in ids if cid in rows],
+            "climbs": len(of), "pending": pending}
+
+
+def lines_existing_meshes() -> None:
+    """For beta found before its lines were what they are now: its centre track added from its kept poses, and its
+    limbs' tracks put in pieces (beta.redraw_lines()), then its climbs' lines made from that (make_lines()), where
+    they aren't already; newest mesh first, at the lowest CPU priority."""
+    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    use_processing_cores()
+    n = made = 0
     for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
         d = MESHES / m["id"]
         if not (d / beta_mod.FILE).exists():
             continue
         try:
             n += beta_mod.redraw_lines(d)
+            made += make_lines(m["id"])
         except Exception as e:
             print(f"beta lines for mesh {m['id']} failed ({type(e).__name__}: {e})", flush=True)
         time.sleep(0.05)
     if n:
         print(f"beta lines filtered for {plural(n, 'video')}", flush=True)
+    if made:
+        print(f"climbs' lines made for {made} mesh(es)", flush=True)
 
 
 # which way meshes face from their photos' skyline (skyline.py): in the background, one at a time, at the lowest CPU
@@ -8649,6 +8753,7 @@ def run_beta(mid: str) -> None:
     except Exception as e:
         log(f"FAILED: {type(e).__name__}: {e}")
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": f"failed: {type(e).__name__}: {e}", "progress": None, "at": None})
+    want_lines(mid)     # its climbs' lines, from the videos done: all of them, or those so far
 
 
 # ------------------------------------------------------------------ finding beta, on threads of its own
@@ -13321,6 +13426,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not src:
                     return self.send_json({"error": "not here now"}, 404)
                 return self.send_ranged(src, VIDEO_TYPES.get(src.suffix.lower(), "application/octet-stream"))
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/lines", p)
+            if m:   # where each of its climbs goes, from its videos' climbers (betalines.py)
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_json(mesh_lines(m[1]))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():
@@ -15582,6 +15692,7 @@ def main() -> None:
     threading.Thread(target=orient_existing_meshes, daemon=True).start()
     threading.Thread(target=source_existing_meshes, daemon=True).start()
     threading.Thread(target=heading_existing_meshes, daemon=True).start()
+    threading.Thread(target=lines_worker, daemon=True, name="climb-lines").start()
     threading.Thread(target=lines_existing_meshes, daemon=True, name="beta-lines-backfill").start()
     threading.Thread(target=skyline_worker, daemon=True).start()
     threading.Thread(target=adopt_old_pools, daemon=True).start()

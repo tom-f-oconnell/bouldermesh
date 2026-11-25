@@ -1396,6 +1396,67 @@ libraries than the image has for COLMAP.
 Marking by hand cycles a hold start, hand, finish, foot, then off. That's the order the Aurora apps
 (Tension, Kilter) list hold roles in, which I couldn't confirm is the order the Tension app cycles them.
 
+## Climbs' lines (`backend/betalines.py`)
+
+A mesh of several climbs shows where each goes: one line a climb, on the rock, with its name, as topos
+have them. They replaced the lines the viewer drew for every video (each hand and foot, and the
+climber's centre), which were many, unlabelled, and no better than the worst video.
+
+**What a line is made from.** The climber's centre, not their hands. Drawn on five boulders' meshes
+(123 videos), each video's hand holds joined in order zigzag across the rock, and the videos of one
+climb agree only loosely; their centre tracks mostly lie along one path. The centre is four large
+joints, found in about half again as many frames as both wrists are (in a dozen videos of one boulder),
+a wrist often being hidden behind the climber. It's cast onto the rock behind the climber, so a camera
+off to one side puts it to that side of where they are, by about their distance from the wall.
+Averaging videos filmed from different places should take some of that out, which wasn't measured.
+
+**What's left out**, in the order it's done:
+
+1. Points on pieces of the mesh its cleanup hides. A ray past the rock's edge lands on scenery or a
+   stray fragment, which is what the cleanup hides. Lines are also laid only on what shows, so none
+   hangs in the air where a piece is hidden.
+2. Runs that end up within 12% of the rock's size of where they began: standing about, or a walk over
+   and back. A track's pieces (beta.py breaks it at jumps of 10% and gaps of a second) are joined into a
+   run where the next starts within 4 s and 15% of the last, which is the tracker losing the climber for
+   a moment; a fall is a bigger jump, so each go at a climb is a run of its own.
+3. Videos that don't agree with the others. The line starts as the run that other videos of the climb
+   keep within 8% of for longest, so a video of another climb, or one matched to the wrong part of
+   the rock, never starts a line and adds nothing to one.
+4. That run's ends where no other video goes, unless they carry on within 60° of the way the line was
+   going. Cutting to the agreed part alone lost the tops of climbs that only one video follows over
+   the lip; keeping every end kept walks in to the start.
+
+Then each point moves to the middle of the videos near it (each video counting once), twice, and the
+line is smoothed over 4% of the rock's size along its length. Smoothing fits a straight line through
+the points near each one rather than averaging them, as an average pulls a path's ends in: by 8% of
+the rock's size, on a test track crossing an eighth of the rock a second.
+
+A climb with one video gets its run that ends up furthest away, as does one whose videos never agree. A
+video of two climbs on the mesh can agree with a line but not start one: a climb with only such videos
+has none.
+
+**On the five boulders**, 38 climbs had videos and 34 got lines. 27 of those were agreed by two videos
+or more, and 7 came from a climb's only video. The four without each had one video: three with next to
+no track (0, 0 and 8 points), and one whose track lay on a piece its cleanup hides. The lines weren't
+checked against the climbs' real ones, only by eye for whether each looks like a line up the rock.
+
+**Laying a line on the mesh.** Each point goes to the plane fitted through the vertices within 2.5% of
+the rock's size of the vertex nearest it, and takes that plane's normal. Vertices are filed in a grid
+by cell, as going through all of them for each point took 19 s for one mesh's six lines (1.2 M
+vertices); the whole job, reading the mesh included, now takes 1 to 3 s a mesh on hal. Lines are kept in `lines.json` with a key of what
+they were made from (the tracks, which videos are of which climb, the cleanup, and `VERSION`), so the
+server knows when to make them again, and raising `VERSION` remakes them all. They need no mesh made
+again.
+
+**Drawing them.** A line is a ribbon 1.6% of the rock's size across, flat against the rock by the
+normals, so that it thins when seen edge on, as paint would. It's drawn 3% of the rock's size nearer
+the camera than it is, along the line of sight, as holds' rings are: rock a little proud of a flat
+ribbon doesn't cut through it, and a line round the back stays hidden. A name is drawn over
+everything, as rock in front of half of one cut it off mid-word. So that names of lines round the
+back don't show through the rock, a few pixels are drawn at each name's point and the graphics card
+is asked whether any passed the rock already drawn (an occlusion query, WebGL 2); without it, a name
+is hidden only where the rock at its point faces away.
+
 ## How big a boulder is (`backend/scale.py`)
 
 COLMAP's meshes have no scale of their own. On Nov 8 every placed photo of the 187 meshes with kept
