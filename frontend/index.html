@@ -276,9 +276,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   /* Beta at the bottom left, one height in each layout, so the stray pieces sit above it with the gap between buttons */
   #viewer{--vbeta-h:22px} #vbl{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;align-items:center;gap:10px}
   /* the view's bottom row of buttons (Beta, Rate, the notes' and report buttons) all one height */
-  #vbeta,#vbadd,#vlines,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
-  #vbeta[hidden],#vbadd[hidden],#vlines[hidden],#vcorner>button[hidden]{display:none}
-  #vbeta[aria-pressed=true],#vbadd[aria-pressed=true],#vlines[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
+  #vbeta,#vbadd,#vlines,#vldraw,#ratebtn,#vcorner>button{height:var(--vbeta-h);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding-top:0;padding-bottom:0}
+  #vbeta[hidden],#vbadd[hidden],#vlines[hidden],#vldraw[hidden],#vcorner>button[hidden]{display:none}
+  #vbeta[aria-pressed=true],#vbadd[aria-pressed=true],#vlines[aria-pressed=true],#vldraw[aria-pressed=true]{background:var(--acc);color:var(--acc-fg);border-color:var(--acc)}
   #vbadd{min-width:var(--vbeta-h);padding-left:6px;padding-right:6px;font-weight:600;margin-left:-6px}
   #vbeta.none{opacity:.75;cursor:default}
   hr.bsep{border:0;border-top:1px solid var(--line);margin:6px 0}
@@ -289,6 +289,9 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   /* above it while beta shows: the videos its holds came from, each shown or not, and one picked out */
   #vbetavids{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(360px,calc(100% - 24px));max-height:40%;overflow:auto;
     background:var(--overlay);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px} #vbetavids[hidden]{display:none}
+  /* in its place while a climb's line is drawn by hand: which climb, and what to do with the points clicked */
+  #vlinedraw{position:absolute;left:12px;bottom:52px;z-index:3;max-width:min(340px,calc(100% - 24px));background:var(--overlay);border:1px solid var(--line);
+    border-radius:6px;padding:8px;font-size:12px} #vlinedraw[hidden]{display:none} #vlinedraw select{width:100%;margin:4px 0} #vlinedraw .row{gap:4px;flex-wrap:wrap;margin-top:6px}
   #vbetavids .bv{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;cursor:pointer}
   #vbetavids .bv:hover{background:var(--line)} #vbetavids .bv.on{background:var(--src-bg);outline:1px solid var(--acc)}
   #vbetavids .bvhead{display:flex;align-items:baseline;width:100%;margin:0 0 3px;padding:0;border:0;background:none;font:inherit;text-align:left;cursor:pointer}
@@ -774,11 +777,13 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
         <button class="sm sec" id="vothers" hidden></button>
       </div>
       <div id="vbetavids" hidden></div>
+      <div id="vlinedraw" hidden></div>
       <div id="vbetadbg" hidden></div>
       <div id="vbl">
         <button class="sm sec" id="vbeta" hidden aria-pressed="false" title="Show the beta on this mesh: the holds found in its videos, and those marked by hand. Press again to hide it.">Beta</button>
         <button class="sm sec" id="vbadd" hidden aria-pressed="false" aria-label="Add beta" title="Add beta: click the rock to mark a start hold, then click a hold again for hand, finish, foot, then none. Press again to stop.">+</button>
         <button class="sm sec" id="vlines" hidden aria-pressed="true">Lines</button>
+        <button class="sm sec" id="vldraw" hidden aria-pressed="false" aria-label="Draw a climb's line" title="Draw a climb's line by hand, or draw one again: click the rock from its start to its top">✎</button>
         <div id="vold" hidden title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">old</div>
       </div>
       <div id="vcorner">
@@ -5284,7 +5289,7 @@ async function startBeta(mid){
 let betaVidsOpen = true;
 function renderBetaVids(){
   const el = $('#vbetavids'), b = betaState, vids = (b?.found?.videos || []).filter(v => v.holds?.length), sets = (b?.sets || []).filter(x => x.holds?.length);
-  el.hidden = !b || b.mid !== shownMesh || !(vids.length || sets.length || b.choose) || thumbMode;
+  el.hidden = !b || b.mid !== shownMesh || !(vids.length || sets.length || b.choose) || thumbMode || !!lineDraw;
   if (el.hidden) return;
   const all = vids.every(v => b.shown.has(v.tag)), some = vids.some(v => b.shown.has(v.tag)), ch = b.choose;
   const vset = Object.fromEntries(videoSets(b).map(x => [x.tag, x]));
@@ -5844,6 +5849,7 @@ const LABEL_FACING = [.08, .3];      // a name fades in between these cosines of
 const lineLift = { value: 0 };      // LINE_LIFT in the scene's units, shared by every line's material
 // {mid, lines: [{climb, name, grade, p, n, at}], climbs: how many the mesh is of, group, node, labels, pick, tries}
 let lineState = null;
+let lineDraw = null;      // a line being drawn by hand (renderLineDraw())
 let linesOn = true; try { linesOn = localStorage.getItem('bm_lines') !== '0'; } catch {}
 const LINE_MAP = (() => {       // across a line: a dark edge either side, so it shows on pale rock and sky alike
   const c = document.createElement('canvas'); c.width = 64; c.height = 4;
@@ -5930,7 +5936,7 @@ function lineProbe(label){
 function linesWanted(){
   const st = lineState;
   if (!st?.lines?.length || thumbMode || !current || current.userData.meshId !== st.mid || betaState?.choose) return false;
-  return st.climbs > 1 ? linesOn : betaState?.mid === st.mid;
+  return st.climbs > 1 ? linesOn : betaState?.mid === st.mid || st.lines.some(l => l.drawn);      // one drawn by hand shows with its mesh
 }
 function showLinesButton(){
   const b = $('#vlines'), st = lineState;
@@ -5938,6 +5944,9 @@ function showLinesButton(){
   b.setAttribute('aria-pressed', String(linesOn));
   b.title = linesOn ? "Each climb's line, where the climbers in its videos went: press to hide them. A name picks its line out, and Open climb then goes to it."
     : "Show each climb's line: where the climbers in its videos went";
+  const d = $('#vldraw');
+  d.hidden = !(editor && st?.of?.length && st.mid === shownMesh) || !!thumbMode;
+  d.setAttribute('aria-pressed', String(!!lineDraw));
 }
 function clearLines(){
   const st = lineState;
@@ -6008,14 +6017,16 @@ function placeLineLabels(){
 function startLines(id){
   clearLines(); clearTimeout(lineState?.timer);
   lineState = null; showLinesButton();
-  if (!id || thumbMode || !meshesById[id]?.beta?.videos) return;
-  const st = lineState = { mid: id, lines: [], climbs: 0, labels: [], pick: null, tries: 0 };
+  stopLineDraw();
+  const m = meshesById[id];     // any mesh of a climb may have a line drawn by hand, beta or none
+  if (!id || thumbMode || !(m?.climbs?.length || m?.boulder_climbs?.length)) return;
+  const st = lineState = { mid: id, lines: [], of: [], climbs: 0, labels: [], pick: null, tries: 0 };
   st.ask = async () => {
     let r;
     try { r = await api(`/api/meshes/${id}/lines`); } catch { return; }      // none shown: nothing to say
     if (lineState !== st) return;
     const same = JSON.stringify(r.lines) === JSON.stringify(st.lines);
-    Object.assign(st, { lines: r.lines || [], climbs: r.climbs || 0 });
+    Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0 });
     if (!same || !st.group) drawLines();
     if (r.pending && ++st.tries <= 5) st.timer = setTimeout(st.ask, LINE_RETRY_MS);
   };
@@ -6031,9 +6042,81 @@ $('#vlines').onclick = () => {
   linesOn = !linesOn; try { localStorage.setItem('bm_lines', linesOn ? '1' : '0'); } catch {}
   drawLines();
 };
+// ---- a climb's line drawn by hand (an editor's ✎): the climb chosen, then points clicked on the rock from its start
+// to its top; saved, the server lays a line through them on the mesh, in place of the one its videos gave (or where
+// they gave none), and holds are judged by it. It starts from the line there is, thinned to a point every few, so
+// that a line that's nearly right is put right by undoing its last points and clicking on. lineDraw: {climb, pts:
+// [Vector3, in the mesh's coordinates], group}
+const DRAW_COLOR = 0xff5ad2;
+function stopLineDraw(){
+  if (!lineDraw) return;
+  lineDraw.group?.parent?.remove(lineDraw.group);
+  lineDraw = null; $('#vlinedraw').hidden = true;
+  showLinesButton(); renderBetaVids(); woke();
+}
+function drawFrom(climb){      // the points to start from: as it was drawn; else the line there is, thinned
+  const st = lineState, was = st.of.find(c => c.climb === climb)?.drawn, line = st.lines.find(l => l.climb === climb);
+  const from = was || (line ? line.p.filter((_, i) => i % 5 === 0 || i === line.p.length - 1) : []);
+  return from.map(p => new THREE.Vector3(...p));
+}
+function renderLineDraw(){
+  const d = lineDraw, st = lineState, el = $('#vlinedraw');
+  if (!d || !st) return;
+  d.group?.parent?.remove(d.group);
+  const g = d.group = new THREE.Group(), node = meshNode();
+  if (d.pts.length) {
+    const geo = new THREE.BufferGeometry().setFromPoints(d.pts);
+    for (const o of [new THREE.Line(geo, new THREE.LineBasicMaterial({ color: DRAW_COLOR, depthTest: false, transparent: true })),
+                     new THREE.Points(geo, new THREE.PointsMaterial({ color: DRAW_COLOR, size: 9, sizeAttenuation: false, depthTest: false, transparent: true }))]) {
+      o.renderOrder = 7; o.userData.beta = true; g.add(o);
+    }
+  }
+  node.add(g);
+  const has = st.of.find(c => c.climb === d.climb)?.drawn;
+  el.hidden = false;
+  el.innerHTML = `<b>Draw a climb's line</b>
+    <select aria-label="The climb">${st.of.map(c => `<option value="${esc(c.climb)}" ${c.climb === d.climb ? 'selected' : ''}>${esc(named(c))}${c.drawn ? ' · drawn' : st.lines.some(l => l.climb === c.climb) ? ' · from its videos' : ' · no line'}</option>`).join('')}</select>
+    <div class="meta">Click the rock along the climb, from its start to its top: ${d.pts.length} point${d.pts.length === 1 ? '' : 's'}. The line is laid on the rock between them.</div>
+    <div class="row"><button class="sm sec undo"${d.pts.length ? '' : ' disabled'}>Undo</button><button class="sm sec clear"${d.pts.length ? '' : ' disabled'}>Clear</button>
+      <button class="sm save"${d.pts.length > 1 ? '' : ' disabled'}>Save</button>${has ? '<button class="sm sec gone" title="Forget the line drawn: the one its videos give, if any, is its line again">Remove drawn</button>' : ''}
+      <button class="sm sec close">Close</button></div>`;
+  el.querySelector('select').onchange = ev => { d.climb = ev.target.value; d.pts = drawFrom(d.climb); renderLineDraw(); };
+  el.querySelector('.undo').onclick = () => { d.pts.pop(); renderLineDraw(); };
+  el.querySelector('.clear').onclick = () => { d.pts = []; renderLineDraw(); };
+  el.querySelector('.close').onclick = stopLineDraw;
+  const send = async (method, json) => {
+    try {
+      const r = await api(`/api/meshes/${st.mid}/lines/${d.climb}`, { method, ...(json ? { json } : {}) });
+      if (lineState !== st) return;
+      Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0 });
+      stopLineDraw(); refreshLines();
+      toast(method === 'POST' ? 'Saved: its line is laid on the rock in a few seconds' : 'Removed: its line is as its videos give it', 4000);
+    } catch (e) { toast(e.message, 6000); }
+  };
+  el.querySelector('.save').onclick = () => send('POST', { points: d.pts.map(p => p.toArray()) });
+  if (has) el.querySelector('.gone').onclick = () => send('DELETE');
+  woke();
+}
+$('#vldraw').onclick = () => {
+  const st = lineState;
+  if (lineDraw) return stopLineDraw();
+  if (!editor || !st?.of?.length || st.mid !== shownMesh || !current) return;
+  if (betaState?.marking) setMarking(false);
+  const climb = (st.pick && st.of.some(c => c.climb === st.pick) ? st.pick : null) || (viewedClimb && st.of.some(c => c.climb === viewedClimb) ? viewedClimb : null)
+    || (st.of.find(c => !c.drawn && !st.lines.some(l => l.climb === c.climb)) || st.of[0]).climb;      // the one picked out; else the first with no line
+  lineDraw = { climb, pts: drawFrom(climb), group: null };
+  showLinesButton(); renderBetaVids(); renderLineDraw();
+};
+renderer.domElement.addEventListener('click', ev => {     // a point of the line being drawn, where the rock was clicked
+  if (!lineDraw || !current || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  const hit = surfaceUnder(ev, false, [current]);
+  if (!hit) return;
+  lineDraw.pts.push(meshNode().worldToLocal(hit.point.clone()));
+  renderLineDraw();
+});
 renderer.domElement.addEventListener('click', ev => {     // a name picks its line out; again, or another's, undoes it
   const st = lineState;
-  if (!st?.group || betaState?.marking || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
+  if (!st?.group || lineDraw || betaState?.marking || ev.detail > 1 || !pressedAt || Math.hypot(ev.clientX - pressedAt[0], ev.clientY - pressedAt[1]) > 5) return;
   const r = renderer.domElement.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((ev.clientX - r.left) / r.width * 2 - 1, 1 - (ev.clientY - r.top) / r.height * 2), camera);
   const on = raycaster.intersectObjects(st.labels.filter(l => l.visible), false)[0]?.object.userData.climb;

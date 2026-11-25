@@ -7,8 +7,9 @@ mostly agree where it goes, though, and a climb's line is where they do:
 
   1. each video's track is cut into runs: its points on pieces of the mesh that its cleanup hides (meshclean.py: stray
      fragments, far scenery, which a ray past the rock's edge lands on) dropped, its pieces joined where one ends near
-     where and when the next starts, smoothed over time, and given points evenly along its length. A run that ends up
-     where it started (someone standing, or going there and back) is left out
+     where and when the next starts, or further off but on the way it was going (_joins()), smoothed over time, and
+     given points evenly along its length. A run that ends up where it started (someone standing, or going there and
+     back) is left out
   2. of the runs of the climb's own videos (those of no other climb on the mesh), the one that other videos keep near
      for longest is what the line starts as. Past the first and last points another video comes near, it's kept only
      while it carries on the way it was going: the rest is one video's wander. A climb with one video, or whose videos
@@ -16,7 +17,9 @@ mostly agree where it goes, though, and a climb's line is where they do:
      what's off: whole videos (another climb, frames matched to the wrong side of the rock)
   3. each of the line's points is moved to the middle of where the videos near it went, so that no one video's wobble
      shows, and the line is smoothed along its length
-  4. it's laid on the mesh, on what of it shows: each point moved onto the surface nearest it, with the surface's
+  4. it's carried on to the last holds its videos' hands reach past its end (to_the_top()): the climber's middle stops
+     an arm's length short of them
+  5. it's laid on the mesh, on what of it shows: each point moved onto the surface nearest it, with the surface's
      normal there, which the viewer draws it flat against
 
 A line also says which of its videos' holds are the climb's (holds_by_lines()). A hold further than a reach (REACH_M)
@@ -28,12 +31,16 @@ it), and each hand's hold furthest along the line is its finish, whenever it was
 after a fall, on another go, or walking off). A line checks itself first: if a third of its own videos' holds are
 beyond a reach of it (astray()), it and they disagree, and it says nothing of holds.
 
+A line can also be drawn by hand, in the viewer, as points clicked on the rock from the climb's start to its top
+(DRAWN_FILE, {climb id: {p, by, at}}). It then is the climb's line, whatever its videos say and whether it has any,
+laid on the mesh between its points like the rest, and it speaks for all its climb's videos' holds.
+
 lines.json  {key, lines: {climb id: {p: [[x, y, z]], n: [[x, y, z]], at, videos, agree, astray}}, holds: {video url:
             {off: [hold id], roles: {hold id: role}}}}: p the line's points on the mesh (in its coordinates, as
             beta.json's), n the surface's unit normal at each, at the index of the point its name goes by (the one
             furthest from the mesh's other lines), videos how many of the climb's videos had a run, agree how many of
-            those the line keeps near (itself included), and astray the share of those videos' holds beyond a reach of
-            it; holds has the videos with a hold off their climbs' lines or given another role by them (shown()
+            those the line keeps near (itself included), astray the share of those videos' holds beyond a reach of
+            it, and drawn: true for one drawn by hand (videos and agree 0); holds has the videos with a hold off their climbs' lines or given another role by them (shown()
             applies it to a beta record); key is what it was made from (key())
 """
 from __future__ import annotations
@@ -43,11 +50,16 @@ import json
 from pathlib import Path
 
 FILE = "lines.json"
-VERSION = 3             # raised when lines would come out differently, so that they're made again
+DRAWN_FILE = "lines_drawn.json"
+DRAWN_MOST = 200        # points a line drawn by hand may have
+VERSION = 4             # raised when lines would come out differently, so that they're made again
 STEP = 0.02             # between a line's points, as a share of the rock's size (as every length here)
 SMOOTH_SECONDS = 1.0    # a track is smoothed over about this long either side
 CHAIN_SECONDS = 4.0     # pieces of a track this close in time,
 CHAIN_JUMP = 0.15       # and this close in place, are one run: the tracker lost the climber for a moment
+JOIN_SECONDS = 10.0     # as are pieces up to this long apart,
+JOIN_JUMP = 0.3         # and this far, where the next is on the way the track was going (TURN) and goes on that way
+JOIN_BACK = 3.0         # the way a track was going where it breaks: over its last seconds
 MIN_RUN = 0.12          # a run that ends up less than this from where it started isn't a climb
 NEAR = 0.08             # videos within this of each other agree
 AGREE = 0.25            # a line is cut back towards where videos agree only if they do over this share of it
@@ -125,6 +137,73 @@ def _went(P) -> float:
     return far * (DOWN if d[1] < -0.5 * far else 1.0)
 
 
+def _joins(chain: list, piece: list, size: float) -> bool:
+    """Whether a piece of a track carries on the stretch before it ([[t, x, y, z]], both): it starts close after in
+    time and place (the tracker lost the climber for a moment), or further off (JOIN_SECONDS, JOIN_JUMP) but on the
+    way the track was going, and itself goes on that way. A climber lost for some seconds on the way up is found
+    again further up; after a fall, or setting off down, they're found the other way."""
+    import numpy as np
+    last, first = np.asarray(chain[-1], float), np.asarray(piece[0], float)
+    wait, jump = first[0] - last[0], first[1:] - last[1:]
+    far = float(np.linalg.norm(jump))
+    if wait <= CHAIN_SECONDS and far <= CHAIN_JUMP * size:
+        return True
+    if wait > JOIN_SECONDS or far > JOIN_JUMP * size:
+        return False
+    back = next((r for r in reversed(chain) if last[0] - r[0] >= JOIN_BACK), chain[0])
+    way = last[1:] - np.asarray(back[1:], float)
+    on = np.asarray(piece[-1][1:], float) - first[1:]
+    if np.linalg.norm(way) < STEP * size or np.linalg.norm(on) < STEP * size:      # no saying which way either goes
+        return False
+    cos = lambda a, b: float(a @ b) / max(float(np.linalg.norm(a) * np.linalg.norm(b)), 1e-12)  # noqa: E731
+    return cos(on, way) >= TURN and (far < STEP * size or cos(jump, way) >= TURN)
+
+
+def top_holds(P, videos: list[dict], far: float) -> list:
+    """Where a line's videos' hands go on past its last point: for each video with any, the middle of its hand
+    holds that are nearest the line at its end, ahead of it the way it's going, and within `far` (a reach) of it.
+
+    Args:
+        P: the line's points, in the order climbed.
+        videos: those the line keeps near, each with its holds ([{p, contacts}]).
+    """
+    import numpy as np
+    import beta
+    S = _lengths(P)
+    way = P[-1] - P[max(0, len(P) - 1 - max(1, int(round(AHEAD / STEP / 2))))]
+    way = way / max(float(np.linalg.norm(way)), 1e-12)
+    out = []
+    for v in videos:
+        past = []
+        for h in v.get("holds") or []:
+            p = np.asarray(h["p"], float)
+            if any(beta.LIMBS[c["limb"]][0] == "hand" for c in h["contacts"]) and (p - P[-1]) @ way > 0 \
+                    and np.linalg.norm(p - P[-1]) <= far and _along(p, P, S) >= S[-1] - 1e-9:
+                past.append(p)
+        if past:
+            out.append(np.mean(past, axis=0))
+    return out
+
+
+def to_the_top(P, videos: list[dict], far: float, step: float):
+    """A line carried on to where its videos' hands go past its end. A line is where the climber's middle went, which
+    stops an arm's length short of the last holds, and sooner where the camera loses them at the top. Carried on to
+    the middle of top_holds(), where two of its videos have some (or its only one does).
+
+    Returns:
+        The line, with points on to there (`step` apart) if it's carried on.
+    """
+    import numpy as np
+    tops = top_holds(P, videos, far)
+    if len(tops) < min(2, len(videos)) or not tops:
+        return P
+    end = np.mean(tops, axis=0)
+    n = int(np.linalg.norm(end - P[-1]) / step)
+    if n < 1:
+        return P
+    return np.vstack([P, [P[-1] + (end - P[-1]) * k / n for k in range(1, n + 1)]])
+
+
 def runs(centre: list, size: float) -> list:
     """A video's climber's way over the rock, as runs.
 
@@ -139,9 +218,7 @@ def runs(centre: list, size: float) -> list:
     import numpy as np
     chains: list[list] = []
     for piece in sorted((p for p in centre or [] if len(p) >= 2), key=lambda p: p[0][0]):
-        last = chains[-1][-1] if chains else None
-        if last is not None and piece[0][0] - last[0] <= CHAIN_SECONDS \
-                and np.linalg.norm(np.subtract(piece[0][1:], last[1:])) <= CHAIN_JUMP * size:
+        if chains and _joins(chains[-1], piece, size):
             chains[-1] = chains[-1] + list(piece)
         else:
             chains.append(list(piece))
@@ -645,6 +722,53 @@ def on_rock(centre: list, surface: Surface) -> list:
     return [r for r in out if len(r) >= 2]
 
 
+def load_drawn(mesh_dir: Path) -> dict[str, dict]:
+    """The lines drawn by hand on a mesh: {climb id: {p: [[x, y, z]], by, at}}."""
+    try:
+        got = json.loads((mesh_dir / DRAWN_FILE).read_text())
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def draw(mesh_dir: Path, climb: str, points, by: str | None = None, now: float | None = None) -> dict[str, dict]:
+    """Keep a climb's line as drawn by hand, in place of any before; with no points, forget it, and its videos'
+    line is the climb's again.
+
+    Args:
+        points: [[x, y, z]] on the mesh, in its coordinates, from the climb's start to its top: 2 to DRAWN_MOST.
+        by: who drew it.
+
+    Returns:
+        load_drawn(), after.
+
+    Raises:
+        ValueError: they aren't such points.
+    """
+    import math
+    import time
+    drawn = load_drawn(mesh_dir)
+    if points:
+        ok = isinstance(points, list) and 2 <= len(points) <= DRAWN_MOST and all(
+            isinstance(p, list) and len(p) == 3 and all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in p)
+            for p in points)
+        if not ok:
+            raise ValueError(f"a line is 2 to {DRAWN_MOST} points on the mesh, each [x, y, z]")
+        drawn[climb] = {"p": [[round(float(x), 5) for x in p] for p in points], "by": by, "at": time.time() if now is None else now}
+    else:
+        drawn.pop(climb, None)
+    tmp = mesh_dir / (DRAWN_FILE + ".tmp")
+    tmp.write_text(json.dumps(drawn))
+    tmp.replace(mesh_dir / DRAWN_FILE)
+    return drawn
+
+
+def drawn_stamp(mesh_dir: Path) -> str:
+    """What says a mesh's hand-drawn lines are the same ones: their points, by climb."""
+    drawn = load_drawn(mesh_dir)
+    return hashlib.sha1(json.dumps(sorted((c, one.get("p")) for c, one in drawn.items())).encode()).hexdigest()[:12] if drawn else ""
+
+
 def tracks(record: dict | None) -> str:
     """What says a mesh's beta's centre tracks and holds are the same ones: not when beta.json was written, which is
     every few seconds while beta is found."""
@@ -654,12 +778,12 @@ def tracks(record: dict | None) -> str:
     return said.hexdigest()
 
 
-def key(tracked: str, of: dict[str, list[str]], shown: str = "", metres_per_unit: float | None = None) -> str:
+def key(tracked: str, of: dict[str, list[str]], shown: str = "", metres_per_unit: float | None = None, drawn: str = "") -> str:
     """What a mesh's lines are made from, to tell when they need making again: its videos' centre tracks and holds
     (tracks()), which videos are of which climb, which of its pieces show (shown_stamp()), its scale (a hold's reach
-    is in metres), and VERSION."""
+    is in metres), the lines drawn on it by hand (drawn_stamp()), and VERSION."""
     scale = round(float(metres_per_unit), 4) if metres_per_unit else None
-    said = json.dumps([VERSION, tracked, sorted((c, sorted(set(u))) for c, u in of.items()), shown, scale])
+    said = json.dumps([VERSION, tracked, sorted((c, sorted(set(u))) for c, u in of.items()), shown, scale, drawn])
     return hashlib.sha1(said.encode()).hexdigest()[:16]
 
 
@@ -685,12 +809,13 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, m
     import numpy as np
     import beta
     record = record if record is not None else beta.load(mesh_dir) or {}
-    made_from = key(tracks(record), of, shown_stamp(mesh_dir), metres_per_unit)     # before the mesh is read: a change meanwhile makes them again
+    made_from = key(tracks(record), of, shown_stamp(mesh_dir), metres_per_unit, drawn_stamp(mesh_dir))     # before the mesh is read: a change meanwhile makes them again
+    drawn = {cid: one for cid, one in load_drawn(mesh_dir).items() if cid in of and len(one.get("p") or []) >= 2}
     out, changes = {}, {}
     wanted = {u for urls in of.values() for u in urls}
     videos = [v for v in record.get("videos") or [] if v.get("url") in wanted and v.get("centre")]
     try:
-        V, F = beta.geometry(mesh_dir) if videos else (None, None)
+        V, F = beta.geometry(mesh_dir) if videos or drawn else (None, None)
     except ValueError:      # no mesh here that can be read: no lines, rather than trying again each time they're asked for
         V = None
     if V is not None:
@@ -699,7 +824,13 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, m
         surface = Surface(V, F if shown is None else F[shown], PATCH * size)
         if shown is not None:
             videos = [{**v, "centre": on_rock(v["centre"], surface)} for v in videos]
-        found = lines(videos, of, size)
+        far = reach(size, metres_per_unit)
+        found = {cid: one for cid, one in lines(videos, of, size).items() if cid not in drawn}
+        by_url = {v.get("url"): v for v in record.get("videos") or []}
+        for one in found.values():      # each carried on to its videos' last holds
+            one["points"] = to_the_top(one["points"], [by_url[u] for u in one["near"] if u in by_url], far, STEP * size)
+        for cid, one in drawn.items():      # as drawn, which speaks for every video of its climb
+            found[cid] = {"points": _resampled(np.asarray(one["p"], float), STEP * size), "videos": 0, "agree": 0, "near": [], "drawn": True}
         if found:
             every = np.vstack([one["points"] for one in found.values()])
             surface.normals_in(every.min(axis=0) - 4 * PATCH * size, every.max(axis=0) + 4 * PATCH * size)
@@ -707,8 +838,9 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, m
         for cid, one in found.items():
             P, normals = laid[cid]
             out[cid] = {"p": [[round(float(x), 5) for x in p] for p in P], "n": [[round(float(x), 3) for x in n] for n in normals],
-                        "at": label_at(P, [laid[c][0] for c in laid if c != cid]), "videos": one["videos"], "agree": one["agree"]}
-        by, far = {cid: {**found[cid], "p": laid[cid][0]} for cid in found}, reach(size, metres_per_unit)
+                        "at": label_at(P, [laid[c][0] for c in laid if c != cid]), "videos": one["videos"], "agree": one["agree"],
+                        **({"drawn": True} if one.get("drawn") else {})}
+        by = {cid: {**found[cid], "p": laid[cid][0], **({"agree": 2} if found[cid].get("drawn") else {})} for cid in found}
         changes = holds_by_lines(record.get("videos") or [], of, by, far, NEAR * size)
         for cid, share in astray(record.get("videos") or [], by, far).items():
             out[cid]["astray"] = round(share, 3)

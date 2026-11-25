@@ -487,7 +487,8 @@ feet with a pose model, casts them onto the mesh, and keeps the points where one
 least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
 only feet touched are foot holds. Each video has its own holds, which can be shown or hidden, and a picture
 of its frame with its tracks and holds drawn on it. Where its climber went is drawn as its climb's line
-(below), not as a line for each hand and foot. Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
+(below), not as a line for each hand and foot. It looks at a video's first 150 s, and on to 300 s while the climber is still on the rock (it stops once they've
+been off it for 30 s). Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1
 where their photos were placed, so they need rebuilding first. Each new mesh with video frames placed in it
 has its beta found straight after, while its videos are still kept (*Find beta in each new mesh* on the
 admin page's *Areas*); on machines that connect here, meshing comes first, then beta and size.
@@ -553,6 +554,16 @@ all its climb's videos, and a line from one video only for that video's holds. A
 own videos' holds are beyond a reach of it hides none: then it's the line that's in doubt (11 of 83).
 *Copy to a set* copies a video's holds as shown. The holds given to the phone apps for captures are
 still all those found.
+
+**Drawing a line by hand.** An editor has ✎ beside *Lines*: choose the climb, click the rock from its
+start to its top, and *Save*. The line is laid on the rock through those points, in place of the one its
+videos gave, or where they gave none (a mesh with no beta can have lines this way). It starts from the
+line there is, so one that's nearly right needs only its last points undone and clicked again. *Remove
+drawn* goes back to the videos' line. Holds are then judged by the drawn line.
+
+A line from videos is one video's track, joined over breaks of up to 10 s where it carries on the same
+way, moved to the middle of the others, and carried on at its top to the last holds two of its videos'
+hands reach.
 
 ## How big a boulder is
 
@@ -1293,7 +1304,7 @@ machine. *Run more on* adds up to that many machines (2 by default):
   to refuse any other image, should the server be taken over. The public setup's Caddy passes `/worker/` to a port that
   answers only that (`WORKER_PORT`, 47614); elsewhere, publish that port to where the machines are. With
   *Reconstructions at once on this server* at 0, finding beta and finding a mesh's size go to these machines too: a
-  mesh's files, its placed photos and masks, and for beta its videos from the cache, cut to the 150 s it looks at
+  mesh's files, its placed photos and masks, and for beta its videos from the cache, cut to the 300 s it looks at at most
   (they never ask YouTube themselves). One waiting for a machine is tried again once one is there.
 - **Seeing what a machine is doing** (script 20 on): as it starts, it sends what nvidia-smi says of its GPU (each card's
   name, memory in all, used and free, use, driver and CUDA version, and any error), which *Machines* shows under its
@@ -1573,7 +1584,8 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/meshes/{id}/label {label}                 what an editor says it is: rock, card, landscape, ground, indoor or other (null: forget)
     GET  /api/labels                                    editors: every current mesh, its label and shape measures, for /label
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos (off: beyond a reach of its climb's line; found_role: its role before the line gave it another), and those marked; POST finds them
-    GET  /api/meshes/{id}/lines                         its climbs' lines: {lines: [{climb, name, grade, p, n, at, videos, agree, astray}], climbs, pending}
+    GET  /api/meshes/{id}/lines                         its climbs' lines: {lines: [{climb, name, grade, p, n, at, videos, agree, astray, drawn}], of: every climb it's of, climbs, pending}
+    POST|DELETE /api/meshes/{id}/lines/{climb} {points: [[x, y, z]]}   a climb's line drawn by hand, from its start to its top; or gone
     POST /api/meshes/{id}/holds {holds: [{p, role}]}    the holds marked by hand, roles start, hand, finish or foot
     GET /api/account                                    who this token is, the terms as they stand, the limits
     POST /api/account/join {invite, name} · /pair/take {code}     an account from an invite; a device from a pairing code

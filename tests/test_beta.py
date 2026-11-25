@@ -73,6 +73,11 @@ assert close(beta.limb_points(kp, sc)["lf"], [310, 380])
 sc[7] = 0.0
 assert beta.limb_points(kp, sc)["lh"] is None, "no elbow, no forearm to reach along"
 
+# how much of a video is looked at: all of its first LEAST_SECONDS, then on while its climber is on the rock
+assert not beta.seen_enough(beta.LEAST_SECONDS - 1, None) and beta.seen_enough(beta.LEAST_SECONDS, None), "no climber placed by then: no more"
+assert not beta.seen_enough(200, 200 - beta.IDLE_SECONDS + 1) and beta.seen_enough(200, 200 - beta.IDLE_SECONDS), "left once they're off it that long"
+assert not beta.seen_enough(100, 10) and beta.MAX_SECONDS > beta.LEAST_SECONDS
+
 # the climber: the largest well-found person, or the one nearest where they were
 big, small = np.zeros((26, 2)), np.zeros((26, 2))
 big[:, 0], big[:, 1] = np.linspace(0, 200, 26), np.linspace(0, 400, 26)

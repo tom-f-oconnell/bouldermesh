@@ -36,7 +36,9 @@ FILE, HOLDS_FILE, POSES_FILE = "beta.json", "holds.json", "beta_poses.json"
 ROLES = ("start", "hand", "finish", "foot")     # the order the Tension Board app cycles a hold through
 COLORS = {"start": (60, 210, 25), "hand": (255, 107, 47), "finish": (42, 42, 255), "foot": (245, 61, 255)}   # BGR
 FPS = 2.0               # frames a second looked at
-MAX_SECONDS = 150       # of each video
+MAX_SECONDS = 300       # of each video, at most
+LEAST_SECONDS = 150     # and at least (if it's that long): past this, a video is left once its climber is off the rock,
+IDLE_SECONDS = 30       # for this long (or never was on it): what follows is talk, other rock, the way down
 DET_EVERY = 5           # frames between person detections; the tracker follows them in between
 HAND_REACH = 0.35       # a hand's point on a hold: this far past the wrist, as a share of the forearm
 STILL = 0.03            # a hand or foot moving less than this share of the rock's size between frames is still
@@ -663,6 +665,13 @@ def _pose_model(log: Log):
     return PoseTracker(model, det_frequency=DET_EVERY, tracking=False, backend="onnxruntime", device="cpu")
 
 
+def seen_enough(t: float, on_rock: float | None) -> bool:
+    """Whether a video needn't be looked at past t seconds: it's past LEAST_SECONDS, and its climber was last placed
+    on the rock (on_rock, a time; None for never) IDLE_SECONDS or more before. Long videos go on to talk, other
+    boulders and the walk down, at a second or so of pose model a frame; a rest between goes is shorter."""
+    return t >= LEAST_SECONDS and (on_rock is None or t - on_rock >= IDLE_SECONDS)
+
+
 def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, tracker, tmp: Path, log: Log,
                   progress: Callable[..., None] = lambda s, frame=None: None) -> dict:
     """The holds a video's climber used on a mesh.
@@ -673,7 +682,8 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
         progress: told how far it is, as text, and with frame: (frames done, of how many).
 
     Returns:
-        {frames, with_climber, placed_frames, approximate_lens, holds, tracks, centre, reference, poses}: tracks are
+        {frames, left, with_climber, placed_frames, approximate_lens, holds, tracks, centre, reference, poses}: frames
+        is how many were looked at, left {at, why} if that was fewer than the video has (seen_enough()); tracks are
         each limb's [t, x, y, z] on the mesh, in pieces (in_pieces()), centre the climber's (centre_track()),
         reference the placed frame most matched, poses the climber in each frame they're found in: {t, kp, sc, ref,
         H}, ref and H None where it matched no placed frame.
@@ -687,8 +697,14 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     tracker.reset()
     tracks = {limb: [] for limb in LIMBS}
     used, seen, prev, views, poses = {}, 0, None, {}, []
+    on_rock, looked, left = None, 0, None     # when the climber was last placed on the rock; frames looked at; why it stopped early
     for i, (t, path) in enumerate(frames):
         jobctl.check()
+        if seen_enough(t, on_rock):
+            left = {"at": round(t, 2), "why": f"its climber was off the rock for {IDLE_SECONDS} s" if on_rock is not None else "no climber was placed on the rock"}
+            log(f"beta: {url}: left at {t:.0f} s of {frames[-1][0]:.0f}: {left['why']}")
+            break
+        looked = i + 1
         if i % 10 == 0:
             progress(f"frame {i + 1} of {len(frames)}", (i, len(frames)))
         im = cv2.imread(str(path))
@@ -706,6 +722,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
                           "sc": [round(float(x), 3) for x in scs[who]], "ref": name,
                           "H": None if H is None else [round(float(x), 7) for x in np.asarray(H).ravel()]})
             if name is not None:
+                on_rock = t
                 used[name] = used.get(name, 0) + 1
                 if name not in views:
                     views[name] = mesh.view(placed[name], sizes[name])
@@ -722,7 +739,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     found = {limb: contacts(tr, STILL * mesh.size, min_frames) for limb, tr in tracks.items()}
     result = holds(found, HOLD_RADIUS * mesh.size, mesh.ground, GROUND * mesh.size)
     reference = max(used, key=used.get) if used else None
-    return {"frames": len(frames), "with_climber": seen, "placed_frames": sum(used.values()),
+    return {"frames": looked, "left": left, "with_climber": seen, "placed_frames": sum(used.values()),
             "approximate_lens": any(lens(placed[n], sizes[n])[4] for n in used), "reference": reference, "holds": result,
             "tracks": {limb: in_pieces([[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None], mesh.size)
                        for limb, tr in tracks.items()},

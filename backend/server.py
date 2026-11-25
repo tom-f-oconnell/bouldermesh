@@ -2579,7 +2579,7 @@ def _lines_key(mid: str, record: dict, of: dict[str, list[str]]) -> str:
     had = _lines_tracks.get(mid)
     if not had or had[0] != stamp:
         had = _lines_tracks[mid] = (stamp, betalines.tracks(record))
-    return betalines.key(had[1], of, betalines.shown_stamp(MESHES / mid), metres_per_unit(mid))
+    return betalines.key(had[1], of, betalines.shown_stamp(MESHES / mid), metres_per_unit(mid), betalines.drawn_stamp(MESHES / mid))
 
 
 def want_lines(mid: str) -> None:
@@ -2592,14 +2592,15 @@ def want_lines(mid: str) -> None:
 
 
 def make_lines(mid: str) -> bool:
-    """Make a mesh's climbs' lines (betalines.py), unless those kept are of its beta and its climbs' videos as they are
-    now, or its beta is still being found (its tracks are still coming). Whether it made them."""
+    """Make a mesh's climbs' lines (betalines.py), unless those kept are of its beta, its climbs' videos and the lines
+    drawn on it as they are now, or its beta is still being found (its tracks are still coming), or it has neither
+    beta nor a drawn line. Whether it made them."""
     d = MESHES / mid
-    record = beta_mod.load(d)
-    if not d.is_dir() or not record or record.get("status") == "running":
+    record = beta_mod.load(d) or {}
+    if not d.is_dir() or record.get("status") == "running" or not (record or betalines.load_drawn(d)):
         return False
     of, scale = lines_of(mid, record), metres_per_unit(mid)
-    if (betalines.load(d) or {}).get("key") == betalines.key(betalines.tracks(record), of, betalines.shown_stamp(d), scale):
+    if (betalines.load(d) or {}).get("key") == betalines.key(betalines.tracks(record), of, betalines.shown_stamp(d), scale, betalines.drawn_stamp(d)):
         return False
     betalines.make(d, of, record, scale)
     return True
@@ -2635,24 +2636,38 @@ def beta_shown(mid: str, record: dict | None) -> dict | None:
 
 
 def mesh_lines(mid: str) -> dict:
-    """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree}], climbs,
-    pending}, in the order of its climbs' names; climbs is how many the mesh is of. pending: those kept aren't of its
-    beta and its climbs' videos as they are now (or none are kept yet), so they're being made again: asked for again
-    in a few seconds, they're the new ones."""
+    """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree, drawn}], of,
+    climbs, pending}, in the order of its climbs' names; of is every climb the mesh is of ([{climb, name, grade,
+    drawn: the points of its line drawn by hand, if it has one}], for drawing one), and climbs how many. pending:
+    those kept aren't of its beta, its climbs' videos and the lines drawn on it as they are now (or none are kept
+    yet), so they're being made again: asked for again in a few seconds, they're the new ones."""
     d = MESHES / mid
-    record = _beta_record(d)
-    if not record.get("videos"):
-        return {"lines": [], "climbs": 0, "pending": False}
+    record, drawn = _beta_record(d), betalines.load_drawn(d)
     of = lines_of(mid, record)
+    rows = {r["id"]: r for r in q(f"SELECT id, name, grade FROM climbs WHERE id IN ({','.join('?' * len(of)) or 'NULL'})", *of)}
+    every = [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], "drawn": (drawn.get(cid) or {}).get("p")} for cid in of if cid in rows]
+    if not record.get("videos") and not drawn:
+        return {"lines": [], "of": every, "climbs": len(of), "pending": False}
     had = betalines.load(d) or {}
     pending = record.get("status") != "running" and had.get("key") != _lines_key(mid, record, of)
     if pending:
         want_lines(mid)
     kept = had.get("lines") or {}
-    ids = [cid for cid in of if cid in kept]
-    rows = {r["id"]: r for r in q(f"SELECT id, name, grade FROM climbs WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", *ids)}
-    return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **kept[cid]} for cid in ids if cid in rows],
-            "climbs": len(of), "pending": pending}
+    return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **kept[cid]} for cid in of if cid in kept and cid in rows],
+            "of": every, "climbs": len(of), "pending": pending}
+
+
+def draw_line(mid: str, climb: str, points, by: str | None) -> dict:
+    """Keep a climb's line as drawn by hand on a mesh (betalines.draw(); no points: forget it), and have its lines made
+    again. Returns mesh_lines(), which says they're pending.
+
+    Raises:
+        ValueError: the mesh isn't of that climb, or they aren't points.
+    """
+    if climb not in climb_names(mid):
+        raise ValueError("this mesh isn't of that climb")
+    betalines.draw(MESHES / mid, climb, points, by)
+    return mesh_lines(mid)
 
 
 def lines_existing_meshes() -> None:
@@ -2664,7 +2679,7 @@ def lines_existing_meshes() -> None:
     n = made = 0
     for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
         d = MESHES / m["id"]
-        if not (d / beta_mod.FILE).exists():
+        if not (d / beta_mod.FILE).exists() and not (d / betalines.DRAWN_FILE).exists():
             continue
         try:
             n += beta_mod.redraw_lines(d)
@@ -14015,6 +14030,14 @@ class Handler(BaseHTTPRequestHandler):
                     link_mesh(mid, fields["climb_id"], "linked at upload")
                 return self.send_json({"id": mid, "name": name, "filename": main, "skipped": skipped}, 201)
 
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/lines/([0-9a-f]+)", p)
+            if m:   # a climb's line drawn by hand: {points: [[x, y, z]]}, on the mesh from its start to its top
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                try:
+                    return self.send_json(draw_line(m[1], m[2], self.read_json().get("points"), (self.who() or OWNER).get("name")))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
                 if not (MESHES / m[1]).is_dir():
@@ -14382,6 +14405,14 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if self.refused():
             return
+        m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/lines/([0-9a-f]+)", p)
+        if m:   # a climb's hand-drawn line gone: its videos' line is its line again
+            if not (MESHES / m[1]).is_dir():
+                return self.send_json({"error": "not found"}, 404)
+            try:
+                return self.send_json(draw_line(m[1], m[2], None, None))
+            except ValueError as e:
+                return self.send_json({"error": str(e)}, 400)
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets/([0-9a-z]+)", p)
         if m:   # one set of beta, and its holds
             if not self.own_set(m[1], m[2]):

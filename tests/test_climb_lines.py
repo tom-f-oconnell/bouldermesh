@@ -71,7 +71,9 @@ try:
     wall(d)
 
     # ---- no beta: no lines, and nothing asked for
-    assert server.mesh_lines("aa11") == {"lines": [], "climbs": 0, "pending": False}
+    none = server.mesh_lines("aa11")
+    assert (none["lines"], none["climbs"], none["pending"]) == ([], 3, False), none
+    assert [(x["climb"], x["name"], x["drawn"]) for x in none["of"]] == [("ca", "Left One", None), ("cc", "No Videos", None), ("cb", "Right One", None)]
     assert not server.make_lines("aa11") and server._lines_wanted.empty()
 
     # ---- which videos are of which climb: those in its beta, by climb_videos, for the climbs the mesh is of
@@ -88,7 +90,7 @@ try:
 
     # ---- asked for before they're made: none yet, pending, and queued once however often asked
     first = server.mesh_lines("aa11")
-    assert first == {"lines": [], "climbs": 3, "pending": True}, first
+    assert (first["lines"], first["climbs"], first["pending"]) == ([], 3, True), first
     server.mesh_lines("aa11")
     assert server._lines_wanted.qsize() == 1 and server._lines_wanted.get_nowait() == "aa11"
     server._lines_queued.clear()
@@ -159,6 +161,51 @@ try:
     assert server.make_lines("bb22")
     one = server.mesh_lines("bb22")
     assert one["climbs"] == 1 and [(x["climb"], x["agree"]) for x in one["lines"]] == [("cz", 2)], one
+
+    # ---- a line drawn by hand: for a climb with no videos, and in place of a climb's videos' line; it speaks for
+    # its climb's videos' holds; taken away, the videos' line is the climb's again
+    time.sleep(0.02)
+    beta_mod.save(d, record)
+    server.make_lines("aa11")
+    drawn = server.draw_line("aa11", "cc", [[2.0, 0.5, 0.3], [2.2, 2.0, 0.3], [2.0, 3.5, 0.3]], "Tom")
+    assert drawn["pending"] and server._lines_wanted.get_nowait() == "aa11" and next(x for x in drawn["of"] if x["climb"] == "cc")["drawn"][1] == [2.2, 2.0, 0.3]
+    server._lines_queued.clear()
+    assert server.make_lines("aa11") and not server.make_lines("aa11")
+    cc = next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "cc")
+    assert cc["drawn"] and (cc["videos"], cc["agree"]) == (0, 0) and len(cc["p"]) > 20 and max(abs(p[2]) for p in cc["p"]) < 0.01, "laid on the wall"
+    assert abs(cc["p"][0][1] - 0.5) < 0.05 and abs(cc["p"][-1][1] - 3.5) < 0.05 and max(p[0] for p in cc["p"]) > 2.15, "through its points, start to top"
+    before = next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")
+    assert "drawn" not in before
+    server.draw_line("aa11", "ca", [[1.6, 0.5, 0], [1.6, 3.5, 0]], None)
+    server._lines_wanted.get_nowait(); server._lines_queued.clear()
+    assert server.make_lines("aa11")
+    ca = next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")
+    assert ca["drawn"] and all(abs(p[0] - 1.6) < 0.01 for p in ca["p"])
+    seen = {h["id"]: h for h in server.beta_shown("aa11", beta_mod.load(d))["videos"][0]["holds"]}
+    assert [i for i, h in seen.items() if h.get("off")] == [0], "by the drawn line: the hold 1.9 from it off, that 0.3 from it not"
+    server.draw_line("aa11", "ca", None, None)
+    server._lines_wanted.get_nowait(); server._lines_queued.clear()
+    assert server.make_lines("aa11") and "drawn" not in next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")
+    for bad in ([[1, 2, 3]], "x", [[1, 2]], [[1, 2, float("nan")], [1, 2, 3]], [[0, 0, 0]] * 201):
+        try:
+            server.draw_line("aa11", "ca", bad, None)
+            raise AssertionError(f"{str(bad)[:30]} isn't a line")
+        except ValueError:
+            pass
+    try:
+        server.draw_line("aa11", "cz", [[1, 1, 0], [1, 2, 0]], None)
+        raise AssertionError("not a climb of this mesh")
+    except ValueError:
+        pass
+    # a mesh with no beta at all can have one
+    server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('cc33','No Beta','mesh.ply','project:p3',?)", now, write=True)
+    server.q("INSERT INTO mesh_links(mesh_id,climb_id,note,created) VALUES('cc33','cz',NULL,?)", now, write=True)
+    d3 = server.MESHES / "cc33"
+    d3.mkdir()
+    wall(d3)
+    assert not server.make_lines("cc33") and server.mesh_lines("cc33")["lines"] == []
+    server.draw_line("cc33", "cz", [[1, 1, 0], [3, 3, 0]], None)
+    assert server.make_lines("cc33") and [x["climb"] for x in server.mesh_lines("cc33")["lines"]] == ["cz"] and not server.mesh_lines("cc33")["pending"]
 
     # ---- what's kept from a version of the rules since changed is made again
     betalines.VERSION += 1

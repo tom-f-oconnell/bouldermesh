@@ -1370,7 +1370,8 @@ People's masks say where people are, not which of their parts are hands and whic
 model finds those. On 12 of Relic's video frames, torchvision's Keypoint R-CNN (already in the image)
 found the climber in 10, at 1.83 s a frame on 8 cores, and RTMPose's body-with-feet model (rtmlib) in
 all 12, at 2.03 s, with toes as well as ankles, which is where feet stand on holds. RTMPose is used, with
-people detected every 5th frame and tracked in between, on 2 frames a second of up to 150 s of each video.
+people detected every 5th frame and tracked in between, on 2 frames a second of up to 300 s of each video
+(how much of one is looked at is below, under the climbs' lines).
 
 A hand's point is 35% of a forearm past the wrist, and a foot's its big toe, or ankle. Each frame is
 matched (ORB features, ignoring the climber) to the frame of the same video placed in the mesh that it
@@ -1474,7 +1475,8 @@ from their climbers' centres, in metres by it, ran from 0.47 to 1.26 m across th
 right to within about half as much again.
 
 **Start and finish holds: what goes wrong, by the tracks.** Beta gives each hand's first hold as a
-start hold and its last as a finish, over the first 150 s of a video, whatever the climber is doing.
+start hold and its last as a finish, over what it looks at of a video (its first 150 s, when this was
+measured), whatever the climber is doing.
 The videos weren't watched for this: causes are read from where each hold is by the line, and where
 its climber's centre was then, before and after. Over 236 videos of one climb that their line keeps
 near:
@@ -1538,13 +1540,40 @@ best. Tried, on the same boulders, with nothing changed for it:
   falls and ways down too. Saigon's line rises 2.3 m in place of 6.4 m, Lechlinski Corner's falls
   0.3 m in place of rising 1.6 m, and Saigon Direct's is 22.5 m long. As many lines do worse by their
   own holds (8) as better (9). It would want joining only where the track carries on the way it was
-  going.
+  going, which is what's done now (below).
 - *Videos agreeing within a distance in metres* (0.6 m, 0.9 m) and not a share of the rock's size (8%:
   0.3 m to 1.6 m on these): no gain. Nor from keeping a run's unshared ends within 75 degrees of the
   line's way, for 60.
 - *Frames that match no placed frame* aren't it: in the median video every frame with the climber
   found gave a point on the rock, and under half did in 3% of videos.
 - *The 150 s of each video that's looked at*: 29 of 343 videos (8%) run on past it.
+
+**What was then done for it** (Nov 24), measured on the same 83 lines:
+
+- *A video's track is joined over longer breaks where it carries on.* Pieces up to 10 s and 30% of
+  the rock's size apart are one run if the next starts on the way the track was going over its last
+  3 s (within 60 degrees) and itself goes on that way. A climber lost on the way up is found again
+  further up; one who fell, or set off down, is found the other way. The lines' median length goes
+  from 3.5 m to 3.7 m, and none of the lines above loses its height (one other does: Black Carpet's
+  rises 1.4 m in place of 2.6 m).
+- *A line is carried on to its videos' last holds.* To the middle of the hand holds that are past its
+  end, ahead of it and within a reach, where two of its videos have some (or its only one does). Lines
+  with hands over 0.5 m past their top go from 22 to 9, and over 1 m from 5 to 2.
+- With both: median length 4.0 m, 6 lines under 1.5 m (from 10), 9 in doubt (from 11). A video's finish
+  is a median 0.59 m from its climb's other videos' (over 1 m for 28%), and its start 0.37 m (15%).
+- *More of each video is looked at*: up to 300 s, for 150 s. Past 150 s it stops once the climber
+  hasn't been placed on the rock for 30 s, or never was (`beta.seen_enough()`): what follows is talk,
+  other boulders, the walk down. The same stop inside the first 150 s would have saved 2% of the
+  seconds looked at and lost holds held later in 1% of videos (4 of 343: a rest of over 30 s out of
+  shot between goes), and at 15 s, 7% and 6%; so the first 150 s are always looked at. It only
+  changes beta found from now on: the 8% of videos that ran past 150 s aren't looked at again unless
+  their beta is found again.
+- *A line can be drawn by hand* (`lines_drawn.json`, an editor's ✎ in the viewer): points clicked on
+  the rock from the climb's start to its top, joined, and laid on the mesh like any line. It's then
+  the climb's line whatever its videos say, and for a climb with none; it speaks for all its climb's
+  videos' holds, and isn't checked against them. The tool starts from the line there is, with a point
+  every fifth of its own, so a line that's nearly right is put right by undoing from its top and
+  clicking on.
 
 **Drawing them.** A line is a ribbon 1.6% of the rock's size across, flat against the rock by the
 normals, so that it thins when seen edge on, as paint would. It's drawn 3% of the rock's size nearer
@@ -1699,7 +1728,7 @@ nightly backup holds them too. With *Reconstructions at once on this server* at 
 2 cores, 4 GB) harvests and keeps everything, and every mesh is made elsewhere. So is what's heavy after meshing: finding
 beta (a pose model on 300 frames a video) and a mesh's size (the same model on its photos, and a detector for bottles),
 which the same machines run as remote_job.py's other jobs, from the mesh's own files (not its textures), the photos
-placed in it and their masks, and for beta the mesh's videos from the cache, cut to the first 150 s, which is all it
+placed in it and their masks, and for beta the mesh's videos from the cache, cut to the first 300 s, the most it
 looks at, without re-encoding: the job's YouTube is set to never ask YouTube, so a video that isn't there fails it
 rather than having hal ask for it. What they make comes back by name (beta.json, beta_poses.json, beta_<tag>.jpg;
 scale.json, poses.json, scale_people.json, objects.json), and nothing else.

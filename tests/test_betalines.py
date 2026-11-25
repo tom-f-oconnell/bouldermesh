@@ -50,6 +50,16 @@ assert np.allclose(steps, steps[0], rtol=0.2) and abs(steps[0] - bl.STEP * SIZE)
 assert bl.runs([track([[2, 1, 0], [2.05, 1.02, 0], [2, 1, 0], [2.03, 1, 0]], each=10)], SIZE) == [], "standing"
 assert bl.runs([track([[2, 1, 0], [2, 3, 0], [2, 1.1, 0]])], SIZE) == [], "up and back down ends up nowhere"
 assert bl.runs([], SIZE) == [] and bl.runs([[[0, 0, 0, 0]]], SIZE) == []
+# lost for longer and found further off: one run if that's on up the way it was going, not if it's back down (a fall)
+low = track([[1, 0.5, 0], [1, 2, 0]], wobble=0.01)
+onward = track([[1.1, 2.9, 0], [1.1, 3.6, 0]], t0=low[-1][0] + 8, wobble=0.01)
+fell = track([[1, 1.1, 0], [1, 0.8, 0]], t0=low[-1][0] + 8, wobble=0.01)
+across = track([[1.9, 2.0, 0], [2.6, 2.0, 0]], t0=low[-1][0] + 8, wobble=0.01)
+assert len(bl.runs([low, onward], SIZE)) == 1 and bl.runs([low, onward], SIZE)[0][-1][1] > 3.4, "0.9 further up, 8 s later: carried on"
+assert len(bl.runs([low, fell], SIZE)) == 1 and bl.runs([low, fell], SIZE)[0][-1][1] > 1.8, "found again below, going down: not part of it (and too short to be a run)"
+assert bl.runs([low, across], SIZE)[0][-1][0] < 1.3, "off to the side: not the way it was going"
+assert not bl._joins(low, track([[1.1, 2.9, 0], [1.1, 3.6, 0]], t0=low[-1][0] + 12), SIZE), "too long after"
+assert not bl._joins(low, track([[1.0, 3.5, 0], [1.0, 3.9, 0]], t0=low[-1][0] + 8), SIZE), "too far off (over JOIN_JUMP of the rock)"
 
 # ---- a climb's line: where its videos agree. Three go up x = 1; one of them walks in from the right first; a fourth
 # is off on its own (another climb, or matched to the wrong place); one of both this climb and another agrees too
@@ -183,6 +193,16 @@ by_line = bl.holds_by_lines(both_ways, {"A": ["a1", "a3", "two"], "B": ["two"]},
 assert by_line["a1"] == {"off": [], "roles": {"1": "hand", "2": "hand", "3": "finish", "4": "finish"}}, by_line["a1"]
 assert by_line["a3"] == {"off": [], "roles": {"0": "hand", "1": "hand", "2": "hand", "3": "finish", "4": "finish"}}, "it starts partway"
 assert "two" not in by_line, "a video of two climbs with lines: by when each was held, as found"
+# a line carried on to its videos' last holds: the middle of the hand holds past its end, where two videos have some
+short_line = up_one[:21]         # stops at y = 2.5
+tops = lambda *ys: [{"holds": [{"p": [1.0 + 0.1 * k, y, 0], "contacts": [held("lh", 1, 2)]}, {"p": [1.0, 2.0, 0], "contacts": [held("rh", 1, 2)]},
+                               {"p": [1.0, y + 0.1, 0], "contacts": [held("lf", 1, 2)]}]} for k, y in enumerate(ys)]  # noqa: E731
+carried = bl.to_the_top(short_line, tops(3.1, 3.3), 1.0, 0.1)
+assert abs(carried[-1][1] - 3.2) < 1e-9 and abs(carried[-1][0] - 1.05) < 1e-9 and len(carried) == len(short_line) + 7, "to the middle of two videos' hands past it (feet don't count)"
+assert len(bl.to_the_top(short_line, tops(3.1, 2.2), 1.0, 0.1)) == len(short_line), "one video's hand alone, of two"
+assert bl.to_the_top(short_line, tops(3.1), 1.0, 0.1)[-1][1] > 3.0, "its only video's"
+assert len(bl.to_the_top(short_line, tops(3.8, 3.9), 1.0, 0.1)) == len(short_line), "over a reach past its end"
+assert len(bl.to_the_top(short_line, [], 1.0, 0.1)) == len(short_line)
 # a reach: in metres where the scale is known, within bounds of the rock's size; else a share of it
 assert bl.reach(4.0) == bl.REACH * 4.0 and abs(bl.reach(4.0, 1.0) - bl.REACH_M) < 1e-9 and abs(bl.reach(4.0, 2.5) - bl.REACH_M / 2.5) < 1e-9
 assert bl.reach(4.0, 0.1) == bl.REACH_BOUNDS[1] * 4.0 and bl.reach(4.0, 50.0) == bl.REACH_BOUNDS[0] * 4.0 and bl.reach(4.0, 0) == bl.reach(4.0)
