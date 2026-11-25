@@ -475,6 +475,8 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     #ratebtn{font-size:14px;padding:0 12px} #vcorner #vinfo,#vcorner #vreport{padding:0 10px}
     /* the rating box above the corner's buttons, its right edge at theirs, not off the screen to the left of Rate */
     #ratemenu{position:absolute;right:0;bottom:calc(100% + 6px);width:calc(100vw - 24px - 2px);max-width:360px;box-sizing:border-box}
+    /* editing its stray pieces: the rating box and the framing notes stay out of the way, so the panel and the mesh show */
+    #viewer.cutting #ratemenu,#viewer.cutting #orient{display:none!important}
     #vextra{bottom:56px} #vextra button{font-size:14px;padding:6px 12px} .mthumb{width:96px} #ratemenu .seg button{padding:7px 14px;font-size:14px} #ratecomment{font-size:16px}
     #vclimb{top:6px;right:8px} #viewer:not(.quiet) #vtitle{max-width:calc(100% - 130px)!important}
     #vtitle:has(#vname:not(:empty)){display:block;position:absolute;top:6px;left:8px;max-width:calc(100% - 16px);font-size:12px;line-height:1.35;
@@ -1831,6 +1833,7 @@ function applyPieces(){
 function pieceLabel(p){ return `${p.faces.toLocaleString()} faces · ${p.size.map(x => x < 10 ? x.toFixed(1) : x.toFixed(0)).join(' × ')}${p.id === 0 ? ' · main' : ''}`; }
 function renderPieces(){
   const el = $('#pieces');
+  $('#viewer').classList.toggle('cutting', !!pieces?.editing && !pieces.deleted);
   if (!pieces || (!pieces.deleted && pieces.record.pieces.length < 2)) { el.style.display = 'none'; return; }
   el.style.display = 'block';
   syncTool();
