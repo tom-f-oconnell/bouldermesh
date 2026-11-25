@@ -148,6 +148,7 @@ def probe_duration(path: Path) -> float | None:
 
 
 RANK_UNWANTED = 1    # next_task()'s rank for a task nothing wants any more
+RESTORE_WAIT = 6 * 3600     # a video asked of the backup (restoring()) is given to volunteers after all once it's waited this
 
 
 class Broker:
@@ -241,6 +242,9 @@ class Broker:
                 con.execute("UPDATE volunteers SET trusted=1 WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' "
                             "AND done>=100")
             presence.migrate(con, "volunteers", GONE_AFTER_OLD)
+            if "restoring" not in {r[1] for r in con.execute("PRAGMA table_info(tasks)")}:
+                # when a queued video was asked of the backup instead (restoring()): not given out meanwhile
+                con.execute("ALTER TABLE tasks ADD COLUMN restoring REAL")
 
     def db(self) -> sqlite3.Connection:
         con = dbconn.connect(self.db_path, timeout=30)
@@ -345,9 +349,11 @@ class Broker:
         channels, then oldest first. A storyboard isn't given to the volunteer whose video it checks, nor to its
         address, nor one that needs YouTube's player (a "fresh" check) unless fresh."""
         rows = self.q(f"SELECT t.*, (SELECT group_concat(w.purpose || char(31) || w.ref, char(30)) FROM wants w WHERE w.task=t.id) "
-                      f"AS wanted FROM tasks t WHERE t.state='queued' AND t.kind IN ({','.join('?' * len(kinds))}) "
+                      f"AS wanted FROM tasks t WHERE t.state='queued' AND COALESCE(t.restoring, 0)<? "
+                      f"AND t.kind IN ({','.join('?' * len(kinds))}) "
                       f"AND (t.kind!='storyboard' OR NOT EXISTS (SELECT 1 FROM checks c WHERE c.task=t.id AND "
-                      f"(c.volunteer=? OR c.ip=? OR (c.mode='fresh' AND ?=0))))", *kinds, (v or {}).get("id"), ip, int(fresh))
+                      f"(c.volunteer=? OR c.ip=? OR (c.mode='fresh' AND ?=0))))", time.time() - RESTORE_WAIT, *kinds,
+                      (v or {}).get("id"), ip, int(fresh))
         if not rows:
             return None
 
@@ -378,6 +384,25 @@ class Broker:
                 task = {"id": secrets.token_hex(6)}
                 self.q("INSERT INTO tasks(id,kind,video_id,state,created) VALUES(?,?,?,'queued',?)", task["id"], kind, video_id, time.time())
             self.q("INSERT OR IGNORE INTO wants(task,purpose,ref,created) VALUES(?,?,?,?)", task["id"], purpose, ref, time.time())
+        return True
+
+    def restoring(self, task_ids) -> None:
+        """These queued videos were asked of the backup, which has them: not given to volunteers for RESTORE_WAIT, unless
+        it doesn't send them by then (fulfil())."""
+        for tid in task_ids:
+            self.q("UPDATE tasks SET restoring=? WHERE id=? AND state='queued'", time.time(), tid)
+
+    def fulfil(self, task_id: str) -> bool:
+        """A video task met from elsewhere (the backup sent the video back, into the cache): done, as if its volunteer had
+        sent it, and what wanted it told once nothing more it wants is coming (ready()). One a volunteer is fetching
+        now is done too: what it sends is then refused, as not its to send. Returns whether it was still to come."""
+        with self.lock:
+            t = self.q("SELECT * FROM tasks WHERE id=? AND kind='video' AND state IN ('queued','assigned')", task_id, one=True)
+            if not t:
+                return False
+            self.q("UPDATE tasks SET state='done', finished=?, error=NULL, info=? WHERE id=?", time.time(),
+                   json.dumps({"from": "backup"}), task_id)
+        self._settle(task_id)
         return True
 
     def cancel(self) -> int:

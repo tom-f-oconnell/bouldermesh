@@ -6957,6 +6957,7 @@ def holds_worker() -> None:
                 _, camp_id, boulder = r["key"].split("|", 2)
                 settle_boulder(camp_id, boulder)
             hold_alerts()
+            restore_from_archive()
             settle_late()
         except Exception as e:  # noqa: BLE001 - next time
             print(f"error: video holds: {type(e).__name__}: {e}", flush=True)
@@ -7551,12 +7552,46 @@ def prune_web_cache(need: float) -> int:
     return freed
 
 
+def restore_from_archive() -> int:
+    """Videos volunteers are asked for that the backup holds in its archive/ (as deleted here before videos were kept,
+    youtube.TRIM): asked of the backup instead, with their details, and not given to volunteers meanwhile (the broker's
+    restoring(); they are after all if it doesn't send them within volunteers.RESTORE_WAIT). Asks older than that are
+    forgotten. Returns how many were asked."""
+    have = offload_mod.archived(DATA)
+    stale = q("SELECT path FROM archive_wants WHERE asked<?", time.time() - volunteers_mod.RESTORE_WAIT)
+    if stale:
+        q("DELETE FROM archive_wants WHERE asked<?", time.time() - volunteers_mod.RESTORE_WAIT, write=True)
+        offload_mod.write_lists(DATA, q)
+    if not have:
+        return 0
+    tasks = [t for t in VOLUNTEERS.q("SELECT id, video_id FROM tasks WHERE kind='video' AND state='queued' AND restoring IS NULL")
+             if t["video_id"] in have and not youtube_mod.cached(t["video_id"])]
+    for t in tasks:
+        a = have[t["video_id"]]
+        offload_mod.want_archived(DATA, q, [a["video"]] + ([a["details"]] if a.get("details") else []))
+    VOLUNTEERS.restoring([t["id"] for t in tasks])
+    if tasks:
+        print(f"videos: {plural(len(tasks), 'video')} volunteers were to fetch asked of the backup's archive instead", flush=True)
+    return len(tasks)
+
+
+def archive_came(path: str) -> None:
+    """A video (or its details) the backup sent back from its archive, now in the cache: what volunteers were to fetch
+    of it is done (the broker's fulfil()), and what wanted it carries on."""
+    if path.endswith(".json"):
+        return
+    vid = Path(path).name.split(".")[0]
+    os.utime(DATA / path)       # just used, as a video fetched now would be
+    for t in VOLUNTEERS.q("SELECT id FROM tasks WHERE kind='video' AND video_id=? AND state IN ('queued','assigned')", vid):
+        VOLUNTEERS.fulfil(t["id"])
+
+
 def offload_step() -> dict:
     """What making room does after each measuring: put back what the backup sent back; and above storage.offload_percent
     of the cap, or with fetched videos past VIDEO_CACHE_GB, delete what was marked before the backup's last good copy
     began and is still to go, the web cache's old pages (for the cap only), and mark more to go, down to that % (and
     videos first, down to VIDEO_CACHE_GB). Videos are never dropped otherwise (youtube.TRIM). Returns what it did."""
-    did = {"back": offload_mod.take_restores(DATA, q, log_server)}
+    did = {"back": offload_mod.take_restores(DATA, q, log_server, came=archive_came)}
     did["manifest"] = take_manifest()
     cap, pct = data_cap(), settings().get("storage.offload_percent")
     marked = q("SELECT path, bytes FROM offloads WHERE done IS NULL")

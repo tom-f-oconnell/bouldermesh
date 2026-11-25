@@ -94,15 +94,24 @@ trap 'st=$?; if [ -z "$only_restore" ] && [ -z "$done_ok" ]; then report failed 
 # the paths the server offloads, as backend/offload.py's PATH
 valid='^(projects/[0-9a-f]{6,32}/(photos|masks|rejected)|cache/videos/[A-Za-z0-9_-]{11}\.[a-z0-9]{2,5}|meshes/[0-9a-f]{6,32}/[A-Za-z0-9_.-]{1,120})$'
 
-send_back() {   # what the server wants back, from this copy, through the handshake
+send_back() {   # what the server wants back, from this copy (or, for videos it deleted before, archive/), through the handshake
     [ -n "$handshake" ] || return 0
+    send_archived
     $handshake wanted | grep -E "$valid" > "$tmp/wanted" || true
     : > "$tmp/have"
+    : > "$tmp/have-archived"
     while read -r p; do
-        if [ -e "$dest/current/data/$p" ]; then echo "$p" >> "$tmp/have"; fi
+        if [ -e "$dest/current/data/$p" ]; then echo "$p" >> "$tmp/have"
+        elif [ -f "$dest/archive/data/$p" ]; then echo "$p" >> "$tmp/have-archived"; fi
     done < "$tmp/wanted"
-    [ -s "$tmp/have" ] || return 0
-    tar -C "$dest/current/data" -cf - -T "$tmp/have" | $handshake restore
+    if [ -s "$tmp/have" ]; then tar -C "$dest/current/data" -cf - -T "$tmp/have" | $handshake restore; fi
+    if [ -s "$tmp/have-archived" ]; then tar -C "$dest/archive/data" -cf - -T "$tmp/have-archived" | $handshake restore; fi
+}
+
+send_archived() {   # the fetched videos archive/ keeps (deleted on the server before it kept them all), for it to ask back
+    [ -d "$dest/archive/data/cache/videos" ] || return 0
+    (cd "$dest/archive/data" && find cache/videos -maxdepth 1 -type f -printf '%s\t%T@\t%p\n') \
+        | $handshake archived > /dev/null || echo "couldn't tell the server what's archived" >&2
 }
 
 send_manifest() {   # what this copy holds of what the server offloaded or marked (backend/offload.py, manifest_of())

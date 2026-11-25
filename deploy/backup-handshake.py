@@ -13,6 +13,9 @@ here, through a key of its own whose forced command this is (README, "Backups"),
     sample                  the files offloaded whose SHA-1s it's to read back tonight (data/offload-sample.list)
     manifest                what it holds of the paths offloaded, on stdin (backend/offload.py's manifest_of() has its
                             form), kept whole or not at all in data/backup-manifest.txt, which the server checks
+    archived                the fetched videos it keeps for good in its archive/, on stdin ("<bytes>\t<mtime>\t<path>"
+                            lines, cache/videos/ only), kept in data/backup-archived.txt: those wanted again are asked
+                            back from it (backend/offload.py's archived()), and sent from there by restore
     asked                   when the admin page asked for a backup now (data/backup-asked), if it has and none has
                             been reported since: the backup's half-hourly run then backs up at once
 
@@ -113,6 +116,28 @@ def sample() -> list[str]:
     return [p for p in lines if FILE.fullmatch(p) and ".." not in p.split("/")]
 
 
+ARCHIVED_MOST = 64 * 2**20     # the most a list of what's archived may be
+VIDEO_FILE = re.compile(r"cache/videos/[A-Za-z0-9_-]{11}\.[a-z0-9]{2,5}")
+
+
+def archived() -> int:
+    """Keep the list on stdin of the fetched videos the backup holds in archive/, only its good lines, whole or not at
+    all."""
+    raw = sys.stdin.buffer.read(ARCHIVED_MOST + 1)
+    if len(raw) > ARCHIVED_MOST:
+        sys.exit("too long")
+    good = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        f = line.split("\t")
+        if len(f) == 3 and f[0].isdigit() and re.fullmatch(r"\d+(\.\d+)?", f[1]) and VIDEO_FILE.fullmatch(f[2]):
+            good.append(line)
+    tmp = DATA / "backup-archived.txt.tmp"
+    tmp.write_text("".join(x + "\n" for x in good))
+    tmp.replace(DATA / "backup-archived.txt")
+    print(f"{len(good)} archived file(s) listed")
+    return 0
+
+
 def manifest() -> int:
     """Keep the manifest on stdin, if it's whole (a "began" line first, an "end <n>" line last with n its file lines, and
     each line one of those): the server takes it from there."""
@@ -159,12 +184,14 @@ def main() -> int:
         return 0
     if words == ["manifest"]:
         return manifest()
+    if words == ["archived"]:
+        return archived()
     if words == ["asked"]:
         t = asked()
         if t is not None:
             print(f"{t:.0f}")
         return 0
-    sys.exit("usage: backed-up <unix time> | wanted | restore | report | sample | manifest | asked")
+    sys.exit("usage: backed-up <unix time> | wanted | restore | report | sample | manifest | archived | asked")
 
 
 if __name__ == "__main__":

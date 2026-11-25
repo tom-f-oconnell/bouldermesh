@@ -8,7 +8,9 @@ handshake (deploy/backup-handshake.py) leaves its manifest in data/backup-manife
 paths listed, with its size and time, and the SHA-1s of a few (data/offload-sample.list, a rotating sample, SAMPLE_BYTES
 a night). check_manifest() compares it with what was recorded: a file offloaded that it lacks, or holds otherwise, is
 lost. A path wanted back is listed in data/offload-wanted.list; the backup's next run sends it into data/restore-inbox/,
-and take_restores() puts it back.
+and take_restores() puts it back. The backup also keeps for good what the server deleted (its archive/): it says which
+fetched videos it holds there each run (data/backup-archived.txt, archived()), and one wanted again is asked back the
+same way (want_archived()), rather than of volunteers.
 
 Paths are relative to the data folder, and only of the kinds the backup's handshake takes back: a project's photos/,
 masks/ or rejected/ (a folder, emptied rather than removed, so that what looks for it still finds it), a fetched video
@@ -38,6 +40,9 @@ COLUMNS = (("confirmed", "REAL"), ("lost", "REAL"), ("lost_why", "TEXT"), ("appr
 # each file of a path marked or offloaded, as it was when marked (or as the backup first said it held it, for one offloaded
 # before files were recorded: sha1 then comes from the first sample that reads it); checked: when its SHA-1 was last
 # checked against the backup's copy
+# fetched videos (and their details) asked back from the backup's archive/, which the server no longer had: when asked
+ARCHIVE_WANTS = """CREATE TABLE IF NOT EXISTS archive_wants(path TEXT PRIMARY KEY, asked REAL)"""
+ARCHIVED = "backup-archived.txt"      # what the backup holds in archive/ of cache/videos/: "<bytes>\t<mtime>\t<path>" lines
 FILES = """CREATE TABLE IF NOT EXISTS offload_files(path TEXT, file TEXT, bytes INTEGER, mtime REAL, sha1 TEXT, checked REAL,
               PRIMARY KEY(path, file))"""
 
@@ -46,6 +51,7 @@ def migrate(con) -> None:
     """The tables, and the columns added since (con: a sqlite3 connection)."""
     con.execute(SCHEMA)
     con.execute(FILES)
+    con.execute(ARCHIVE_WANTS)
     have = {r[1] for r in con.execute("PRAGMA table_info(offloads)")}
     for c, t in COLUMNS:
         if c not in have:
@@ -123,8 +129,8 @@ def write_lists(data: Path, q: Q) -> None:
     """The lists the backup reads: every path marked or offloaded (which it keeps), those wanted back, and the files
     whose SHA-1s to read back (sample())."""
     for name, rows in ((LIST, [r["path"] for r in q("SELECT path FROM offloads ORDER BY path")]),
-                       (WANTED, [r["path"] for r in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL "
-                                                      "AND lost IS NULL ORDER BY path")]),
+                       (WANTED, sorted({r["path"] for r in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL "
+                                                           "AND lost IS NULL")} | {r["path"] for r in q("SELECT path FROM archive_wants")})),
                        (SAMPLE, sample(q))):
         tmp = data / (name + ".tmp")
         tmp.write_text("".join(p + "\n" for p in rows))
@@ -207,11 +213,59 @@ def want(data: Path, q: Q, paths) -> list[str]:
     return asked
 
 
-def take_restores(data: Path, q: Q, log: Callable[[str], None]) -> list[str]:
-    """Put back what the backup sent into the inbox (the handshake's restore), for paths wanted back. Returns them."""
+_archived: dict = {"mtime": None, "of": {}}
+
+
+def archived(data: Path) -> dict[str, dict[str, str]]:
+    """The fetched videos the backup last said it holds in its archive/: {video id: {"video": path, "details": path}}
+    (paths under data/; details only where it has them). Read again when the file changes."""
+    f = data / ARCHIVED
+    try:
+        mtime = f.stat().st_mtime
+    except OSError:
+        return {}
+    if mtime != _archived["mtime"]:
+        of: dict[str, dict[str, str]] = {}
+        for line in f.read_text(errors="replace").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3 and PATH.fullmatch(parts[2]) and parts[2].startswith("cache/videos/"):
+                name = parts[2].rsplit("/", 1)[1]
+                of.setdefault(name.split(".")[0], {})["details" if name.endswith(".json") else "video"] = parts[2]
+        _archived.update(mtime=mtime, of={k: v for k, v in of.items() if "video" in v})
+    return _archived["of"]
+
+
+def want_archived(data: Path, q: Q, paths) -> list[str]:
+    """Ask for these paths back from the backup's archive/, on its next run. Returns those newly asked."""
+    asked = []
+    for p in paths:
+        if not q("SELECT 1 FROM archive_wants WHERE path=?", p):
+            q("INSERT INTO archive_wants(path, asked) VALUES(?,?)", p, time.time(), write=True)
+            asked.append(p)
+    if asked:
+        write_lists(data, q)
+    return asked
+
+
+def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[str], None] | None = None) -> list[str]:
+    """Put back what the backup sent into the inbox (the handshake's restore), for paths wanted back, offloaded or from
+    its archive (each of those then given to came()). Returns them."""
     inbox, back = data / INBOX, []
     if not inbox.is_dir():
         return back
+    for row in q("SELECT path FROM archive_wants"):
+        src, dst = inbox / row["path"], data / row["path"]
+        if not src.is_file():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.replace(dst)
+        q("DELETE FROM archive_wants WHERE path=?", row["path"], write=True)
+        back.append(row["path"])
+        if came:
+            try:
+                came(row["path"])
+            except Exception as e:  # noqa: BLE001 - it's here; what wanted it finds it in the cache
+                log(f"offload: telling of {row['path']} from the archive failed: {e!r}")
     for row in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL"):
         src, dst = inbox / row["path"], data / row["path"]
         if not src.exists():

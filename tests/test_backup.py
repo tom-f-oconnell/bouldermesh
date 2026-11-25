@@ -168,6 +168,20 @@ SSH_ORIGINAL_COMMAND="$*" exec rrsync -ro {checkout}
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
     assert r.returncode == 0 and "restored 1 file(s)" in r.stdout, r.stdout + r.stderr
     assert (data / "restore-inbox" / "projects" / "aaaaaaaaaaaa" / "photos" / "p.jpg").read_bytes() == b"jpg, kept"
+    # videos the server deleted before it kept them all, in archive/: listed for it each run, and sent back from there
+    av = dest / "archive" / "data" / "cache" / "videos"
+    av.mkdir(parents=True, exist_ok=True)
+    (av / "aaaaaaaaaaa.mp4").write_bytes(b"old video")
+    (av / "aaaaaaaaaaa.json").write_text("{}")
+    (av / "aaaaaaaaaaa.mp4.~2026-11-01~").write_bytes(b"older")
+    wanted_was = (data / "offload-wanted.list").read_text()
+    (data / "offload-wanted.list").write_text("cache/videos/aaaaaaaaaaa.mp4\ncache/videos/aaaaaaaaaaa.json\n")
+    r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)
+    assert r.returncode == 0 and "restored 2 file(s)" in r.stdout, r.stdout + r.stderr
+    listed = sorted(line.split("\t")[2] for line in (data / "backup-archived.txt").read_text().splitlines())
+    assert listed == ["cache/videos/aaaaaaaaaaa.json", "cache/videos/aaaaaaaaaaa.mp4"], listed
+    assert (data / "restore-inbox" / "cache" / "videos" / "aaaaaaaaaaa.mp4").read_bytes() == b"old video"
+    (data / "offload-wanted.list").write_text(wanted_was)
     # Back up now: the server asks (admin_backup_now()), the frequent run sees it through the handshake and makes a whole
     # copy at once, whose report answers it; asked again while one runs, the second leaves it to the first
     r = subprocess.run(["sh", str(ROOT / "deploy" / "backup.sh"), "--restore-only", str(checkout)], env=henv, capture_output=True, text=True)

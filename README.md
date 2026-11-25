@@ -1011,7 +1011,8 @@ layout:
 - `archive/`: kept for good, in the server's layout, what the server deleted or replaced that can't easily be had again:
   fetched videos, projects' photos, masks and rejected photos, meshes deleted, and the big files of meshes replaced
   (`deploy/backup-archive.py`). Each file once; one changed at the same path is kept beside it as `<name>.~<date>~`.
-  Fetched videos are only ever deleted from here, by hand, the oldest first: `deploy/backup-delete-videos.py
+  Each run tells the server which fetched videos are here (`data/backup-archived.txt`), and sends back those it wants
+  again. Fetched videos are only ever deleted from here, by hand, the oldest first: `deploy/backup-delete-videos.py
   <BACKUP_DIR> <GB>` lists them (`--yes` deletes them). Those the server offloaded are in `current/` until it forgets
   them: `docker compose -f docker-compose.public.yml exec bouldermesh python3 backend/forget_videos.py <GB>` (and
   `--yes`), and the next night's copy moves them here.
@@ -1405,7 +1406,9 @@ volunteers and for connecting the public site to whichever server harvests.
   server never deletes one by itself: past `VIDEO_CACHE_GB` (or the data's cap) those nothing needs any more
   (`videos_done()`: their climbs harvested and meshed, and beta found in them) are offloaded to the backup, the least
   recently used first, and asked back if wanted again; one still needed stays past it. The backup keeps them for good;
-  deleting the oldest is by hand (*Backups*, below).
+  deleting the oldest is by hand (*Backups*, below). A video volunteers are asked for that the backup keeps in its
+  `archive/` (one this server deleted before it kept them all) is asked of the backup instead: its half-hourly run sends
+  it back, and volunteers are given it only if that hasn't come within 6 hours.
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made
@@ -1683,6 +1686,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_abtest.py      # offline: A/B tests of COLMAP 3.9.1 against 4.2.1: options, a machine's job, the queue
     python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, the phone told, a boulder at a time, harvests before beta
     python3 tests/test_forget_videos.py # offline: deleting kept videos by hand, on the server and the backup
+    python3 tests/test_archive_restore.py # offline: videos volunteers are asked for, sent back from the backup's archive instead
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_kept.py        # offline: a mesh made again from its cameras as they were, what they made carried over
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
