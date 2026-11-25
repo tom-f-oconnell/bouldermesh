@@ -671,6 +671,20 @@ def cache_and_harvest() -> None:
     youtube.CACHE_BYTES = 2**20     # room for the new one only
     youtube.cache_put("OOOOOOOOOOO", Path(shutil.copy(big, TMP / "o.mp4")))
     assert youtube.cached("OOOOOOOOOOO") and not youtube.cached("CCCCCCCCCCC"), "the least recently used goes first"
+    # with the server saying which may go (its videos_done()): one beta or a harvest still needs stays, past the room
+    youtube.DROPPABLE = lambda: set()
+    try:
+        youtube.cache_put("PPPPPPPPPPP", Path(shutil.copy(big, TMP / "p.mp4")))
+        assert youtube.cached("OOOOOOOOOOO") and youtube.cached("PPPPPPPPPPP"), "none may go: both kept"
+        os.utime(youtube.cached("PPPPPPPPPPP"), (1, 1))     # the least recently used, but needed
+        youtube.DROPPABLE = lambda: {"OOOOOOOOOOO"}
+        youtube.cache_put("QQQQQQQQQQQ", Path(shutil.copy(big, TMP / "q.mp4")))
+        assert youtube.cached("PPPPPPPPPPP") and not youtube.cached("OOOOOOOOOOO"), "only the one that may go goes"
+        youtube.DROPPABLE = lambda: 1 / 0
+        youtube.cache_put("RRRRRRRRRRR", Path(shutil.copy(big, TMP / "r.mp4")))
+        assert youtube.cached("PPPPPPPPPPP") and youtube.cached("QQQQQQQQQQQ"), "unsure which may go: none goes"
+    finally:
+        youtube.DROPPABLE = None
 
     # a search this server leaves to volunteers: asked of them, and their results used once they've come
     youtube.via = "volunteers"

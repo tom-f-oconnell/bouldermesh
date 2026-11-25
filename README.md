@@ -1396,7 +1396,9 @@ volunteers and for connecting the public site to whichever server harvests.
   they've come: an area's as *add what volunteers fetched and rebuild*, which a finished area runs by itself and a stopped
   one when it's started. A climb with no harvest before is harvested from scratch. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
 - **Fetched videos** are kept (`data/cache/videos`, up to `VIDEO_CACHE_GB`, 50 by default and 10 in the public setup)
-  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. Beta
+  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. Past
+  `VIDEO_CACHE_GB`, only videos nothing needs any more go (those that could be offloaded, `videos_done()`): one whose
+  beta is still to be found, or whose climbs are still to be harvested or meshed, stays past it. Beta
   can only use a video with a frame placed in a mesh, which was about half of those harvests used (387 of 739 on hal):
   the rest are deleted (`prune_videos()`, hourly) once every climb that took frames from them, and its boulder's mesh,
   is settled, and they haven't been used for 6 hours; their details stay, and only harvesting again would fetch them

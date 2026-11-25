@@ -2575,6 +2575,7 @@ assert got == {f"projects/{'d2' * 6}/rejected": "rejected photos", "cache/videos
                f"projects/{'d1' * 6}/photos": "photos", f"projects/{'d1' * 6}/masks": "photos",
                f"meshes/{'a0' * 6}/mesh.glb": "older meshes"}, got
 assert list(got)[0].endswith("rejected"), "rejected photos first"
+assert server.youtube_mod.DROPPABLE() == {"v1aaaaaaaaa"}, "the cache, when full, drops only what may be offloaded: not v5, its beta to be found"
 # a video goes once its own beta is found in each of its meshes, not once all of a mesh's are: c5's mesh still waits for
 # another, but v5's is done; and a mesh none of whose photos are its frames has nothing to find in it
 server.beta_mod.save(server.MESHES / ("a5" * 6), {"status": "queued", "videos": [{"url": "https://www.youtube.com/watch?v=v5aaaaaaaaa",

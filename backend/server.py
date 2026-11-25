@@ -7472,22 +7472,15 @@ def _beta_found(mid: str, vid: str | None = None) -> bool:
     return vid not in _placed_videos[mid]
 
 
-def offload_candidates() -> list[tuple[str, str, str]]:
-    """What may be offloaded now, in the order it goes: (path under the data folder, kind, what it's of)."""
-    now, out = time.time(), []
-    _placed_videos.clear()     # read again each time: meshes are made and remade
-    busy, boulders = _in_play()
-    parked = _only_long_stopped(long_stopped())
-    projects = {p["id"]: p for p in q("SELECT p.id, p.kind, p.status, p.created, p.mesh_id, p.climb_id, p.boulder, c.area_path, "
-                                      "m.created AS meshed FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id "
-                                      "LEFT JOIN meshes m ON m.id=p.mesh_id")}
-    # photos the filter rejected
-    for d in sorted(PROJECTS.iterdir(), key=lambda d: d.name) if PROJECTS.exists() else []:
-        rej = d / "rejected"
-        files = [f for f in rej.iterdir() if f.is_file()] if rej.is_dir() else []
-        if files and max(f.stat().st_mtime for f in files) < now - REJECTED_DAYS * 86400:
-            out.append((f"projects/{d.name}/rejected", "rejected photos", d.name))
-    # fetched videos, once every climb they're of was meshed (or not) and beta found in it in each of its meshes
+def videos_done(busy: set[str] | None = None, now: float | None = None) -> list[tuple[str, str, str]]:
+    """The cached videos nothing here needs any more, oldest used first, as offload_candidates() lists them: those of
+    climbs that have all been harvested and aren't in play, with beta found in them in each of their climbs' meshes (or
+    with none of their frames placed there), and those of no climb known once they've sat CACHE_DAYS. Only these may be
+    offloaded, or dropped when the cache is full (youtube.trim_cache()): the rest would be fetched again by volunteers."""
+    now, out = now or time.time(), []
+    if busy is None:
+        _placed_videos.clear()
+        busy = _in_play()[0]
     of: dict[str, set[str]] = {}
     for r in q("SELECT climb_id, url FROM climb_videos"):
         vid = youtube_mod.video_id(r["url"])
@@ -7511,6 +7504,29 @@ def offload_candidates() -> list[tuple[str, str, str]]:
                 [of_boulder[area[c]]] if area.get(c) in of_boulder else [])) for c in climbs)
         if done:
             out.append((f"cache/videos/{f.name}", "videos", vid))
+    return out
+
+
+youtube_mod.DROPPABLE = lambda: {vid for _, _, vid in videos_done()}
+
+
+def offload_candidates() -> list[tuple[str, str, str]]:
+    """What may be offloaded now, in the order it goes: (path under the data folder, kind, what it's of)."""
+    now, out = time.time(), []
+    _placed_videos.clear()     # read again each time: meshes are made and remade
+    busy, boulders = _in_play()
+    parked = _only_long_stopped(long_stopped())
+    projects = {p["id"]: p for p in q("SELECT p.id, p.kind, p.status, p.created, p.mesh_id, p.climb_id, p.boulder, c.area_path, "
+                                      "m.created AS meshed FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id "
+                                      "LEFT JOIN meshes m ON m.id=p.mesh_id")}
+    # photos the filter rejected
+    for d in sorted(PROJECTS.iterdir(), key=lambda d: d.name) if PROJECTS.exists() else []:
+        rej = d / "rejected"
+        files = [f for f in rej.iterdir() if f.is_file()] if rej.is_dir() else []
+        if files and max(f.stat().st_mtime for f in files) < now - REJECTED_DAYS * 86400:
+            out.append((f"projects/{d.name}/rejected", "rejected photos", d.name))
+    # fetched videos, once every climb they're of was meshed (or not) and beta found in it in each of its meshes
+    out += videos_done(busy, now)
     # photos and masks of climbs and boulders meshed a while ago, or skipped a while ago, that nothing still pools
     for p in sorted(projects.values(), key=lambda p: p["created"] or 0):
         boulder = p["boulder"] if p["kind"] == "boulder" else p["area_path"]
