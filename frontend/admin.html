@@ -203,8 +203,6 @@
       made a mesh of another rock. Meshing again uses the photos as harvested (only problems on a boulder's page never
       harvested are), and first reads what each one's Mountain Project area is, where that never was: one whose page
       doesn't say it's one rock isn't meshed whole again, as its climbs are meshed on their own and pooled by their photos.</div>
-    <label class="choice"><input type="checkbox" id="prune-videos"> Delete kept videos none of whose frames is placed in any mesh, once their climbs are done
-      <small>(beta can't use them; only harvesting again would, which fetches them again. Checked hourly; their details stay)</small></label>
   </section>
   </div>
   <div class="pane" id="tab-machines" role="tabpanel" aria-labelledby="tabbtn-machines">
@@ -318,12 +316,11 @@
       the checker may ask YouTube's player for them itself <small class="note">(one request, as for a video's details; no download)</small></label></div>
     <div class="inline" style="margin-top:8px">A boulder or climb whose videos volunteers are still fetching waits for them; tell the phone
       once one has waited <input type="number" id="vid-alert" min="0" max="240" step="0.5" style="width:70px"> h <small class="note">(0: never)</small>,
-      and give up on videos none of which has moved on (been wanted, given out, or heard of) for
-      <input type="number" id="vid-giveup" min="0.5" max="240" step="0.5" style="width:70px"> h, meshing it with what's come.
-      Videos are fetched a boulder at a time, the one waiting longest first.</div>
+      and again at 3, 6 and 12 times that, then every 12 times more. Nothing is given up on by time: only a video failing
+      for good, or cancelled here, lets it be meshed without. Videos are fetched a boulder at a time, the one waiting
+      longest first: regular areas', then low-priority areas', then beta's (beta waiting 2 days goes before low-priority areas').</div>
     <div class="inline" style="margin-top:8px">Videos that come after a boulder's or pool's mesh was made: it's made again with them once
-      the rest still to come for its climbs has, or <input type="number" id="vid-late" min="0" max="240" step="0.5" style="width:70px"> h
-      after the first came <small class="note">(0: at once)</small>, so that late videos remake it once, not once each.</div>
+      nothing more is coming for its climbs, so that late videos remake it once, not once each.</div>
     <div class="note" id="vid-holds"></div>
     <div class="inline" style="margin-top:8px">Volunteers run yt-dlp's <select id="vol-ytdlp"><option value="nightly">nightly</option>
       <option value="stable">stable</option></select> builds <small class="note">(nightly follows YouTube's changes days or weeks before a
@@ -734,7 +731,7 @@ function render(s){
   $('#filter-machines').checked = v['relevance.machines'];
   $('#texture-second').checked = v['mesh.texture_every_second'];
   $('#mapper-method').value = v['mesh.mapper'] || 'incremental';
-  $('#beta-auto').checked = v['beta.auto']; $('#prune-videos').checked = v['videos.prune_unplaced'];
+  $('#beta-auto').checked = v['beta.auto'];
   if (document.activeElement !== $('#map-km')) $('#map-km').value = v['site.map_km'];
   if (document.activeElement !== $('#preview-faces')) $('#preview-faces').value = v['viewer.preview_faces'];
   $('#pack-note').textContent = packNote(s.packing);
@@ -904,8 +901,7 @@ function render(s){
   keep('#vol-per-hour', v['volunteers.per_hour']); keep('#vol-per-day', v['volunteers.per_day']);
   keep('#chk-new', Math.round(v['volunteers.check_new'] * 100)); keep('#chk-trusted', Math.round(v['volunteers.check_trusted'] * 100));
   $('#chk-fresh').checked = v['volunteers.check_fresh'];
-  keep('#vid-alert', v['videos.hold_alert_hours']); keep('#vid-giveup', v['videos.give_up_hours']);
-  keep('#vid-late', v['videos.late_batch_hours']);
+  keep('#vid-alert', v['videos.hold_alert_hours']);
   const holds = s.video_holds || [];
   $('#vid-holds').innerHTML = holds.length ? `Held up by videos now: ${holds.map(h => `${esc(h.what)} (${((Date.now() / 1000 - h.since) / 3600).toFixed(1)} h,
     ${h.coming} to come${h.notified ? ', told' : ''})`).join('; ')}` : 'Nothing is held up by videos now.';
@@ -1204,7 +1200,6 @@ $('#via').onchange = () => save({ 'youtube.via': $('#via').value });
 $('#area-meshes').onchange = () => save({ 'areas.meshes': $('#area-meshes').value });
 $('#matcher').onchange = () => save({ 'relevance.matcher': $('#matcher').value });
 $('#beta-auto').onchange = () => save({ 'beta.auto': $('#beta-auto').checked });
-$('#prune-videos').onchange = () => save({ 'videos.prune_unplaced': $('#prune-videos').checked });
 $('#skyline-auto').onchange = () => save({ 'facing.skyline': $('#skyline-auto').checked });
 $('#lostblocks').onclick = async e => {
   const b = e.target.closest('button[data-lost]');
@@ -1283,8 +1278,6 @@ const regSave = () => save({ 'volunteers.provisional_work': $('#reg-vol').checke
 for (const id of ['#reg-vol', '#reg-mach', '#reg-vol-hour', '#reg-vol-day', '#vol-per-hour', '#vol-per-day', '#vol-ytdlp', '#reg-addr', '#reg-wait',
                   '#chk-new', '#chk-trusted', '#chk-fresh']) $(id).onchange = regSave;
 $('#vid-alert').onchange = () => save({ 'videos.hold_alert_hours': +$('#vid-alert').value });
-$('#vid-giveup').onchange = () => save({ 'videos.give_up_hours': +$('#vid-giveup').value });
-$('#vid-late').onchange = () => save({ 'videos.late_batch_hours': +$('#vid-late').value });
 $('#lb-names').onchange = () => save({ 'leaderboard.names': $('#lb-names').value });
 $('#ntfy-on').onchange = () => save({ 'notify.enabled': $('#ntfy-on').checked });
 $('#ntfy-restarts').onchange = () => save({ 'notify.restarts': $('#ntfy-restarts').checked });

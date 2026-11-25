@@ -1178,8 +1178,11 @@ downloads, 1, 2, 4 then 8 hours, apart from them, and asks volunteers meanwhile.
 meshed first without any videos, and again once the results and then their videos came: twice the work for the machines
 that mesh, for a first mesh that's often poor. So an area's climb whose harvest asked volunteers for anything waits; the
 results coming have it harvested again, which may ask for the videos they found, and those coming have it harvested again
-and meshed. 24 hours of waiting (`VOLUNTEER_WAIT_HOURS`) is the most, as volunteers come and go: then it's meshed with
-what's there, and what comes later rebuilds it as before. Except its YouTube search: a climb isn't meshed before
+and meshed. It waits for as long as anything is still coming (since Nov 25, 2026: before, 24 hours, `VOLUNTEER_WAIT_HOURS`,
+then 12 more with nothing moving on, after which it was meshed with what was there and remade when the rest came).
+Waits were long only because volunteers' videos went in the wrong order and were fetched twice (below), and a mesh made
+early is a mesh made twice. Only a video failing for good, or cancelled on the admin page, ends a wait without it; the
+phone is told of long ones. Except its YouTube search: a climb isn't meshed before
 YouTube has been searched for it at all (the harvest records `youtube_checked`), as most of a climb's best photos are
 frames of its videos; with no volunteer, it's harvested again each day to try, unless its area is set to mesh without.
 
@@ -1195,9 +1198,8 @@ more than one remake (`note_late()`, `settle_late()`):
 - **Pools.** Late videos for a pooled climb rebuilt only its own mesh. A harvest they're added to now records each boulder
   and pool pooled from it before (`late_photos`). Areas mesh their boulders again as before; otherwise a pool or boulder
   is queued again, on an area's climb that's through, or by a job outside areas.
-- **Once, not once each.** A mesh to be made again waits for whatever else is still to come for its climbs, even what
-  `videos.give_up_hours` gave up on, which is often what comes late. It waits up to `videos.late_batch_hours` (12) from the
-  first. A harvest being added to holds a boulder quietly: the phone isn't told.
+- **Once, not once each.** A mesh to be made again waits for whatever else is still to come for its climbs, however
+  long (since Nov 25; up to `videos.late_batch_hours`, 12 h from the first, before). A harvest being added to holds a boulder quietly: the phone isn't told.
 
 This changes when photos reach a mesh, not which ones may. Meshes made before that lack late videos show in the
 admin page's new-data counts, so `MESH_RULES` stays as it was.

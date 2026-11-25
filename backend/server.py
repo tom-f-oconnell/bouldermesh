@@ -5845,7 +5845,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
         coming = VOLUNTEERS.pending("harvest", pid)
         if reconstruct and ((wait and coming) or (need_youtube and not youtube_checked(summary))):
             log(f"waiting for volunteers' YouTube searches and videos ({coming} to come): it's harvested again and meshed "
-                f"once they have, or after {VOLUNTEER_WAIT / 3600:.0f} h without them" if coming else
+                "once they have" if coming else
                 "not meshed until YouTube has been searched for it, by a volunteer if this server won't: it's harvested again "
                 f"to try in {VOLUNTEER_WAIT / 3600:.0f} h, or once one has")
             q("UPDATE projects SET status='waiting' WHERE id=?", pid, write=True)
@@ -6778,9 +6778,10 @@ def settle_boulder(camp_id: str, boulder: str | None) -> bool:
         hold(key, name, len(coming))
         return False
     # nor while one of them is being harvested (what volunteers fetched being added to a climb its area doesn't list,
-    # say), nor, made before, while what came late waits for the rest (late_wait()): held quietly, as these end by themselves
+    # say): held quietly, as these end by themselves. (What came late after its mesh waits for the rest still to come
+    # with coming, above, so that it's meshed in once.)
     busy = harvests_busy([c["id"] for c in climbs])
-    if busy or late_wait(boulder, harvests):
+    if busy:
         hold(key, name, len(busy), quiet=True)
         return False
     unhold(key)
@@ -6820,17 +6821,17 @@ def boulder_meshed(camp_id: str, source_id: str, end: dict, failed: bool) -> dic
 
 def may_wait(item: dict, pid: str | None = None) -> bool:
     """Whether an area's climb may wait for volunteers: until VOLUNTEER_WAIT after it first did, and after that for as
-    long as what they're fetching for its harvest (pid) still moves on (videos_moving())."""
+    long as anything is still coming for its harvest (pid; videos_moving())."""
     return not item.get("waiting_since") or time.time() - item["waiting_since"] < VOLUNTEER_WAIT or bool(pid and videos_moving([pid]))
 
 
 def videos_moving(pids) -> list[dict]:
-    """What volunteers are still to fetch for these harvests that has moved on (been wanted, given out, or heard of from
-    its volunteer) within videos.give_up_hours: what a boulder or climb waits for. [] if nothing is coming, or all of it
-    has sat that long, which is then given up on."""
-    cut = time.time() - float(settings().get("videos.give_up_hours") or 12) * 3600
+    """What volunteers are still to fetch for these harvests: what a boulder or climb waits for, however long it takes
+    (each with when it last moved on: wanted, given out, or heard of from its volunteer). Nothing is given up on by time,
+    so that a mesh isn't made without them and again with them; only a video failing for good, or cancelled on the
+    admin page, ends the wait without it. The phone is told of long waits (hold_alerts()). [] if nothing is coming."""
     try:
-        return [t for t in VOLUNTEERS.pending_tasks("harvest", pids) if (t["moved"] or 0) >= cut]
+        return VOLUNTEERS.pending_tasks("harvest", pids)
     except Exception:  # noqa: BLE001 - nothing then holds it up
         return []
 
@@ -6915,8 +6916,7 @@ def hold_alerts() -> int:
         messages = [(*one(r, waited), mark) for r, waited, mark in told]
     for title, text, mark in messages:
         threading.Thread(target=NOTIFIER.send, args=(
-            title, f"{text}\n(given up after {settings().get('videos.give_up_hours')} h with no progress)", None,
-            4 if mark >= 24 else 3, ["hourglass"]), daemon=True).start()
+            title, text, None, 4 if mark >= 24 else 3, ["hourglass"]), daemon=True).start()
     return len(told)
 
 
@@ -7003,30 +7003,10 @@ def note_late(climb_id: str) -> list[str]:
     return keys
 
 
-def late_wait(key: str, harvests: list[str]) -> bool:
-    """Whether a boulder's or pool's mesh, to be made again with what came after it (note_late()), waits on for the rest
-    of what volunteers have still to fetch for its climbs' harvests, moving on or not (as given up on by videos_moving()
-    after videos.give_up_hours, which is often what comes late), until videos.late_batch_hours after the first came: so that
-    what comes late is meshed in once, rather than once each. Forgets what its last pooling has (pooled_at())."""
-    r = q("SELECT first, last FROM late_photos WHERE key=?", key, one=True)
-    if not r:
-        return False
-    at = pooled_at(key)
-    if at is None or at >= r["last"]:
-        q("DELETE FROM late_photos WHERE key=? AND last=?", key, r["last"], write=True)
-        return False
-    if time.time() - r["first"] >= float(settings().get("videos.late_batch_hours") or 0) * 3600:
-        return False
-    try:
-        return bool(VOLUNTEERS.pending_tasks("harvest", harvests))
-    except Exception:  # noqa: BLE001 - nothing then holds it up
-        return False
-
-
 def settle_late() -> int:
     """Boulders' and pools' meshes with photos that came after them (note_late()), and boulders' meshes that waited for
     their climbs' videos (run_boulder()'s wait) with no area's climb waiting with them: meshed again, or at last, once nothing
-    more is coming for their climbs (videos_moving(), harvests_busy(), late_wait()) and no area is at work on them. On one
+    more is coming for their climbs (videos_moving(), harvests_busy()) and no area is at work on them. On one
     of an area's climbs that's through, as its Rebuild would, starting the area again if it had finished (a stopped one
     waits to be started); with none, a boulder by a job (mesh_boulder()). Also gives again what came for harvests that
     were busy then (resettle_harvests()). Returns how many were queued."""
@@ -7060,7 +7040,7 @@ def _settle_late(key: str) -> int:
     if any(i["redo"] or i["status"] in ("running", "waiting", "harvested") for i in items):
         return 0    # an area is at work on it: it meshes it once through (settle_boulder(), settle_clusters())
     harvests = [h for c in climbs for h in climb_harvests(c)]
-    if videos_moving(harvests) or harvests_busy(climbs) or late_wait(key, harvests):
+    if videos_moving(harvests) or harvests_busy(climbs):
         return 0
     what = "what volunteers fetched for its climbs after it was made" if late else "the videos of its climbs it waited for"
     through = sorted((i for i in items if i["status"] in ("done", "skipped", "failed", "hidden")),
@@ -7133,7 +7113,7 @@ def settle_waiting(camp_id: str, only_old: bool = False) -> None:
     for r in q("SELECT source_id, project_id, name, waiting_since FROM campaign_items WHERE campaign_id=? AND status='waiting' AND waiting_since<?"
                f"{' AND old_rerun>=1' if only_old else ''}", camp_id, time.time() - VOLUNTEER_WAIT):
         coming = videos_moving([r["project_id"]]) if r["project_id"] else []
-        if coming:      # still moving on: it waits on (videos.give_up_hours without, and it's given up on)
+        if coming:      # still coming: it waits on
             hold(f"climb|{camp_id}|{r['source_id']}", r["name"], len(coming), since=r["waiting_since"])
             continue
         unhold(f"climb|{camp_id}|{r['source_id']}")
@@ -7476,7 +7456,7 @@ def videos_done(busy: set[str] | None = None, now: float | None = None) -> list[
     """The cached videos nothing here needs any more, oldest used first, as offload_candidates() lists them: those of
     climbs that have all been harvested and aren't in play, with beta found in them in each of their climbs' meshes (or
     with none of their frames placed there), and those of no climb known once they've sat CACHE_DAYS. Only these may be
-    offloaded, or dropped when the cache is full (youtube.trim_cache()): the rest would be fetched again by volunteers."""
+    offloaded (offload_step(), past VIDEO_CACHE_GB or the data's cap): the rest would be fetched again by volunteers."""
     now, out = now or time.time(), []
     if busy is None:
         _placed_videos.clear()
@@ -7507,7 +7487,7 @@ def videos_done(busy: set[str] | None = None, now: float | None = None) -> list[
     return out
 
 
-youtube_mod.DROPPABLE = lambda: {vid for _, _, vid in videos_done()}
+youtube_mod.TRIM = False      # videos are kept, and offloaded past VIDEO_CACHE_GB (offload_step()), never just dropped
 
 
 def offload_candidates() -> list[tuple[str, str, str]]:
@@ -7573,8 +7553,9 @@ def prune_web_cache(need: float) -> int:
 
 def offload_step() -> dict:
     """What making room does after each measuring: put back what the backup sent back; and above storage.offload_percent
-    of the cap, delete what was marked before the backup's last good copy began and is still to go, the web cache's
-    old pages, and mark more to go, down to that %. Returns what it did."""
+    of the cap, or with fetched videos past VIDEO_CACHE_GB, delete what was marked before the backup's last good copy
+    began and is still to go, the web cache's old pages (for the cap only), and mark more to go, down to that % (and
+    videos first, down to VIDEO_CACHE_GB). Videos are never dropped otherwise (youtube.TRIM). Returns what it did."""
     did = {"back": offload_mod.take_restores(DATA, q, log_server)}
     did["manifest"] = take_manifest()
     cap, pct = data_cap(), settings().get("storage.offload_percent")
@@ -7588,7 +7569,9 @@ def offload_step() -> dict:
         p = DATA / r["path"]
         if (p.is_file() and p.stat().st_size) or (p.is_dir() and any(p.iterdir())):
             offload_mod.drop(q, [r["path"]])
-    need = _usage["total"] - cap * pct / 100
+    over = max(0.0, _usage["total"] - cap * pct / 100)
+    videos_over = max(0.0, videos_size() - youtube_mod.CACHE_BYTES)
+    need = over + videos_over
     if need <= 0:
         offload_mod.drop(q, [r["path"] for r in marked])
         offload_mod.write_lists(DATA, q)
@@ -7600,9 +7583,17 @@ def offload_step() -> dict:
         return did
     eligible = {c[0]: c for c in offload_candidates()}
     did["freed"] = offload_mod.finish(DATA, q, lambda row: row["path"] in eligible, log_server, need)
-    did["cache"] = prune_web_cache(need - did["freed"])
-    left = need - did["freed"] - did["cache"] - sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NULL"))
+    did["cache"] = prune_web_cache(over - did["freed"]) if over > did["freed"] else 0
     have = {r["path"] for r in q("SELECT path FROM offloads")}
+    # past VIDEO_CACHE_GB, the videos nothing needs (those used longest ago first); then, past the cap, anything in its order
+    left = videos_over - sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NULL AND path LIKE 'cache/videos/%'"))
+    for path, kind, ref in eligible.values():
+        if left <= 0:
+            break
+        if kind == "videos" and path not in have:
+            left -= offload_mod.mark(DATA, q, path, kind, ref)
+            have.add(path)
+    left = over - did["freed"] - did["cache"] - sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NULL"))
     for path, kind, ref in eligible.values():
         if left <= 0:
             break
@@ -9208,88 +9199,13 @@ _frames_wake = threading.Event()
 _frames_control = JobControl()
 
 
-PRUNE_IDLE_HOURS = 6        # a cached video used more lately than this is left alone
 
 
-def prune_videos() -> dict:
-    """Delete the cached videos beta can't use, as none of their frames is placed in any mesh (beta_mod.videos()),
-    once every project that took frames from them is settled: done, failed or skipped, with no area climb of it still
-    to harvest, waiting, or harvested for a boulder not yet meshed, and no boulder's mesh pooling it now. Only a harvest
-    again would use them, which can fetch them again. Their details (<id>.json) stay. Left alone: those no harvest has
-    used yet (a volunteer's, for a climb to harvest again), those a beta or a volunteer's request waits for, those used
-    in the last PRUNE_IDLE_HOURS, and any asked back from the backup. One offloaded to the backup is forgotten there
-    (offload.drop()), so that nothing asks for it back.
-
-    Returns:
-        {"deleted": videos, "bytes": freed here, "dropped": offloaded ones forgotten}.
-    """
-    out = {"deleted": 0, "bytes": 0, "dropped": 0}
+def videos_size() -> int:
+    """The bytes of the fetched videos kept here (not their details, nor what's being fetched)."""
     cache = youtube_mod.VIDEO_CACHE
-    local = {f.stem: f for f in cache.iterdir() if f.suffix != ".json" and not f.name.endswith(".part")} if cache.is_dir() else {}
-    away = {Path(r["path"]).stem: r for r in q("SELECT path, done, wanted FROM offloads WHERE path LIKE 'cache/videos/%'")}
-    if not local and not away:
-        return out
-    used: dict[str, set[str]] = {}         # video id -> projects that took frames from it
-    for s in PROJECTS.glob("*/sources.json"):
-        try:
-            for f in json.loads(s.read_text()).get("files", []):
-                vid = youtube_mod.video_id(f.get("url") or "") if f.get("source") == "youtube" else None
-                if vid:
-                    used.setdefault(vid, set()).add(s.parent.name)
-        except (OSError, ValueError, AttributeError):
-            continue
-    placed = {youtube_mod.video_id(u) for d in MESHES.iterdir() if d.is_dir() for u in beta_mod.videos(d)} if MESHES.is_dir() else set()
-    waiting = {youtube_mod.video_id(u) for mid in beta_queue() for u in (beta_mod.load(MESHES / mid) or {}).get("waiting_videos") or []}
-    try:
-        wanted = {r["video_id"] for r in VOLUNTEERS.q("SELECT t.video_id FROM tasks t JOIN wants w ON w.task=t.id "
-                                                    "WHERE t.kind='video' AND w.applied=0")}
-    except Exception:
-        wanted = set()
-    unsettled = {r["id"] for r in q("SELECT id FROM projects WHERE status NOT IN ('done','failed','harvested','skipped','superseded')")}
-    for r in q("SELECT ci.project_id, ci.campaign_id, ci.boulder FROM campaign_items ci WHERE ci.project_id IS NOT NULL AND "
-               "(ci.status IN ('pending','running','waiting','harvested') OR (ci.boulder IS NOT NULL AND EXISTS (SELECT 1 FROM "
-               "campaign_items o WHERE o.campaign_id=ci.campaign_id AND o.boulder=ci.boulder AND o.status IN "
-               "('pending','running','waiting','harvested'))))"):
-        unsettled.add(r["project_id"])
-    now, dropped = time.time(), []
-    for vid in set(local) | set(away):
-        projects = used.get(vid)
-        if not projects or vid in placed or vid in waiting or vid in wanted or projects & unsettled:
-            continue
-        f = local.get(vid)
-        if f is not None:
-            try:
-                if now - f.stat().st_mtime < PRUNE_IDLE_HOURS * 3600:
-                    continue
-                size = f.stat().st_size
-                f.unlink()
-                out["deleted"] += 1
-                out["bytes"] += size
-            except OSError:
-                continue
-        row = away.get(vid)
-        if row and not (row["done"] and row["wanted"]):     # one asked back is left for its restore
-            dropped.append(row["path"])
-    if dropped:
-        offload_mod.drop(q, dropped)
-        offload_mod.write_lists(DATA, q)
-        out["dropped"] = sum(1 for p in dropped if away[Path(p).stem]["done"])
-    if out["deleted"] or out["dropped"]:
-        print(f"videos: deleted {out['deleted']} cached video(s) none of whose frames is placed in a mesh "
-              f"({out['bytes'] / 2**30:.2f} GB), and forgot {out['dropped']} offloaded to the backup", flush=True)
-    return out
-
-
-def prune_worker() -> None:
-    """prune_videos() an hour after starting and hourly after, at the lowest CPU priority, if the admin page says to."""
-    os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
-    while True:
-        time.sleep(3600)
-        try:
-            if settings().get("videos.prune_unplaced"):
-                prune_videos()
-        except Exception as e:  # never let the thread die
-            print(f"videos: pruning failed ({type(e).__name__}: {e})", flush=True)
+    return sum(f.stat().st_size for f in cache.iterdir() if f.is_file() and f.suffix != ".json"
+               and not f.name.endswith(".part")) if cache.is_dir() else 0
 
 
 def frames_worker() -> None:
@@ -15314,14 +15230,35 @@ def volunteers_widespread(n: int, of: int, example: str) -> None:
         "daily), rather than one address's trouble."), kwargs={"priority": 4, "tags": ["warning"]}, daemon=True).start()
 
 
+BETA_AGED = 48 * 3600   # beta's videos wanted this long go ahead of low-priority areas' harvests
+
+
 def volunteer_rank(purpose: str, ref: str) -> float:
     """How soon volunteers get what's wanted for purpose and ref (volunteers.Broker's rank): regular areas' and people's
-    harvests first (0), then beta and the rest (1), then low-priority areas' harvests (2: low_projects()), so that an
-    area set to low priority doesn't hold up the others' YouTube videos. Within each, harvests' go a boulder at a time
-    (volunteer_focus()), so that one boulder's mesh isn't held up by videos shared out with another's."""
+    harvests first (0), then low-priority areas' (1: low_projects()), then beta and the rest (2), as only a harvest's
+    videos can go into a mesh: a boulder isn't meshed while they're coming, and beta only looks at the videos already
+    in a mesh. Beta wanted BETA_AGED goes between the two harvests (0.5), so that it isn't left out for good. Within
+    each, harvests' go a boulder at a time (volunteer_focus()), so that one boulder's mesh isn't held up by videos shared
+    out with another's."""
     if purpose == "harvest":
-        return (2 if ref in low_projects() else 0) + volunteer_focus(ref)
-    return 3 if purpose == "research" else 1
+        return (1 if ref in low_projects() else 0) + volunteer_focus(ref)
+    if purpose == "beta":
+        since = beta_wanted_since(ref)
+        return 0.5 if since and time.time() - since >= BETA_AGED else 2
+    return 3 if purpose == "research" else 2
+
+
+_beta_since: dict = {"at": 0.0, "of": {}}
+
+
+def beta_wanted_since(mid: str) -> float | None:
+    """When the earliest of a mesh's videos still to come for beta was wanted. Read again at most every FOCUS_EVERY
+    seconds."""
+    if time.time() - _beta_since["at"] > FOCUS_EVERY:
+        _beta_since.update(at=time.time(), of={r["ref"]: r["t"] for r in VOLUNTEERS.q(
+            "SELECT w.ref, min(w.created) AS t FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose='beta' "
+            "AND t.state IN ('queued','assigned') GROUP BY w.ref")})
+    return _beta_since["of"].get(mid)
 
 
 _focus: dict = {"at": 0.0, "of": {}}
@@ -16016,7 +15953,6 @@ def main() -> None:
     threading.Thread(target=snapshot_worker, daemon=True).start()
     threading.Thread(target=drain_watch, daemon=True, name="drain-watch").start()
     threading.Thread(target=frames_worker, daemon=True).start()
-    threading.Thread(target=prune_worker, daemon=True).start()
     threading.Thread(target=research_worker, daemon=True, name="youtube-research").start()
     if DOWNLOAD_AHEAD:
         threading.Thread(target=download_ahead_worker, daemon=True, name="download-ahead").start()

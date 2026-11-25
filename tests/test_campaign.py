@@ -1388,18 +1388,21 @@ run_all(c["id"])
 it = items(c["id"])["Alpha"]
 assert it["status"] == "done" and it["mesh_id"] and meshed == [pid] and harvested.count("Alpha") == 3, (it, meshed)
 assert server.campaign_status(c["id"]) == "done" and not server.q("SELECT note FROM campaigns WHERE id=?", c["id"], one=True)["note"]
-# one that has waited long enough, while what's coming still moves on, waits on; once nothing has for
-# videos.give_up_hours, it's meshed with what's come, and doesn't wait again
+# one that has waited long enough waits on while anything is still coming, however long since it moved on; once
+# nothing is (its videos came, or failed for good), it's harvested again and meshed with what's come
 fresh()
 meshed.clear()
-plan[:] = [1, 1]
+plan[:] = [1, 0]
 c = server.create_campaign("", "popularity", only("Beta"))
 run_all(c["id"])
 assert items(c["id"])["Beta"]["status"] == "waiting"
 server.q("UPDATE campaign_items SET waiting_since=?", time.time() - server.VOLUNTEER_WAIT - 60, write=True)
 run_all(c["id"])
 assert items(c["id"])["Beta"]["status"] == "waiting" and not meshed, "still moving on"
-moved[items(c["id"])["Beta"]["project_id"]] = time.time() - 13 * 3600
+moved[items(c["id"])["Beta"]["project_id"]] = time.time() - 30 * 3600
+run_all(c["id"])
+assert items(c["id"])["Beta"]["status"] == "waiting" and not meshed, "not given up on by time"
+coming[items(c["id"])["Beta"]["project_id"]] = 0
 run_all(c["id"])
 it = items(c["id"])["Beta"]
 assert it["status"] == "done" and len(meshed) == 1 and harvested.count("Beta") == 2, (it, meshed)
@@ -2575,7 +2578,7 @@ assert got == {f"projects/{'d2' * 6}/rejected": "rejected photos", "cache/videos
                f"projects/{'d1' * 6}/photos": "photos", f"projects/{'d1' * 6}/masks": "photos",
                f"meshes/{'a0' * 6}/mesh.glb": "older meshes"}, got
 assert list(got)[0].endswith("rejected"), "rejected photos first"
-assert server.youtube_mod.DROPPABLE() == {"v1aaaaaaaaa"}, "the cache, when full, drops only what may be offloaded: not v5, its beta to be found"
+assert [c[2] for c in server.videos_done()] == ["v1aaaaaaaaa"], "not v5: its beta is still to be found"
 # a video goes once its own beta is found in each of its meshes, not once all of a mesh's are: c5's mesh still waits for
 # another, but v5's is done; and a mesh none of whose photos are its frames has nothing to find in it
 server.beta_mod.save(server.MESHES / ("a5" * 6), {"status": "queued", "videos": [{"url": "https://www.youtube.com/watch?v=v5aaaaaaaaa",
@@ -2627,6 +2630,20 @@ server.settings().update({"storage.cap_gb": 1000.0})
 server.measure_usage()
 server.offload_step()
 assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "nothing marked once there's room"
+# with room under the cap, videos past VIDEO_CACHE_GB: those nothing needs are offloaded, and only those, never just deleted
+real_bytes, server.youtube_mod.CACHE_BYTES = server.youtube_mod.CACHE_BYTES, 1
+server.beta_mod.videos = lambda d: {"https://www.youtube.com/watch?v=v5aaaaaaaaa": {}} if d.name == "a5" * 6 else real_videos(d)
+try:
+    assert not server.youtube_mod.TRIM, "the server's cache drops nothing by itself"
+    server.offload_step()
+    marked = {r["path"] for r in server.q("SELECT path FROM offloads WHERE done IS NULL")}
+    assert marked == {"cache/videos/v1aaaaaaaaa.mp4"}, marked
+    assert (D / "cache/videos/v1aaaaaaaaa.mp4").exists(), "kept here until the backup holds it"
+finally:
+    server.youtube_mod.CACHE_BYTES = real_bytes
+    server.beta_mod.videos = real_videos
+server.offload_step()
+assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "and unmarked once under it"
 server.settings().update({"storage.cap_gb": 0, "storage.offload_percent": 70.0})
 print("offloading OK")
 
@@ -3006,49 +3023,7 @@ server.beta_mod.videos = real_videos
 for m in server.MESHES.iterdir():
     (m / server.beta_mod.FILE).unlink(missing_ok=True)
 
-fresh()
-server.q("DELETE FROM offloads", write=True)
-V = server.youtube_mod.VIDEO_CACHE
-url = lambda v: f"https://www.youtube.com/watch?v={v * 11}"  # noqa: E731
-for v, age in (("a", 7), ("b", 7), ("c", 7), ("d", 7), ("e", 1), ("h", 7)):
-    put(f"cache/videos/{v * 11}.mp4", 1000, age * 3600)
-    (V / f"{v * 11}.json").write_text("{}")
-
-
-def sources(pid: str, vids: str, status: str) -> None:
-    (server.PROJECTS / pid).mkdir(parents=True, exist_ok=True)
-    (server.PROJECTS / pid / "sources.json").write_text(json.dumps({"files": [
-        {"file": f"yt_{v}_000.jpg", "source": "youtube", "url": url(v)} for v in vids]}))
-    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", pid, pid, time.time(), "harvest", status, write=True)
-
-
-sources("p1" * 6, "abefgh", "done")
-sources("p2" * 6, "c", "harvested")
-cp = server.create_campaign("", "popularity", CSV, start=False)
-server.q("UPDATE campaign_items SET status='harvested', project_id=? WHERE campaign_id=? AND name='Alpha'", "p2" * 6, cp["id"], write=True)
-m1 = server.MESHES / ("m1" * 6)
-m1.mkdir(parents=True)
-(m1 / "photo_sources.json").write_text(json.dumps({"basis": "placed", "photos": [{"file": "yt_b_000.jpg", "source": "youtube", "url": url("b")}]}))
-(m1 / "cameras.json").write_text(json.dumps([{"name": "yt_b_000.jpg", "q": [1, 0, 0, 0], "t": [0, 0, 0]}]))
-m2 = server.MESHES / ("m2" * 6)
-m2.mkdir(parents=True)
-server.beta_mod.save(m2, {"status": "queued", "videos": [], "waiting_videos": [url("h")]})
-for v, done, wanted in (("f", now - day, None), ("g", now - day, now)):
-    server.q("INSERT INTO offloads(path,kind,ref,bytes,marked,done,wanted) VALUES(?,?,?,?,?,?,?)", f"cache/videos/{v * 11}.mp4", "video",
-             None, 1000, now - 2 * day, done, wanted, write=True)
-out = server.prune_videos()
-left = sorted(f.name for f in V.iterdir() if f.suffix == ".mp4" and len(set(f.stem)) == 1)     # not the offloading test's
-assert left == ["bbbbbbbbbbb.mp4", "ccccccccccc.mp4", "ddddddddddd.mp4", "eeeeeeeeeee.mp4", "hhhhhhhhhhh.mp4"], left
-assert out == {"deleted": 1, "bytes": 1000, "dropped": 1}, out
-assert (V / "aaaaaaaaaaa.json").exists(), "its details stay"
-assert [r["path"] for r in server.q("SELECT path FROM offloads")] == ["cache/videos/ggggggggggg.mp4"], "the one asked back stays"
-assert "fffffffffff" not in (D / "offload.list").read_text() and "ggggggggggg" in (D / "offload.list").read_text()
-# once its climb's boulder is meshed, and the video's frames not placed in it, Alpha's goes too
-server.q("UPDATE campaign_items SET status='skipped' WHERE campaign_id=?", cp["id"], write=True)
-server.q("UPDATE projects SET status='done' WHERE id=?", "p2" * 6, write=True)
-os.utime(V / "ccccccccccc.mp4", (now - 7 * 3600, now - 7 * 3600))
-assert server.prune_videos()["deleted"] == 1 and not (V / "ccccccccccc.mp4").exists()
-print("beta with each new mesh, and pruning videos OK")
+print("beta with each new mesh OK")
 
 # --- what a restart would cost, for deploy.sh: work in progress, what it would lose, about how long it has left -------
 fresh()

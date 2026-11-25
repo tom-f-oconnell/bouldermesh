@@ -1011,6 +1011,10 @@ layout:
 - `archive/`: kept for good, in the server's layout, what the server deleted or replaced that can't easily be had again:
   fetched videos, projects' photos, masks and rejected photos, meshes deleted, and the big files of meshes replaced
   (`deploy/backup-archive.py`). Each file once; one changed at the same path is kept beside it as `<name>.~<date>~`.
+  Fetched videos are only ever deleted from here, by hand, the oldest first: `deploy/backup-delete-videos.py
+  <BACKUP_DIR> <GB>` lists them (`--yes` deletes them). Those the server offloaded are in `current/` until it forgets
+  them: `docker compose -f docker-compose.public.yml exec bouldermesh python3 backend/forget_videos.py <GB>` (and
+  `--yes`), and the next night's copy moves them here.
 - `changed/<date>/`: the rest of what that night's copy replaced or deleted in `current/` (records rewritten, web cache
   pages), kept 30 days (`KEEP_DAYS`).
 
@@ -1353,8 +1357,9 @@ volunteers and for connecting the public site to whichever server harvests.
 - **What they fetch:** only YouTube ids and search words this server gives them, one thing at a time: at most 15 videos
   an hour, spread over it, and 200 a day for each volunteer and each address (less, on the admin page), and apart from
   those 30 searches or channels an hour and 200 a day, each at least 8-15 s after the last; resting 1, 2, 4 then 8
-  hours when YouTube refuses them. What's wanted goes in turn: regular areas' and people's harvests first, then beta
-  and the rest, then low-priority areas' harvests, oldest first within each. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
+  hours when YouTube refuses them. What's wanted goes in turn: regular areas' and people's harvests first, then
+  low-priority areas' harvests, then beta and the rest (beta waiting 2 days goes before low-priority areas'), oldest
+  first within each: only a harvest's videos can go into a mesh, and beta only uses those already in one. A video comes back whole (up to 1080p, no sound, 500 MB), with its details but
   nothing of theirs. It must be as long as they say, and as long as another volunteer's search listed it, if one did:
   their own word alone only catches a file gone wrong; a search, its results (kept 30 days); a channel, its description, for climbers' heights.
 - **How YouTube treats them:** with each result, the script (version 5 on) says what yt-dlp warned of and how fast the
@@ -1381,12 +1386,12 @@ volunteers and for connecting the public site to whichever server harvests.
   there): today `player_client`, yt-dlp's YouTube clients for videos and their details. There are none now (the mweb
   trial ended on Nov 18); the menu shows when there are. A new kind of setting needs a new script version.
 - **An area's climbs wait for them:** a climb whose harvest asked volunteers for a search or videos has what they
-  fetched added once it's come, and is meshed once, rather than meshed without them first. It waits as long as what's
-  coming moves on (wanted, given out, or heard of from a volunteer): once none of it has for the admin page's give-up
-  time (12 h; at least 24 h, `VOLUNTEER_WAIT_HOURS`, in all), it's meshed with what's come. A climb being made again
+  fetched added once it's come, and is meshed once, rather than meshed without them first. It waits for as long as
+  anything is still coming, with no time limit: only a video failing for good, or cancelled on the admin page, lets it
+  be meshed without. A climb being made again
   (its old mesh remade, say) waits too, and a boulder isn't meshed while videos are coming for any climb on it, whatever
-  that climb's state. One held longer than the admin page's alert time (2 h) is said on the phone, once; the admin
-  page lists what's held now. Volunteers are given one boulder's videos before the next's, the one waiting longest
+  that climb's state. One held longer than the admin page's alert time (2 h) is said on the phone, and again at 6,
+  12 and 24 h and each day after; the admin page lists what's held now, and the day's summary how long holds lasted. Volunteers are given one boulder's videos before the next's, the one waiting longest
   first, so that two waiting boulders don't share them out and both wait. Adding keeps the photos it had (asking for them back from the
   backup first, if they were offloaded, and waiting for them as for a machine): only YouTube is looked at, videos framed
   before aren't framed again, and the filter judges only the new frames.
@@ -1396,13 +1401,11 @@ volunteers and for connecting the public site to whichever server harvests.
   they've come: an area's as *add what volunteers fetched and rebuild*, which a finished area runs by itself and a stopped
   one when it's started. A climb with no harvest before is harvested from scratch. *Only through volunteers* is for a cloud server, which shouldn't ask YouTube itself at all.
 - **Fetched videos** are kept (`data/cache/videos`, up to `VIDEO_CACHE_GB`, 50 by default and 10 in the public setup)
-  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. Past
-  `VIDEO_CACHE_GB`, only videos nothing needs any more go (those that could be offloaded, `videos_done()`): one whose
-  beta is still to be found, or whose climbs are still to be harvested or meshed, stays past it. Beta
-  can only use a video with a frame placed in a mesh, which was about half of those harvests used (387 of 739 on hal):
-  the rest are deleted (`prune_videos()`, hourly) once every climb that took frames from them, and its boulder's mesh,
-  is settled, and they haven't been used for 6 hours; their details stay, and only harvesting again would fetch them
-  again. One offloaded to the backup is forgotten there. The admin page's *Areas* turns this off.
+  for finding beta and harvesting again, so YouTube isn't asked for one twice; this server's own downloads too. The
+  server never deletes one by itself: past `VIDEO_CACHE_GB` (or the data's cap) those nothing needs any more
+  (`videos_done()`: their climbs harvested and meshed, and beta found in them) are offloaded to the backup, the least
+  recently used first, and asked back if wanted again; one still needed stays past it. The backup keeps them for good;
+  deleting the oldest is by hand (*Backups*, below).
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,
 47613 in Compose, on loopback only). By default that's the public server's own app, which harvests, with its meshes made
@@ -1678,7 +1681,8 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_incremental.py # offline: adding photos to a kept model: the re-solve gates, the pipeline's side
     python3 tests/test_whole.py       # offline: harvesting or meshing a climb again with its boulder or group
     python3 tests/test_abtest.py      # offline: A/B tests of COLMAP 3.9.1 against 4.2.1: options, a machine's job, the queue
-    python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, given up on, the phone told, a boulder at a time
+    python3 tests/test_video_holds.py # offline: boulders and climbs held up by videos, the phone told, a boulder at a time, harvests before beta
+    python3 tests/test_forget_videos.py # offline: deleting kept videos by hand, on the server and the backup
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
     python3 tests/test_kept.py        # offline: a mesh made again from its cameras as they were, what they made carried over
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)

@@ -187,26 +187,19 @@ def cache_put(url: str, video: Path, info: dict | None = None) -> Path:
     return dest
 
 
-# set by the server: the ids of the cached videos nothing needs any more (its videos_done()), the only ones trim_cache()
-# may drop; None (as on a machine, whose cache is only what a job was sent): any, the least recently used first
-DROPPABLE: Callable[[], set[str]] | None = None
+# whether trim_cache() drops the least recently used videos beyond CACHE_BYTES: on a machine, whose cache is only what a
+# job was sent. The server sets it False: it keeps every video, offloading those nothing needs to the backup instead
+# (its offload_step()), as a video dropped is one a volunteer must fetch again
+TRIM = True
 
 
 def trim_cache(keep: Path | None = None) -> None:
-    """Drop the least recently used videos beyond CACHE_BYTES, of those DROPPABLE says may go: one beta or a harvest
-    still needs stays, past CACHE_BYTES if need be, rather than be fetched again by a volunteer."""
+    """Drop the least recently used videos beyond CACHE_BYTES, unless not TRIM."""
+    if not TRIM:
+        return
     files = [f for f in VIDEO_CACHE.glob("*") if f.suffix != ".json" and not f.name.endswith(".part") and f != keep] \
         if VIDEO_CACHE.is_dir() else []
     total = sum(f.stat().st_size for f in files) + (keep.stat().st_size if keep else 0)
-    if total <= CACHE_BYTES:
-        return
-    if DROPPABLE is not None:
-        try:
-            may = DROPPABLE()
-        except Exception as e:  # noqa: BLE001 - none dropped then, rather than one still needed
-            print(f"youtube: which cached videos may go couldn't be told ({type(e).__name__}: {e}): none dropped", flush=True)
-            return
-        files = [f for f in files if f.stem in may]
     for f in sorted(files, key=lambda f: f.stat().st_mtime):
         if total <= CACHE_BYTES:
             break

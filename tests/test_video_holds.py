@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Boulders and climbs held up by YouTube videos volunteers are still fetching: they wait while those move on, and are
-let go once nothing has for videos.give_up_hours; the phone is told of holds past videos.hold_alert_hours, and again
+"""Boulders and climbs held up by YouTube videos volunteers are still fetching: they wait while any is still coming, however
+long; the phone is told of holds past videos.hold_alert_hours, and again
 at later marks; how long each lasted is kept for the day's summary; and
 volunteers are given one boulder's videos before the next's. Offline: the volunteers' broker is a stand-in.
 
@@ -31,16 +31,13 @@ try:
     told = []
     server.NOTIFIER.send = lambda title, message, *a, **k: told.append((title, message))
 
-    # ---- what's moving on, and what's given up on
+    # ---- what's still coming: nothing is given up on by time
     tasks["h1"] = [{"moved": now - 3600}]
-    tasks["h2"] = [{"moved": now - 13 * 3600}]
-    assert len(server.videos_moving(["h1", "h2"])) == 1, "the one nothing has moved on for 13 h is given up on"
-    server.settings().update({"videos.give_up_hours": 24.0})
-    assert len(server.videos_moving(["h1", "h2"])) == 2
-    server.settings().update({"videos.give_up_hours": 12.0})
-    assert server.may_wait({"waiting_since": now - 30 * 3600}, "h1"), "past VOLUNTEER_WAIT, still moving: waits on"
-    assert not server.may_wait({"waiting_since": now - 30 * 3600}, "h2")
-    print("moving on OK")
+    tasks["h2"] = [{"moved": now - 100 * 3600}]
+    assert len(server.videos_moving(["h1", "h2"])) == 2, "nothing has moved on for 100 h: still waited for"
+    assert server.may_wait({"waiting_since": now - 30 * 3600}, "h2"), "past VOLUNTEER_WAIT, still coming: waits on"
+    assert not server.may_wait({"waiting_since": now - 30 * 3600}, "h9"), "nothing coming"
+    print("still coming OK")
 
     # ---- a boulder isn't meshed while videos for any of its climbs are coming
     leaf = json.dumps(["CA", "JT", "Rock Boulder"])
@@ -66,12 +63,15 @@ try:
         server.pools_whole = real_pools
     print("a boulder held up OK")
 
-    # ---- a climb waiting: past VOLUNTEER_WAIT, let go only once its videos stop moving on
+    # ---- a climb waiting: past VOLUNTEER_WAIT, let go only once nothing more is coming
     server.q("UPDATE campaign_items SET status='waiting', waiting_since=?, redo=NULL WHERE source_id='2'", now - 30 * 3600, write=True)
     tasks["h3"] = [{"moved": now - 600}]
     server.settle_waiting("a")
     assert server.q("SELECT status FROM campaign_items WHERE source_id='2'", one=True)["status"] == "waiting"
     tasks["h3"] = [{"moved": now - 20 * 3600}]
+    server.settle_waiting("a")
+    assert server.q("SELECT status FROM campaign_items WHERE source_id='2'", one=True)["status"] == "waiting", "not given up on"
+    tasks["h3"] = []
     server.settle_waiting("a")
     row = server.q("SELECT status, redo FROM campaign_items WHERE source_id='2'", one=True)
     assert (row["status"], row["redo"]) == ("pending", "more+rebuild"), row
@@ -132,8 +132,20 @@ try:
     f1, f3, fx = server.volunteer_focus("h1"), server.volunteer_focus("h3"), server.volunteer_focus("hx")
     assert f1 == f3, "one boulder's climbs come together, by its earliest"
     assert fx < f1 < 0.1, "the one waiting longest first, within the rank"
-    assert server.volunteer_rank("harvest", "h1") == f1 and server.volunteer_rank("beta", "m") == 1
-    print("a boulder at a time OK")
+    assert server.volunteer_rank("harvest", "h1") == f1
+    # regular areas' harvests, then low-priority areas', then beta: beta wanted 2 days goes between the two
+    real_low = server.low_projects
+    server.low_projects = lambda fresh=False: frozenset({"h3"})
+    try:
+        beta = [{"ref": "m-new", "t": now - 3600}, {"ref": "m-old", "t": now - 49 * 3600}]
+        server.VOLUNTEERS.q = lambda sql, *a, one=False: beta if "'beta'" in sql else wants
+        server._beta_since["at"] = 0
+        ranks = {k: server.volunteer_rank(*k) for k in (("harvest", "h1"), ("harvest", "h3"), ("beta", "m-new"), ("beta", "m-old"))}
+        assert ranks[("harvest", "h1")] < ranks[("beta", "m-old")] < ranks[("harvest", "h3")] < ranks[("beta", "m-new")], ranks
+        assert ranks[("beta", "m-new")] == 2 and server.volunteer_rank("beta", "unknown") == 2
+    finally:
+        server.low_projects = real_low
+    print("a boulder at a time, harvests before beta OK")
     print("ALL VIDEO HOLD TESTS PASSED")
 finally:
     import shutil

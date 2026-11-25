@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Videos that come after a boulder's or pool's photos were pooled: a boulder's mesh waits for the videos of climbs it
 harvests itself; what comes for a climb its area hasn't reached is added to its harvest; a pool is meshed again with what
-came for one of its climbs, as a boulder is; and what comes late for a boulder waits for the rest, up to
-videos.late_batch_hours, so that it's meshed again once. Offline: harvests, meshing and the volunteers' broker are stand-ins.
+came for one of its climbs, as a boulder is; and what comes late for a boulder waits for the rest, however
+long, so that it's meshed again once. Offline: harvests, meshing and the volunteers' broker are stand-ins.
 
     python3 tests/test_late_videos.py
 """
@@ -150,13 +150,15 @@ try:
     assert late and late["first"] == late["last"], late
     print("noting late photos OK")
 
-    # ---- late photos wait for the rest still to come, up to videos.late_batch_hours, then the boulder is meshed again once
+    # ---- late photos wait for the rest still to come, however long, then the boulder is meshed again once
     server.q("UPDATE campaign_items SET status='done', redo=NULL WHERE campaign_id='a'", write=True)
     server.q("UPDATE campaigns SET status='done' WHERE id='a'", write=True)
-    tasks["h3"] = [{"moved": now - 20 * 3600}]      # given up on by videos_moving(), but still to come
+    tasks["h3"] = [{"moved": now - 20 * 3600}]      # nothing heard of it for 20 h: still to come
     assert server.settle_late() == 0, "waits for the rest"
-    server.q("UPDATE late_photos SET first=?", now - 13 * 3600, write=True)
-    assert server.settle_late() == 1, "but not past videos.late_batch_hours"
+    server.q("UPDATE late_photos SET first=?", now - 100 * 3600, write=True)
+    assert server.settle_late() == 0, "however long"
+    tasks["h3"] = []
+    assert server.settle_late() == 1, "once it's come"
     row = server.q("SELECT * FROM campaign_items WHERE campaign_id='a' AND source_id='1'", one=True)
     assert (row["status"], row["redo"], row["was"]) == ("pending", "boulder", "done"), row
     assert server.q("SELECT status FROM campaigns WHERE id='a'", one=True)["status"] == "running"
@@ -168,11 +170,12 @@ try:
     server.q("UPDATE campaign_items SET status='harvested', redo=NULL WHERE campaign_id='a'", write=True)
     server.q("DELETE FROM video_holds", write=True)
     server.note_late("c3")
+    tasks["h3"] = [{"moved": now - 20 * 3600}]
     assert server.settle_boulder("a", LEAF) is False, "the rest still to come for h3"
     tasks["h3"] = []
     assert server.settle_boulder("a", LEAF) is True
     pooled(LEAF, {"c1": ["h1"], "c2": ["h2"], "c3": ["h3"]}, time.time() + 1)
-    assert server.late_wait(LEAF, []) is False and not server.q("SELECT 1 FROM late_photos"), "pooled since: forgotten"
+    assert server._settle_late(LEAF) == 0 and not server.q("SELECT 1 FROM late_photos"), "pooled since: forgotten"
     print("late photos in an area OK")
 
     # ---- a pool: meshed again on one of its climbs, as the area would
@@ -189,7 +192,6 @@ try:
         server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,climb_id,project_id,status,boulder) "
                  "VALUES('g',?,?,?,?,?,'done',?)", sid, int(sid), cid, cid, pid, GROUP, write=True)
     assert server.note_late("p2") == [key], "its pool, not a whole boulder"
-    server.settings().update({"videos.late_batch_hours": 0.0})
     assert server.settle_late() == 1
     row = server.q("SELECT * FROM campaign_items WHERE campaign_id='g' AND source_id='11'", one=True)
     assert (row["status"], row["redo"], row["pool"]) == ("pending", "cluster", key), row

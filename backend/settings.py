@@ -98,18 +98,14 @@ DEFAULTS = {
     # after each boulder's mesh, mesh apart each scene of what it left out that's tied to it (keep_rest()); off, a
     # boulder's mesh only records them (rest.json). Never what a mesh from before ties left out, which isn't checked
     "boulders.rest_auto": True,
-    "videos.prune_unplaced": True,
     # clients that register themselves (registration.py): provisional until approved here or from a phone. Volunteers
     # fetching videos: their limits (the script's own are 15 an hour, 200 a day; searches have their own), and while provisional, whether they
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
-    # a boulder (or a climb) whose YouTube videos volunteers are still fetching isn't meshed until they've come, or until
-    # none has moved on (wanted, given out, heard of) for videos.give_up_hours; held longer than videos.hold_alert_hours,
-    # it's said on the phone (0: never), and again at 3, 6 and 12 times that, then every 12 times more (2, 6, 12, 24, 48 h...)
-    "videos.give_up_hours": 12.0,
+    # a boulder (or a climb) whose YouTube videos volunteers are still fetching isn't meshed until they've come (or failed
+    # for good), however long that takes; held longer than videos.hold_alert_hours, it's said on the phone (0: never),
+    # and again at 3, 6 and 12 times that, then every 12 times more (2, 6, 12, 24, 48 h...). Videos that come after a
+    # boulder's or pool's mesh: it's made again with them once nothing more is coming for its climbs
     "videos.hold_alert_hours": 2.0,
-    # videos that come after a boulder's or pool's mesh was made: it's made again with them once the rest of what volunteers
-    # still have to fetch for its climbs has come too, moving on or not, or this long after the first came (0: at once)
-    "videos.late_batch_hours": 12.0,
     "volunteers.per_hour": 15,
     "volunteers.per_day": 200,
     # which yt-dlp volunteers' scripts run: its nightly builds, which follow YouTube's changes days or weeks before a
@@ -148,7 +144,7 @@ LIMITS = {"users.quota_mb": (0, 1_000_000), "site.map_km": (0.05, 2000), "boulde
           "volunteers.provisional_per_hour": (1, 15), "volunteers.provisional_per_day": (1, 200),
           "volunteers.check_new": (0, 1), "volunteers.check_trusted": (0, 1),
           "registration.per_address_day": (1, 100), "registration.max_waiting": (1, 1000),
-          "videos.give_up_hours": (0.5, 240), "videos.hold_alert_hours": (0, 240), "videos.late_batch_hours": (0, 240)}
+          "videos.hold_alert_hours": (0, 240)}
 for _key in ("site.textures", "site.sources", "youtube.via"):    # a public copy's starting points, from its .env
     _given = os.environ.get(_key.replace(".", "_").upper(), "").strip()
     if _given in CHOICES[_key]:
