@@ -4695,9 +4695,12 @@ $('#ratecomment').oninput = () => {
 };
 $('#ratecomment').onblur = flushRating;
 addEventListener('pagehide', flushRating);
+let meshesFetch = null;     // the list's fetch under way, if one is, for what only needs it to have come (randomMesh())
 async function refreshMeshes(){
   hideSourceTip();
-  meshesCache = await api('/api/meshes'); meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
+  const f = meshesFetch = api('/api/meshes');
+  try { meshesCache = await f; } finally { if (meshesFetch === f) meshesFetch = null; }
+  meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
   listSeconds ??= performance.now() / 1000;
   await scrollStill();
   renderMeshes(); showBetaButton();     // beta found since for the mesh in view: its button
@@ -7316,14 +7319,28 @@ function pickWeighted(pool, rand = Math.random()){
   let r = rand * weights.reduce((a, b) => a + b, 0);
   return pool.find((_, i) => (r -= weights[i]) < 0) || pool[pool.length - 1];
 }
-let lastRandom = null;
-async function randomMesh(){
-  if (!meshesCache?.length) await refreshMeshes();
-  const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
-  if (!current.length) return toast('No meshes yet.');
-  const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
-  lastRandom = m.id;
-  viewMesh(m.id, null, 'random');
+// Presses made before the last one's loading card is on the screen are left: the page was busy (they'd otherwise run one
+// after another once it's free, each replacing the one before), or the list of meshes is still coming
+let lastRandom = null, randomAt = -Infinity, randomSeenAt = -Infinity;
+async function randomMesh(ev){
+  const at = ev?.timeStamp ?? performance.now();
+  if (randomSeenAt == null || at < randomSeenAt) return;
+  randomAt = at; randomSeenAt = null;
+  const card = loading('a random mesh');
+  try {
+    if (!meshesCache?.length) {
+      $('#loading .detail').textContent = 'Getting the list of meshes…';
+      try { await (meshesFetch || refreshMeshes()); } catch (e) { return toast(e.message, 6000); }
+    }
+    const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
+    if (!current.length) return toast('No meshes yet.');
+    const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
+    lastRandom = m.id;
+    viewMesh(m.id, null, 'random');
+  } finally {
+    card();       // only if nothing took over its card (loadMeshUrl()'s own)
+    requestAnimationFrame(() => setTimeout(() => { if (randomAt === at) randomSeenAt = performance.now(); }));   // once it's drawn
+  }
 }
 $('#random').onclick = $('#vrandom').onclick = randomMesh;   // the viewer's, on a phone, where it hides the header
 
