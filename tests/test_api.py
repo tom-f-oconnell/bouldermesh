@@ -101,7 +101,7 @@ def main() -> None:
     ADMIN = f"http://127.0.0.1:{admin_port}"
     env = dict(os.environ, DATA_DIR=str(tmp / "data"), PORT=str(port), HOST="127.0.0.1", HTTP_MIN_INTERVAL="0", ADMIN_PORT=str(admin_port),
                STOP_WAIT_MINUTES="0.2", HTTP_ALLOW_PRIVATE="1", TERRAIN_OFFLINE="1",
-               YOUTUBE_OFFLINE="1", DOWNLOAD_AHEAD="0")      # nothing asked of YouTube from here (hal's address is refused, and shouldn't ask)     # the "web photos" are fetched from this server itself
+               YOUTUBE_OFFLINE="1", DOWNLOAD_AHEAD="0", RELEVANCE_SKIP="boulder")      # nothing asked of YouTube from here (hal's address is refused, and shouldn't ask)     # the "web photos" are fetched from this server itself; synthetic, so not judged by CLIP
     env.pop("HARVEST_DDG", None)
     srv =subprocess.Popen([sys.executable, str(ROOT / "backend" / "server.py")], env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

@@ -4350,21 +4350,21 @@ def mesh_tiers(fresh: bool = False) -> dict:
     its being judged better (pipeline.fallback_tier()), textured by an older texturing (pipeline.TEXTURE_VERSION; only
     those whose reconstruction was kept can be textured again), and with new photos they weren't made from. A mesh is
     counted in the first of rules, pipeline and fallback that it's in; texture, new photos, OpenMVS's cropping, VGGT
-    not run where its photos needed it (pipeline.vggt_tier()) and photos kept before the filter's CLIP check
-    (unclipped_in()) apart. Kept for TIERS_EVERY.
+    not run where its photos needed it (pipeline.vggt_tier()) and photos its filter now rejects (filtered_from(); with
+    clip_waits, how many still wait for today's CLIP to say) apart. Kept for TIERS_EVERY.
 
     Returns:
         {pipeline_version, texture_version, meshes, rules, pipeline, fallback: {n, why: {why: n}}, texture,
         texture_unkept, new_data, new_photos, grouping, roi (possibly cropped by OpenMVS: roicrop.py), roi_urgent,
         roi_flagged, roi_unknown, roi_replace (cropped, whose cameras couldn't be taken as they were: run_kept()),
-        collapsed (that placed photos collapsed: collapsed_existing_meshes()), vggt, clip, ids: {pipeline, fallback,
+        collapsed (that placed photos collapsed: collapsed_existing_meshes()), vggt, clip, clip_waits, ids: {pipeline, fallback,
         texture, new_data, grouping, roi (those cut most first), roi_replace, collapsed, vggt, clip}}.
     """
     if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
         return _tiers["report"]
     ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier(),
                                  "collapsed": [], "vggt": [], "clip": []}
-    rules, unkept, why, photos = 0, 0, collections.Counter(), 0
+    rules, unkept, why, photos, clip_waits = 0, 0, collections.Counter(), 0, 0
     cropped: list[tuple[str, float | None]] = []
     replace: list[str] = []     # cropped, but not to be made from their cameras as they were (run_kept())
     rows = q("SELECT id, source, rules, created FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created")
@@ -4380,8 +4380,10 @@ def mesh_tiers(fresh: bool = False) -> dict:
             why[pipeline.fallback_tier(made)] += 1
         if pipeline.vggt_tier(made):    # whatever else: placed again, where VGGT can run
             ids["vggt"].append(m["id"])
-        if unclipped_in(rec):           # made again from what today's filter keeps (clip_unchecked())
+        out, waits = filtered_from(rec)     # made again from what today's filter keeps
+        if out:
             ids["clip"].append(m["id"])
+        clip_waits += waits
         roi = rec.get("roi") or {}
         if (rec.get("collapsed") or {}).get("n"):     # placed again from scratch: not from its cameras, whatever else
             ids["collapsed"].append(m["id"])
@@ -4407,7 +4409,7 @@ def mesh_tiers(fresh: bool = False) -> dict:
     adds = adds_summary()
     report = {"roi": len(cropped), "roi_urgent": sum(s is not None and s > roicrop.URGENT for s in shares),
               "roi_flagged": sum(s is not None and s > roicrop.FLAG for s in shares), "roi_unknown": shares.count(None),
-              "roi_replace": len(replace), "collapsed": len(ids["collapsed"]), "vggt": len(ids["vggt"]), "clip": len(ids["clip"]),
+              "roi_replace": len(replace), "collapsed": len(ids["collapsed"]), "vggt": len(ids["vggt"]), "clip": len(ids["clip"]), "clip_waits": clip_waits,
               "pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
@@ -4416,13 +4418,48 @@ def mesh_tiers(fresh: bool = False) -> dict:
     return report
 
 
-def unclipped_in(rec: dict) -> bool:
-    """Whether a mesh (its inputs.json, rec) was made from photos its project's filter kept before the CLIP check was
-    (relevance_mod.unclipped()): those it was made from, where it recorded them, else any of its project's."""
-    pid = rec.get("project")
-    names = set(relevance_mod.unclipped(_read_json(PROJECTS / pid / "relevance.json"))) if pid else set()
-    files = (rec.get("photos") or {}).get("files")
-    return bool(names & set(files) if files else names)
+def filtered_from(rec: dict) -> tuple[bool, bool]:
+    """Of the photos a mesh (its inputs.json, rec) was made from, where it recorded them: whether its project's filter
+    now rejects any (made again from what it keeps), and whether any still wait for today's CLIP check
+    (relevance_mod.unclipped(), which clip_sweep() does)."""
+    pid, files = rec.get("project"), set((rec.get("photos") or {}).get("files") or {})
+    report = _read_json(PROJECTS / pid / "relevance.json") if pid and files else None
+    if not isinstance(report, dict):
+        return False, False
+    return bool(files & set(report.get("rejected") or {})), bool(files & set(relevance_mod.unclipped(report)))
+
+
+CLIP_SWEEP_EVERY = 900      # seconds between clip_sweep()'s looks for current meshes whose photos wait for today's CLIP
+
+
+def clip_sweep() -> None:
+    """Judge by today's CLIP (clip_unchecked()) the photos of each current mesh's project that wait for it (as after
+    prompts were added, Nov 25), one project at a time, its filtering on a machine as a harvest's is: its verdicts
+    only, so that a mesh made from photos it now rejects is counted in mesh_tiers()'s "clip" tier, to make again from
+    the admin page. A project being worked on, or whose photos are away, is left for its own meshing to judge."""
+    while True:
+        try:
+            clip_sweep_once()
+        except Exception as e:  # noqa: BLE001 - tried again next time
+            print(f"clip sweep: {type(e).__name__}: {e}", flush=True)
+        time.sleep(CLIP_SWEEP_EVERY)
+
+
+def clip_sweep_once() -> int:
+    """One pass of clip_sweep(): newest meshes first. Returns how many projects were judged."""
+    n = 0
+    for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%' ORDER BY created DESC"):
+        pid = m["source"].split(":", 1)[1]
+        rec = meshinputs.load(MESHES / m["id"]) or {}
+        if not filtered_from({**rec, "project": pid})[1] or photos_away(pid):
+            continue
+        p = q("SELECT status FROM projects WHERE id=?", pid, one=True)
+        if not p or p["status"] in ("queued", "running", "harvesting"):
+            continue
+        if clip_unchecked(pid, lambda s, pid=pid: append_log(pid, s)):
+            tiers_changed()
+            n += 1
+    return n
 
 
 def grouping_tier() -> list[str]:
@@ -4488,7 +4525,7 @@ def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
             "new_data": "it has new photos", "grouping": "meshed on its own, on a boulder with more problems",
             "roi": "OpenMVS cropped it to a region it guessed", "collapsed": "it placed some photos collapsed, shrunk to a speck",
             "vggt": "its photos needed VGGT, which couldn't run where it was made",
-            "clip": "it was made from photos kept before the filter checked whether each is a boulder"}[tier]
+            "clip": "it was made from photos its filter now rejects"}[tier]
     free = "ci.status IN ('done','skipped','failed') AND ci.redo IS NULL AND ci.blocked IS NULL"
     for mid in dict.fromkeys(mids):
         rec = meshinputs.load(MESHES / mid) or {}
@@ -15818,7 +15855,8 @@ def main() -> None:
     if not diagnostics.allow_tracing():     # so that py-spy can attach to it, from a stall's dump or inside its container
         print("diagnostics: couldn't let py-spy attach to this process; a thread dump will only have Python's side", flush=True)
     threading.Thread(target=stall_watch, daemon=True, name="stall-watch").start()
-    threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()   # storyboards' checks, by today's comparison
+    threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()
+    threading.Thread(target=clip_sweep, daemon=True, name="clip-sweep").start()    # current meshes' photos, by today's CLIP   # storyboards' checks, by today's comparison
     again = requeue_waiting()
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)

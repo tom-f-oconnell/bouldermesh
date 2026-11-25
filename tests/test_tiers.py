@@ -98,16 +98,22 @@ try:
     (server.PROJECTS / pid / "photos" / "b.jpg").write_bytes(b"jpg")
     mesh("before", made=None, tex=None)       # from before meshes recorded what made them
     mesh("novggt", made={**current, "vggt_skipped": "COLMAP's mapper placed only 4, and VGGT couldn't run: only 7149 MB"}, tex=tex_now)
-    # made from photos its filter kept before the CLIP check (no "boulder" score): those it was made from, not others
+    # made from photos its filter now rejects: in the tier; from photos still to be judged by today's CLIP (kept without
+    # its score, or by another CLIP): waiting for it; neither for those it wasn't made from
+    now_key = server.relevance_mod.settings_key()
     pid = mesh("unclipped", made=current, tex=tex_now)
-    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg"], "scores": {"a.jpg": {"flat": 0.1}}, "rejected": {}}))
+    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg"], "scores": {"a.jpg": {"flat": 0.1}},
+                                                                      "rejected": {}, "settings": now_key}))
+    pid = mesh("filtered", made=current, tex=tex_now)
+    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": [], "rejected": {"a.jpg": "notboulder"},
+                                                                      "scores": {"a.jpg": {"boulder": 0.01}}, "settings": now_key}))
     pid = mesh("clipped", made=current, tex=tex_now, photos=("b.jpg",))
-    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg", "b.jpg"], "rejected": {},
-                                                                      "scores": {"a.jpg": {}, "b.jpg": {"boulder": 0.9}}}))
+    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg", "b.jpg"], "rejected": {"c.jpg": "card"},
+                                                                      "scores": {"a.jpg": {}, "b.jpg": {"boulder": 0.9}}, "settings": now_key}))
     t = server.mesh_tiers(fresh=True)
-    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (12, 1, 2, 1), t
+    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (13, 1, 2, 1), t
     assert t["ids"]["vggt"] == ["novggt"] and t["vggt"] == 1, "VGGT needed where it couldn't run: a tier of its own"
-    assert t["ids"]["clip"] == ["unclipped"] and t["clip"] == 1, t["ids"]["clip"]
+    assert t["ids"]["clip"] == ["filtered"] and t["clip"] == 1 and t["clip_waits"] == 1, (t["ids"]["clip"], t["clip_waits"])
     assert set(t["ids"]["pipeline"]) == {"oldpipe", "before"} and t["ids"]["fallback"] == ["cpu"] and t["fallback"]["why"] == {"not-tried": 1}
     assert set(t["ids"]["texture"]) == {"oldtex", "before"} and t["texture_unkept"] == 1, t
     assert t["ids"]["new_data"] == ["newphotos"] and t["new_photos"] == 1, t
@@ -138,6 +144,15 @@ try:
         assert json.loads((server.PROJECTS / pid / "relevance.json").read_text())["rejected"] == {"a.jpg": "notboulder"}
         assert not server.clip_unchecked(pid, logged.append) and len(asked) == 1, "judged: not again"
         assert not server.clip_unchecked("pclipped", logged.append) and len(asked) == 1, "its unchecked photo isn't among its photos"
+        # the sweep: a current mesh's project whose photos it was made from wait for today's CLIP, judged once
+        asked.clear()
+        pid = mesh("sweep", made=current, tex=tex_now)     # kept by another CLIP's prompts: all it kept waits
+        (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg"], "rejected": {}, "scores": {"a.jpg": {"boulder": 0.8}},
+                                                                          "settings": now_key.replace(server.relevance_mod._clip_key(), "old/old/0")}))
+        assert server.filtered_from(server.meshinputs.load(server.MESHES / "sweep")) == (False, True)
+        assert server.clip_sweep_once() == 1 and asked[0][0] == ["a.jpg"] and asked[0][1]["kept"] == ["a.jpg"], asked
+        assert server.filtered_from(server.meshinputs.load(server.MESHES / "sweep")) == (True, False), "rejected now: in the tier"
+        assert server.clip_sweep_once() == 0
     finally:
         server.relevance_mod.run_filter, server.diversity_mod.assess_unique = real
     print("judging photos kept before the CLIP check OK")

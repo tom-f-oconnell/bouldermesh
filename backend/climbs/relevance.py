@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -71,7 +72,13 @@ OTHER_PROMPTS = ["a photo of a car or truck", "a photo of a bird or wild animal"
                  "a waterfall or river", "a forest of trees", "an indoor climbing gym with colourful holds",
                  "a poster, flyer or page of text", "a topo map or diagram", "a portrait of a person's face",
                  "a climber on a high multi-pitch big wall with a rope", "a pile of many small rocks",
-                 "a black screen with white title text"]
+                 "a black screen with white title text",
+                 # what web searches for a climb's name found instead (Nov 25): a band's concert or merchandise, the
+                 # object a climb was named after. "An album cover" and "a plant or cactus" went too: they took
+                 # titled video frames and Joshua Tree's boulders behind its trees (a Mountain Project photo among them)
+                 "musicians performing on a stage at a concert", "a crowd of people at a music festival at night",
+                 "a t-shirt, hat or other clothing for sale", "an ancient bronze artifact in a museum",
+                 "a diagram of gears or a machine"]
 _clip = None
 
 
@@ -147,8 +154,10 @@ def _how() -> str:
 
 
 def available() -> list[str]:
-    """The methods this install can run."""
-    have = lambda m: importlib.util.find_spec(m) is not None  # noqa: E731
+    """The methods this install can run, but those RELEVANCE_SKIP (comma separated) leaves out: as a test whose
+    synthetic photos CLIP rightly finds aren't of a boulder does."""
+    have = lambda m: importlib.util.find_spec(m) is not None and m not in skip  # noqa: E731
+    skip = {"torch"} if "boulder" in os.environ.get("RELEVANCE_SKIP", "").split(",") else set()
     out = []
     if have("numpy") and have("PIL"):
         out.append("cards")
@@ -664,11 +673,20 @@ def settings_key() -> str:
             f"coverage {MIN_COVERAGE}; rounds {CHAIN_ROUNDS}; anchors {MAX_ANCHORS}; {_how()}")
 
 
+def _clip_of(settings: str | None) -> str | None:
+    """The CLIP key (_clip_key()) a report's settings_key() was made with, or None if it doesn't say."""
+    m = re.search(r"\bclip (\S+) ", settings or "")
+    return m[1] if m else None
+
+
 def unclipped(prior: dict | None) -> list[str]:
-    """The photos an earlier run's report (relevance.json) kept without CLIP's check of whether each is a boulder, as
-    runs before that check did (Nov 8, 2026): what filter_photos() checks with it when that report is reused."""
+    """The photos an earlier run's report (relevance.json) kept without today's CLIP check of whether each is a boulder:
+    without any, as runs before that check did (Nov 8, 2026), or all it kept if its CLIP was another (prompts added, Nov
+    25; or not said, before settings were kept): what filter_photos() checks with it when that report is reused."""
     if not isinstance(prior, dict) or not isinstance(prior.get("kept"), list):
         return []
+    if _clip_of(prior.get("settings")) != _clip_key():
+        return list(prior["kept"])
     scores = prior.get("scores") or {}
     return [n for n in prior["kept"] if "boulder" not in (scores.get(n) or {})]
 
@@ -679,7 +697,12 @@ def reusable(prior: dict | None) -> bool:
     rejected some, as one that rejected none may have been that fallback."""
     if not prior or prior.get("fallback") or not isinstance(prior.get("kept"), list):
         return False
-    return prior["settings"] == settings_key() if prior.get("settings") else bool(prior.get("rejected"))
+    if not prior.get("settings"):
+        return bool(prior.get("rejected"))
+    # CLIP's own key aside: what it kept with another CLIP is checked with today's (unclipped()); what it rejected as not
+    # a boulder stands, as prompts are only added
+    same = lambda k: re.sub(r"\bclip \S+ ", "clip ", k)  # noqa: E731
+    return same(prior["settings"]) == same(settings_key())
 
 
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
@@ -788,11 +811,13 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
     held = set((prior or {}).get("put_back") or []) & {p.name for p in paths}
     for name in held:       # put back by hand: kept, whatever this run makes of it
         why.pop(name, None)
-    fallback = bool(paths) and len(why) == len(paths)
+    # every photo rejected: those only for matching nothing more likely a false alarm (no anchors, say) than a whole
+    # harvest of junk, so kept, for the diversity check to judge; not those CLIP or the card check rejected, which
+    # depend on the photo alone (Nov 25: Jesus Built My Hotrod's pool kept 17 photos of a band's merchandise so)
+    fallback = bool(paths) and len(why) == len(paths) and "nomatch" in why.values()
     if fallback:
-        # more likely a false alarm than a whole harvest of junk: leave it for the diversity check to judge
-        log("relevance: every photo would be rejected: keeping them all")
-        why = {}
+        log("relevance: every photo would be rejected: keeping those that only matched nothing")
+        why = {n: w for n, w in why.items() if w != "nomatch"}
     if rejected is not None:
         for p in paths:
             if p.name in why:

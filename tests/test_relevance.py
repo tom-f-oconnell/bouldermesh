@@ -171,9 +171,12 @@ with tempfile.TemporaryDirectory() as td:
             assert "commons_other.jpg" in r["kept"] and r["scores"]["commons_other.jpg"]["match"] == "mountainproject_d.jpg", r
             assert len(calls) == 1, ("only against the new anchor", len(calls))
             newer.unlink()
-            # every photo would be rejected: kept, and that run isn't one to go by
+            # every photo would be rejected, by the card check (or CLIP): those verdicts, on the photo alone, stand
             r = relevance.filter_photos([card], None, logs.append, methods=["cards"])
-            assert r["fallback"] and not relevance.reusable(r), r
+            assert not r["fallback"] and r["kept"] == [] and r["rejected"] == {card.name: "card"}, r
+            # every one rejected for matching nothing: kept, as more likely a false alarm, and that run isn't one to go by
+            r = relevance.filter_photos([other], None, logs.append, methods=["same-rock"], more_anchors=[theirs])
+            assert r["fallback"] and r["kept"] == [other.name] and not relevance.reusable(r), r
         finally:
             relevance.match, relevance.CACHE_FILE = real_match, saved_cache
         print("an earlier run's verdicts OK")
@@ -196,6 +199,10 @@ with tempfile.TemporaryDirectory() as td:
         assert any("without CLIP's check" in x for x in logs), logs
         assert sorted(relevance.unclipped(old)) == sorted(first["kept"]) and relevance.unclipped(r) == [], "judged now: none left"
         assert relevance.unclipped(None) == [] and relevance.unclipped({"kept": "x"}) == []
+        # kept with another CLIP (prompts added): all it kept checked again, the report still reused for the rest
+        other_clip = {**r, "settings": r["settings"].replace(relevance._clip_key(), "ViT-B-32/x/000000000000")}
+        assert relevance.reusable(other_clip) and sorted(relevance.unclipped(other_clip)) == sorted(r["kept"])
+        assert relevance.unclipped({**r, "settings": None}) == r["kept"], "CLIP not said: checked again"
         print("verdicts from before the CLIP check OK")
 
         # what the cache knows of a set of photos, for a machine to filter them with, and what it worked out, kept here
@@ -247,9 +254,10 @@ with tempfile.TemporaryDirectory() as td:
         assert "same-rock" not in relevance.filter_photos(paths, None, logs.append)["methods"]
         print("same-rock skipped: no OpenCV")
 
-    # never empties a whole project
+    # a project whose every photo is a title card is emptied (its viewpoint check then says so): only photos rejected for
+    # matching nothing are kept, as a false alarm, when every one would go
     r = relevance.filter_photos([card], None, logs.append, methods=["cards"])
-    assert r["kept"] == ["yt_card.jpg"] and not r["rejected"], r
+    assert r["kept"] == [] and r["rejected"] == {"yt_card.jpg": "card"} and not r["fallback"], r
     print("cards OK")
 
     if "boulder" in relevance.available():
