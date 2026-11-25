@@ -21,10 +21,12 @@ mostly agree where it goes, though, and a climb's line is where they do:
 
 A line also says which of its videos' holds are the climb's (holds_by_lines()). A hold further than a reach (REACH_M)
 from the line isn't: it's a ray past the rock's edge, or the climber was somewhere else then (walking in, off the
-top, on another climb). Those are marked off, which the viewer hides, and the roles of the rest are given again from
-what's left, as beta.py gives them (beta.roles()): each hand's first hold on the line is a start hold, and its last a
-finish hold, rather than wherever that hand was first and last seen still. A line checks itself first: if a third of
-its own videos' holds are beyond a reach of it (astray()), it and they disagree, and it says nothing of holds.
+top, on another climb). Those are marked off, which the viewer hides, and the roles of the rest are given again by the
+line (roles_by_line()), rather than by wherever each hand was first and last seen still: each hand's first hold on the
+line is a start hold, unless the video first shows its climber well up the line (it starts partway: the start isn't in
+it), and each hand's hold furthest along the line is its finish, whenever it was held (a hand is held again lower
+after a fall, on another go, or walking off). A line checks itself first: if a third of its own videos' holds are
+beyond a reach of it (astray()), it and they disagree, and it says nothing of holds.
 
 lines.json  {key, lines: {climb id: {p: [[x, y, z]], n: [[x, y, z]], at, videos, agree, astray}}, holds: {video url:
             {off: [hold id], roles: {hold id: role}}}}: p the line's points on the mesh (in its coordinates, as
@@ -41,7 +43,7 @@ import json
 from pathlib import Path
 
 FILE = "lines.json"
-VERSION = 2             # raised when lines would come out differently, so that they're made again
+VERSION = 3             # raised when lines would come out differently, so that they're made again
 STEP = 0.02             # between a line's points, as a share of the rock's size (as every length here)
 SMOOTH_SECONDS = 1.0    # a track is smoothed over about this long either side
 CHAIN_SECONDS = 4.0     # pieces of a track this close in time,
@@ -61,6 +63,8 @@ REACH_M = 1.75          # metres: a hold further than this from its climb's line
 REACH = 0.3             # the same where a mesh's size in metres isn't known, as a share of the rock's size
 REACH_BOUNDS = (0.08, 0.5)      # and the least and most it is, as shares of the rock's size, whatever the scale found says
 ASTRAY = 1 / 3          # a line this share of whose own videos' holds are beyond a reach of it says nothing of holds
+PARTWAY = 1 / 3         # a video that first shows its climber further than this along the line has no start holds
+LEVEL = 0.06            # holds within this share of a reach of a hand's furthest along the line are as far: the last held is its finish
 
 
 # ------------------------------------------------------------------ runs
@@ -310,6 +314,63 @@ def _from_line(p, P) -> float:
     return float(np.linalg.norm(A + t[:, None] * AB - p, axis=1).min())
 
 
+def _along(p, P, S) -> float:
+    """How far along a line (its points P, joined, each S along it) the point of it nearest p is."""
+    import numpy as np
+    p, A, B = np.asarray(p, float), P[:-1], P[1:]
+    AB = B - A
+    t = np.clip(((p - A) * AB).sum(axis=1) / np.maximum((AB * AB).sum(axis=1), 1e-18), 0.0, 1.0)
+    i = int(np.argmin(np.linalg.norm(A + t[:, None] * AB - p, axis=1)))
+    return float(S[i] + t[i] * (S[i + 1] - S[i]))
+
+
+def partway(centre: list, P, near: float) -> bool:
+    """Whether a video first shows its climber well along a line (over PARTWAY of it): where its centre track
+    (in pieces) is first within `near` of the line, over its first four points there."""
+    import numpy as np
+    S = _lengths(P)
+    first = []
+    for row in sorted((r for piece in centre or [] for r in piece), key=lambda r: r[0]):
+        if _from_line(row[1:], P) <= near:
+            first.append(_along(row[1:], P, S))
+            if len(first) == 4:
+                break
+    return bool(first) and float(np.median(first)) > PARTWAY * S[-1]
+
+
+def roles_by_line(holds: list[dict], P, far: float, started_partway: bool = False) -> list[str]:
+    """Each hold's role by its climb's line, for a video's holds within a reach of it.
+
+    As beta.roles(), but for what a line can tell that when a hold was held can't. A hand's finish hold is the one
+    furthest along the line, not the last it held: of those within LEVEL of a reach of the furthest, the last held.
+    And a video that starts partway up has no start holds: each hand's first is then a hand hold like any other.
+
+    Args:
+        holds: [{p, contacts: [{limb, t0, t1}]}].
+        P: the line's points (n x 3).
+        far: a reach (reach()).
+        started_partway: partway() of the video's centre track.
+
+    Returns:
+        A role for each hold, in order.
+    """
+    import beta
+    S = _lengths(P)
+    hands = [(c["t0"], c["t1"], c["limb"], i) for i, h in enumerate(holds) for c in h["contacts"] if beta.LIMBS[c["limb"]][0] == "hand"]
+    along = {i: _along(holds[i]["p"], P, S) for i in {x[3] for x in hands}}
+    starts, finishes = set(), set()
+    for limb in ("lh", "rh"):
+        mine = [x for x in hands if x[2] == limb]
+        if not mine:
+            continue
+        if not started_partway:
+            starts.add(min(mine)[3])
+        top = max(along[x[3]] for x in mine)
+        finishes.add(max((x for x in mine if along[x[3]] >= top - LEVEL * far), key=lambda x: x[1])[3])
+    handed = {x[3] for x in hands}
+    return ["start" if i in starts else "finish" if i in finishes else "hand" if i in handed else "foot" for i in range(len(holds))]
+
+
 def astray(videos: list[dict], laid: dict[str, dict], far: float) -> dict[str, float]:
     """For each line, the share of the holds of the videos it keeps near that are further than `far` from it. Mostly
     a few in a hundred. Where it's a third or more, the line and its own videos' holds disagree: it stops short of the
@@ -331,20 +392,23 @@ def astray(videos: list[dict], laid: dict[str, dict], far: float) -> dict[str, f
     return out
 
 
-def holds_by_lines(videos: list[dict], of: dict[str, list[str]], laid: dict[str, dict], far: float) -> dict[str, dict]:
+def holds_by_lines(videos: list[dict], of: dict[str, list[str]], laid: dict[str, dict], far: float, near: float = 0.0) -> dict[str, dict]:
     """Which of each video's holds its climbs' lines leave out, and the roles of those they keep.
 
     A line speaks for a video's holds if it's agreed by two videos or more, or it came from that video; a line from
     one video alone says nothing of the climb's other videos, which may be the ones that are right. Nor does a line
     speak for any if too many (ASTRAY) of its own videos' holds are beyond a reach of it (astray()): then the line
     itself is in doubt. A hold is off if it's further than `far` from every line that speaks for its video. The rest
-    are given roles again (beta.roles()) from when each was held, as if the holds that are off had never been found.
+    are given roles again, as if the holds that are off had never been found: by the line (roles_by_line()) where one
+    line speaks for the video, and by when each was held alone (beta.roles()) where two do, as a video of two climbs
+    has two starts and two finishes, and there's no telling which hold is of which.
 
     Args:
-        videos: beta.json's, each with its url and holds ([{id, role, p, contacts}]).
+        videos: beta.json's, each with its url, holds ([{id, role, p, contacts}]) and centre track.
         of: each climb's videos' urls, by its id.
         laid: each climb's line, {p: its points (n x 3), near: the urls of the videos it keeps near, agree}.
         far: reach().
+        near: how near a line a climber's centre is on it (NEAR of the rock's size), for partway().
 
     Returns:
         {url: {off: [hold id], roles: {hold id (as text, as JSON keeps it): role}}}: the videos with a hold off, or one
@@ -362,7 +426,10 @@ def holds_by_lines(videos: list[dict], of: dict[str, list[str]], laid: dict[str,
             continue
         off = [h["id"] for h in holds if min(_from_line(h["p"], P) for P in by) > far]
         kept = [h for h in holds if h["id"] not in off]
-        given = beta.roles([h["contacts"] for h in kept])
+        if len(by) == 1:
+            given = roles_by_line(kept, by[0], far, partway(v.get("centre") or [], by[0], near))
+        else:
+            given = beta.roles([h["contacts"] for h in kept])
         changed = {str(h["id"]): role for h, role in zip(kept, given) if role != h.get("role")}
         if off or changed:
             out[u] = {"off": off, "roles": changed}
@@ -642,7 +709,7 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, m
             out[cid] = {"p": [[round(float(x), 5) for x in p] for p in P], "n": [[round(float(x), 3) for x in n] for n in normals],
                         "at": label_at(P, [laid[c][0] for c in laid if c != cid]), "videos": one["videos"], "agree": one["agree"]}
         by, far = {cid: {**found[cid], "p": laid[cid][0]} for cid in found}, reach(size, metres_per_unit)
-        changes = holds_by_lines(record.get("videos") or [], of, by, far)
+        changes = holds_by_lines(record.get("videos") or [], of, by, far, NEAR * size)
         for cid, share in astray(record.get("videos") or [], by, far).items():
             out[cid]["astray"] = round(share, 3)
     kept = {"key": made_from, "lines": out, "holds": changes}

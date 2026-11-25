@@ -154,6 +154,35 @@ assert abs(bl.astray(with_holds, agreed, 1.0)["A"] - 3 / 11) < 1e-9 and bl.astra
 short = {"A": {"p": up_one[:8], "near": ["a1"], "agree": 2}}        # a line that stops at 1.2 of the 3.5 its climb goes up
 assert bl.astray(with_holds, short, 1.0)["A"] > bl.ASTRAY and bl.holds_by_lines(with_holds, by, short, 1.0) == {}, "its top's holds aren't off"
 assert abs(bl._from_line([1.5, 2.0, 0], up_one) - 0.5) < 1e-9 and abs(bl._from_line([1.0, 4.5, 0], up_one) - 1.0) < 1e-9
+# roles by the line. A hand's finish is its hold furthest along the line, not the last it held: here both hands are
+# held again low down after the top (another go), which by when they were held alone makes those the finish holds
+again = [{"id": 0, "role": "start", "p": [1.0, 0.6, 0], "contacts": [held("lh", 2, 4), held("rh", 2, 4)]},
+         {"id": 1, "role": "finish", "p": [0.9, 1.6, 0], "contacts": [held("lh", 5, 7), held("lh", 20, 22)]},
+         {"id": 2, "role": "finish", "p": [1.1, 2.4, 0], "contacts": [held("rh", 6, 9), held("rh", 21, 23)]},
+         {"id": 3, "role": "hand", "p": [1.0, 3.3, 0], "contacts": [held("lh", 9, 12)]},
+         {"id": 4, "role": "hand", "p": [1.1, 3.2, 0], "contacts": [held("rh", 10, 12)]},
+         {"id": 5, "role": "foot", "p": [1.0, 0.4, 0], "contacts": [held("lf", 2, 9)]}]
+assert beta.roles([h["contacts"] for h in again]) == [h["role"] for h in again], "as beta finds them"
+assert bl.roles_by_line(again, up_one, 1.0) == ["start", "hand", "hand", "finish", "finish", "foot"]
+level = again[:3] + [dict(again[3], contacts=[held("lh", 9, 10)]), again[4], {"id": 6, "role": "hand", "p": [0.9, 3.27, 0], "contacts": [held("lh", 10, 12)]}]
+assert bl.roles_by_line(level, up_one, 1.0)[3:] == ["hand", "finish", "finish"], "of two as far along (within LEVEL of a reach), the last held"
+past = again[:5] + [{"id": 6, "role": "hand", "p": [1.2, 4.1, 0], "contacts": [held("lh", 12, 13)]}]
+assert bl.roles_by_line(past, up_one, 1.0)[3:] == ["hand", "finish", "finish"], "a hold past the line's end is as far along as its end: the last held"
+assert bl.roles_by_line(again[:1], up_one, 1.0) == ["start"] and bl.roles_by_line([again[5]], up_one, 1.0) == ["foot"] and bl.roles_by_line([], up_one, 1.0) == []
+# a video that first shows its climber over a third of the way along the line has no start holds
+assert bl.roles_by_line(again, up_one, 1.0, started_partway=True) == ["hand", "hand", "hand", "finish", "finish", "foot"]
+rise = lambda y0, y1, x=1.0, t0=0.0: [[t0 + 0.5 * k, x, y0 + (y1 - y0) * k / 10, 0.0] for k in range(11)]  # noqa: E731
+assert not bl.partway([rise(0.5, 3.5)], up_one, 0.3) and bl.partway([rise(2.0, 3.5)], up_one, 0.3), "first seen at its foot; first seen halfway up"
+assert not bl.partway([rise(1.0, 3.5)], up_one, 0.3), "under a third of the way along, over its first four points"
+assert not bl.partway([rise(2.0, 2.2, x=3.0), rise(0.5, 3.5, t0=9.0)], up_one, 0.3), "what it does off the line first doesn't count"
+assert not bl.partway([rise(2.0, 3.5, x=3.0)], up_one, 0.3) and not bl.partway([], up_one, 0.3), "never on the line: no saying"
+both_ways = [{"url": "a1", "holds": again, "centre": [rise(0.5, 3.5)]}, {"url": "a3", "holds": again, "centre": [rise(2.0, 3.5)]},
+             {"url": "two", "holds": again, "centre": [rise(0.5, 3.5)]}]
+lined = {"A": {"p": up_one, "near": ["a1", "a3", "two"], "agree": 3}, "B": {"p": up_one + [0.3, 0, 0], "near": ["two"], "agree": 2}}
+by_line = bl.holds_by_lines(both_ways, {"A": ["a1", "a3", "two"], "B": ["two"]}, lined, 1.0, 0.3)
+assert by_line["a1"] == {"off": [], "roles": {"1": "hand", "2": "hand", "3": "finish", "4": "finish"}}, by_line["a1"]
+assert by_line["a3"] == {"off": [], "roles": {"0": "hand", "1": "hand", "2": "hand", "3": "finish", "4": "finish"}}, "it starts partway"
+assert "two" not in by_line, "a video of two climbs with lines: by when each was held, as found"
 # a reach: in metres where the scale is known, within bounds of the rock's size; else a share of it
 assert bl.reach(4.0) == bl.REACH * 4.0 and abs(bl.reach(4.0, 1.0) - bl.REACH_M) < 1e-9 and abs(bl.reach(4.0, 2.5) - bl.REACH_M / 2.5) < 1e-9
 assert bl.reach(4.0, 0.1) == bl.REACH_BOUNDS[1] * 4.0 and bl.reach(4.0, 50.0) == bl.REACH_BOUNDS[0] * 4.0 and bl.reach(4.0, 0) == bl.reach(4.0)

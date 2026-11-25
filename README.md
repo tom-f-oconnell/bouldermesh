@@ -542,15 +542,17 @@ lowest CPU priority), and again when its beta, its hidden pieces, its size, or w
 climb change. design.md has how, and what was measured.
 
 **Holds by the line.** A hold found over a reach (1.75 m, by the mesh's size as found; 30% of the rock's
-size where it isn't) from its climb's line isn't shown: it's where a hand or foot seemed to be while
-the climber walked in, was off the top or on other rock, or a point that fell past the rock's edge. On
-20 boulders that was 7% of holds. The roles of the rest are given again from what's left, so each
-hand's first hold on the line is its start hold and its last its finish. *Show N off their climbs'
-lines*, in the list over the view, shows the hidden ones faint. A line agreed by two videos or more
-speaks for all its climb's videos, and a line from one video only for that video's holds. A line a third
-of whose own videos' holds are beyond a reach of it hides none: then it's the line that's in doubt
-(11 of 83). *Copy to a set* copies a video's holds as shown. The holds given to the phone apps for
-captures are still all those found.
+size where it isn't) from its climb's line isn't shown: it's where a hand or foot seemed to be while the
+climber walked in, was off the top or on other rock, or a point that fell past the rock's edge. On 20
+boulders that was 7% of holds. The roles of the rest are given again, by the line: each hand's first
+hold on it is its start hold, and its hold furthest along it its finish (not the last it held, which
+after a fall, another go or the walk off is anything). A video that first shows its climber over a third
+of the way up the line has no start holds, as the start isn't in it. *Show N off their climbs' lines*,
+in the list over the view, shows the hidden ones faint. A line agreed by two videos or more speaks for
+all its climb's videos, and a line from one video only for that video's holds. A line a third of whose
+own videos' holds are beyond a reach of it hides none: then it's the line that's in doubt (11 of 83).
+*Copy to a set* copies a video's holds as shown. The holds given to the phone apps for captures are
+still all those found.
 
 ## How big a boulder is
 
