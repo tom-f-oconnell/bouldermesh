@@ -781,7 +781,7 @@ class Broker:
     def recompare(self) -> int:
         """Compare again the checks whose video frames and storyboard are still kept (CHECK_KEEP_DAYS), with today's
         storyboards.compare() and tiles(): a verdict that changes is kept, as after the fix for a storyboard's last
-        image YouTube cuts short (every short video's check had failed: 13 of ace-3's 29 were mismatches, Nov 24).
+        image YouTube cuts short (every short video's check had failed: 14 of ace-3's 29 were mismatches and 6 unclear, all matches after, Nov 24).
         Returns how many changed."""
         n = 0
         for c in self.q("SELECT * FROM checks WHERE state='done' AND mode='given'"):
