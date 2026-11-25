@@ -194,6 +194,8 @@ with tempfile.TemporaryDirectory() as td:
         assert sorted(judged) == sorted(first["kept"]), ("only those kept without it", judged)
         assert r["rejected"].get("ddg_same.jpg") == "notboulder" and "mountainproject_a.jpg" in r["kept"], r
         assert any("without CLIP's check" in x for x in logs), logs
+        assert sorted(relevance.unclipped(old)) == sorted(first["kept"]) and relevance.unclipped(r) == [], "judged now: none left"
+        assert relevance.unclipped(None) == [] and relevance.unclipped({"kept": "x"}) == []
         print("verdicts from before the CLIP check OK")
 
         # what the cache knows of a set of photos, for a machine to filter them with, and what it worked out, kept here

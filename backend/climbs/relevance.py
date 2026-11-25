@@ -664,6 +664,15 @@ def settings_key() -> str:
             f"coverage {MIN_COVERAGE}; rounds {CHAIN_ROUNDS}; anchors {MAX_ANCHORS}; {_how()}")
 
 
+def unclipped(prior: dict | None) -> list[str]:
+    """The photos an earlier run's report (relevance.json) kept without CLIP's check of whether each is a boulder, as
+    runs before that check did (Nov 8, 2026): what filter_photos() checks with it when that report is reused."""
+    if not isinstance(prior, dict) or not isinstance(prior.get("kept"), list):
+        return []
+    scores = prior.get("scores") or {}
+    return [n for n in prior["kept"] if "boulder" not in (scores.get(n) or {})]
+
+
 def reusable(prior: dict | None) -> bool:
     """Whether an earlier run's report (relevance.json) can stand for its photos' verdicts: not one that rejected every
     photo and so kept them all, nor one from other settings. One from before the settings were recorded only if it
@@ -719,9 +728,10 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
                 again.add(p.name)
     # kept before the CLIP check was (Nov 2026), which `offtopic-split` then only ran on those rejected: those kept are
     # checked with it now, their match to the rock standing (Don't Rock the Boat's board-game photos had never been)
-    unclipped = [p for p in paths if "boulder" in methods and p.name in stood and stood[p.name] is None and "boulder" not in scores[p.name]]
-    if unclipped:
-        log(f"relevance: {len(unclipped)} photo(s) an earlier run kept without CLIP's check of whether it's a boulder: checking that now")
+    unchecked = set(unclipped(before)) if "boulder" in methods else set()
+    unclipped_now = [p for p in paths if p.name in unchecked and p.name in stood and stood[p.name] is None]
+    if unclipped_now:
+        log(f"relevance: {len(unclipped_now)} photo(s) an earlier run kept without CLIP's check of whether it's a boulder: checking that now")
     log(f"relevance: checking {len(paths) - len(stood)} photo(s) with {', '.join(methods) or 'nothing'}"
         + (f" ({', '.join(missing)} not installed)" if missing else "")
         + (f"; {len(stood)} more as an earlier run found them" + (f", and {len(again)} it found matching nothing only against "
@@ -739,9 +749,9 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             if scores[p.name]["flat"] > FLAT_MAX:
                 why[p.name] = "card"
         alive = [p for p in alive if p.name not in why]
-    if "boulder" in methods and ([p for p in alive if p.name not in again] or unclipped):
+    if "boulder" in methods and ([p for p in alive if p.name not in again] or unclipped_now):
         try:
-            for p, prob in boulder_probability([p for p in alive if p.name not in again] + unclipped, log, sub(0.0, 0.3),
+            for p, prob in boulder_probability([p for p in alive if p.name not in again] + unclipped_now, log, sub(0.0, 0.3),
                                                **({"cache_only": True} if cache_only else {})).items():
                 scores[p.name]["boulder"] = round(prob, 3)
                 if prob < BOULDER_MIN_P:

@@ -98,9 +98,16 @@ try:
     (server.PROJECTS / pid / "photos" / "b.jpg").write_bytes(b"jpg")
     mesh("before", made=None, tex=None)       # from before meshes recorded what made them
     mesh("novggt", made={**current, "vggt_skipped": "COLMAP's mapper placed only 4, and VGGT couldn't run: only 7149 MB"}, tex=tex_now)
+    # made from photos its filter kept before the CLIP check (no "boulder" score): those it was made from, not others
+    pid = mesh("unclipped", made=current, tex=tex_now)
+    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg"], "scores": {"a.jpg": {"flat": 0.1}}, "rejected": {}}))
+    pid = mesh("clipped", made=current, tex=tex_now, photos=("b.jpg",))
+    (server.PROJECTS / pid / "relevance.json").write_text(json.dumps({"kept": ["a.jpg", "b.jpg"], "rejected": {},
+                                                                      "scores": {"a.jpg": {}, "b.jpg": {"boulder": 0.9}}}))
     t = server.mesh_tiers(fresh=True)
-    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (10, 1, 2, 1), t
+    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (12, 1, 2, 1), t
     assert t["ids"]["vggt"] == ["novggt"] and t["vggt"] == 1, "VGGT needed where it couldn't run: a tier of its own"
+    assert t["ids"]["clip"] == ["unclipped"] and t["clip"] == 1, t["ids"]["clip"]
     assert set(t["ids"]["pipeline"]) == {"oldpipe", "before"} and t["ids"]["fallback"] == ["cpu"] and t["fallback"]["why"] == {"not-tried": 1}
     assert set(t["ids"]["texture"]) == {"oldtex", "before"} and t["texture_unkept"] == 1, t
     assert t["ids"]["new_data"] == ["newphotos"] and t["new_photos"] == 1, t
@@ -111,6 +118,29 @@ try:
     assert server.pipeline_existing_meshes() == 1 and meshinputs.load(server.MESHES / "before")["pipeline"]["version"] == 1
     assert server.pipeline_existing_meshes() == 0, "once"
     print("tiers OK")
+
+    # ---- before it's meshed, a harvest's photos kept before the CLIP check are judged by it, other verdicts standing
+    pid = "punclipped"
+    asked = []
+
+    def run_filter(paths, rejected, log, prior=None, assess=None, **kw):
+        asked.append(([p.name for p in paths], prior))
+        return {"version": 1, "methods": ["cards", "boulder", "same-rock"], "kept": [], "rejected": {"a.jpg": "notboulder"},
+                "counts": {"notboulder": 1}, "scores": {"a.jpg": {"boulder": 0.1}}}
+    real = server.relevance_mod.run_filter, server.diversity_mod.assess_unique
+    server.relevance_mod.run_filter, server.diversity_mod.assess_unique = run_filter, lambda paths, log, progress=None: {"verdict": "poor", "n": len(paths)}
+    server.q("UPDATE projects SET harvest=? WHERE id=?", json.dumps({"images": 1, "diversity": {"verdict": "good"}}), pid, write=True)
+    logged = []
+    try:
+        assert server.clip_unchecked(pid, logged.append) and asked[0][0] == ["a.jpg"] and asked[0][1]["kept"] == ["a.jpg"], asked
+        h = json.loads(server.q("SELECT harvest FROM projects WHERE id=?", pid, one=True)["harvest"])
+        assert h["diversity"] == {"verdict": "poor", "n": 0} and h["relevance"]["counts"] == {"notboulder": 1}, h
+        assert json.loads((server.PROJECTS / pid / "relevance.json").read_text())["rejected"] == {"a.jpg": "notboulder"}
+        assert not server.clip_unchecked(pid, logged.append) and len(asked) == 1, "judged: not again"
+        assert not server.clip_unchecked("pclipped", logged.append) and len(asked) == 1, "its unchecked photo isn't among its photos"
+    finally:
+        server.relevance_mod.run_filter, server.diversity_mod.assess_unique = real
+    print("judging photos kept before the CLIP check OK")
 
     # ---- remaking a tier: on an area's climb that isn't busy, at low priority, as the kind of mesh says
     server.q("INSERT INTO campaigns(id,name,created,status) VALUES('c1','Area',?,'done')", now, write=True)
