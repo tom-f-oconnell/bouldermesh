@@ -105,6 +105,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   #climbs>.card{cursor:pointer}
   #climbs>.card.multi{border-color:var(--warn);box-shadow:inset 3px 0 0 var(--warn)}   /* more than one mesh, while picked out */
   #climbs>.card,#meshes>.card{content-visibility:auto;contain-intrinsic-size:auto 110px}   /* off screen: not laid out until near */
+  #climbs>.card.opening{cursor:progress;opacity:.6}   /* its details being fetched (openClimb()) */
   #climbs>.card.open{border-color:var(--acc);border-bottom-left-radius:0;border-bottom-right-radius:0;margin-bottom:0}
   .card.active.under{border-top-left-radius:0;border-top-right-radius:0;border-top-color:var(--line);cursor:default}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -3271,7 +3272,7 @@ async function refreshMap(fit=false){
   if (fit && gj.features.length) { map.invalidateSize(); map.fitBounds(geoLayer.getBounds().pad(0.3), { maxZoom: 16 }); mapFitted = true; }
 }
 map.on('popupopen', e => {
-  e.popup.getElement().querySelectorAll('a[data-mesh]').forEach(a => a.onclick = ev => { ev.preventDefault(); viewMesh(a.dataset.mesh, null, 'map'); });
+  e.popup.getElement().querySelectorAll('a[data-mesh]').forEach(a => a.onclick = ev => { ev.preventDefault(); viewMeshPressed(ev, a.dataset.mesh, null, 'map'); });
   e.popup.getElement().querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
 });
 let mapCentredOn = null;     // the mesh the map was last opened around, to leave it where it's been moved to after
@@ -3403,8 +3404,8 @@ function climbCard(c){
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
-  d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); viewClimbMesh(c.id, 'climb', climbHides()); };
-  d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; c.id === openClimbId && openClimbEl ? closeClimb() : openClimb(c.id); };
+  d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); guardedPress(ev, () => startClimbMesh(c.id, 'climb', climbHides())); };
+  d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; guardedPress(ev, () => { c.id === openClimbId && openClimbEl || c.id === climbOpening?.id ? closeClimb() : openClimb(c.id); }); };
   return d;
 }
 function renderClimbs(){
@@ -3453,6 +3454,7 @@ function placeClimb(d, id){
   else $('#climb-open').replaceChildren(d);
 }
 function closeClimb(){
+  if (climbOpening) { climbOpening = null; document.querySelectorAll('#climbs > .card.opening').forEach(x => x.classList.remove('opening')); }
   openClimbEl?.remove(); openClimbEl = null; openClimbId = null;
   document.querySelectorAll('#climbs > .card.open').forEach(x => x.classList.remove('open'));
 }
@@ -3492,11 +3494,18 @@ function pickClimbMesh(id, hide = {}){
   return own ? { id: own.id, from: null } : boulder ? { id: boulder.id, from: id } : shared ? { id: shared.id, from: null } : null;
 }
 async function viewClimbMesh(id, via = 'climb', hide = {}){
-  if (!pickClimbMesh(id, hide)) await refreshMeshes();
-  const p = pickClimbMesh(id, hide);
-  if (p) { await viewMesh(p.id, p.from, via, id); return true; }
-  toast('No mesh is linked to this climb yet.');
-  return false;
+  const started = await startClimbMesh(id, via, hide);
+  if (started) await started.pending;
+  return !!started;
+}
+// its mesh asked for, once the list has it: {pending: its load}, or null if it has none
+async function startClimbMesh(id, via, hide){
+  const card = pickClimbMesh(id, hide) ? null : await listedWithCard('its mesh');
+  try {
+    const p = pickClimbMesh(id, hide);
+    if (!p) { toast('No mesh is linked to this climb yet.'); return null; }
+    return { pending: viewMesh(p.id, p.from, via, id) };
+  } finally { card?.(); }
 }
 // a project's machine job (machine_work()): running, waiting for a machine, or kept from before a restart, which no
 // machine is given until the project carries on (Retry, or its area's run) and takes it up
@@ -3564,14 +3573,22 @@ function boulderHtml(c){
     ${later}<div class="row w" style="margin-top:4px"><span class="grow meta">${note}</span>${button}</div>`;
 }
 const boulderReads = new Set();     // climbs whose boulder's page the card has asked to have read, once a load
+let climbOpening = null;    // the climb whose details are being fetched: only the last one asked for is shown
 async function openClimb(id, focus=true){
-  const c = await api('/api/climbs/' + id);
+  const mine = climbOpening = { id };
+  if (focus) { setFull(false); document.querySelector('.tabs button[data-tab=climbs]').click(); }    // at once, while they come
+  const busy = () => document.querySelectorAll('#climbs > .card').forEach(x => x.classList.toggle('opening', climbOpening?.id === x.dataset.id));
+  busy();
+  let c;
+  try { c = await api('/api/climbs/' + id); }
+  catch (e) { if (climbOpening === mine) { climbOpening = null; busy(); toast(`Couldn't open it: ${e.message}`, 6000); } return; }
+  if (climbOpening !== mine) return;     // another asked for since, or put away
+  climbOpening = null; busy();
   const data = c.data || {};
   const st = statusCache;
   const harvests = c.projects.filter(p => p.kind === 'harvest');
   const harvesting = harvests.some(p => BUSY.includes(p.status));
   openClimbId = id;
-  if (focus) { setFull(false); document.querySelector('.tabs button[data-tab=climbs]').click(); }
   const d = document.createElement('div'); d.className = 'card active';
   const imgs = (data.images||[]).filter(m=>m.url), linked = (data.images||[]).filter(m=>!m.url && m.page);   // linked only, as the admin page allows
   const vids = data.videos||[];
@@ -3622,8 +3639,8 @@ async function openClimb(id, focus=true){
     const ll = parseLL(v); if (!ll) return;
     await api('/api/climbs/' + id, { method: 'PATCH', json: { lat: ll[0], lng: ll[1] } }); toast('Coordinates saved'); d.remove(); openClimb(id); refreshClimbs();
   };
-  d.querySelectorAll('[data-mesh]').forEach(ch => ch.onclick = () => viewMesh(ch.dataset.mesh, null, 'climb'));
-  d.querySelectorAll('[data-bmesh]').forEach(ch => ch.onclick = async () => { if (!meshesById[ch.dataset.bmesh]) await refreshMeshes(); viewMesh(ch.dataset.bmesh, id, 'climb'); });
+  d.querySelectorAll('[data-mesh]').forEach(ch => ch.onclick = ev => viewMeshPressed(ev, ch.dataset.mesh, null, 'climb'));
+  d.querySelectorAll('[data-bmesh]').forEach(ch => ch.onclick = ev => viewMeshPressed(ev, ch.dataset.bmesh, id, 'climb'));
   d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
   d.querySelector('.meshboulder')?.addEventListener('click', async ev => {
     const b = c.boulder, same = ev.currentTarget.classList.contains('again');
@@ -4233,7 +4250,7 @@ async function refreshCampaigns(kept = null){
         toast(`Copied ${mpUrl}`, 3000);
       });
       d.querySelector('.del').onclick = async () => { if (await askDanger(`Remove the list for "${c.name}"?`, 'Its meshes stay, but where it got to goes: entered again, it starts over (keeping the meshes of climbs that have them).', 'Remove')) { await api('/api/campaigns/' + c.id, { method: 'DELETE' }); campaignLoop(); } };
-      d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = async () => { if (!meshesById[b.dataset.mesh]) await refreshMeshes(); viewMesh(b.dataset.mesh, null, 'area'); });
+      d.querySelectorAll('[data-mesh]').forEach(b => b.onclick = ev => viewMeshPressed(ev, b.dataset.mesh, null, 'area'));
       d.querySelectorAll('a[data-climb]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.climb); });
       d.querySelectorAll('details').forEach(x => { if (open.has(x.dataset.list)) x.open = true; });
       el.appendChild(d);
@@ -4695,12 +4712,45 @@ $('#ratecomment').oninput = () => {
 };
 $('#ratecomment').onblur = flushRating;
 addEventListener('pagehide', flushRating);
-let meshesFetch = null;     // the list's fetch under way, if one is, for what only needs it to have come (randomMesh())
+// A press that opens something: presses made before what it puts up (its loading card, say) is on the screen are left.
+// The page was busy, or still waiting on the list of meshes: they'd otherwise run one after another once it's free,
+// each replacing the one before. fn puts up what shows it was pressed at once; until fn settles, presses are left.
+let pressAt = -Infinity, pressSeenAt = -Infinity;
+async function guardedPress(ev, fn){
+  const at = ev?.timeStamp ?? performance.now();
+  if (pressSeenAt == null || at < pressSeenAt) return;
+  pressAt = at; pressSeenAt = null;
+  try { return await fn(); }
+  catch (e) { toast(e.message, 6000); }
+  finally { requestAnimationFrame(() => setTimeout(() => { if (pressAt === at) pressSeenAt = performance.now(); })); }   // once it's drawn
+}
+// the list of meshes, with the loading card up while it comes (the fetch already under way, if one is; otherwise a
+// refresh): returns what takes the card down, a no-op once a mesh's own loading has taken it over
+async function listedWithCard(label){
+  const card = loading(label);
+  $('#loading .detail').textContent = 'Getting the list of meshes…';
+  try { await meshesListed(); } catch (e) { card(); throw e; }
+  return card;
+}
+function meshesListed(){
+  if (!meshesFetch) refreshMeshes().catch(() => {});
+  return meshesFetch;
+}
+// a mesh by its id, from a press: fetching the list first if it hasn't the mesh yet (one made since it came)
+function viewMeshPressed(ev, id, from = null, via = '', climb = null){
+  return guardedPress(ev, async () => {
+    const card = meshesById[id] ? null : await listedWithCard('the mesh');
+    try {
+      if (!meshesById[id]) return toast('That mesh isn\'t here any more.');
+      viewMesh(id, from, via, climb);
+    } finally { card?.(); }
+  });
+}
+let meshesFetch = null;     // the list's fetch under way, if one is: resolves once meshesById has it, before it's drawn
 async function refreshMeshes(){
   hideSourceTip();
-  const f = meshesFetch = api('/api/meshes');
-  try { meshesCache = await f; } finally { if (meshesFetch === f) meshesFetch = null; }
-  meshesById = Object.fromEntries(meshesCache.map(m => [m.id, m]));
+  const f = meshesFetch = api('/api/meshes').then(list => { meshesCache = list; meshesById = Object.fromEntries(list.map(m => [m.id, m])); });
+  try { await f; } finally { if (meshesFetch === f) meshesFetch = null; }
   listSeconds ??= performance.now() / 1000;
   await scrollStill();
   renderMeshes(); showBetaButton();     // beta found since for the mesh in view: its button
@@ -5001,7 +5051,7 @@ async function openExact(id, fromSlug){
 // A boulder's meshes to pick from (GET /api/links/b/<name>): most of its climbs first, each with the climbs it's the
 // home of (bold) and others it shows, then its climbs no mesh places. From a link, a boulder with one mesh opens it.
 async function pickBoulder(r, fromLink = false){
-  if (r.meshes.some(x => !meshesById[x.id])) await refreshMeshes();
+  if (r.meshes.some(x => !meshesById[x.id])) await meshesListed();
   if (fromLink && addressGivenWay('link')) return;
   const items = r.meshes.filter(x => meshesById[x.id] && (editor || !(meshesById[x.id].old || meshesById[x.id].old_data))), names = Object.fromEntries(r.climbs.map(c => [c.id, named(c)]));
   const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
@@ -7319,28 +7369,18 @@ function pickWeighted(pool, rand = Math.random()){
   let r = rand * weights.reduce((a, b) => a + b, 0);
   return pool.find((_, i) => (r -= weights[i]) < 0) || pool[pool.length - 1];
 }
-// Presses made before the last one's loading card is on the screen are left: the page was busy (they'd otherwise run one
-// after another once it's free, each replacing the one before), or the list of meshes is still coming
-let lastRandom = null, randomAt = -Infinity, randomSeenAt = -Infinity;
-async function randomMesh(ev){
-  const at = ev?.timeStamp ?? performance.now();
-  if (randomSeenAt == null || at < randomSeenAt) return;
-  randomAt = at; randomSeenAt = null;
-  const card = loading('a random mesh');
-  try {
-    if (!meshesCache?.length) {
-      $('#loading .detail').textContent = 'Getting the list of meshes…';
-      try { await (meshesFetch || refreshMeshes()); } catch (e) { return toast(e.message, 6000); }
-    }
-    const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
-    if (!current.length) return toast('No meshes yet.');
-    const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
-    lastRandom = m.id;
-    viewMesh(m.id, null, 'random');
-  } finally {
-    card();       // only if nothing took over its card (loadMeshUrl()'s own)
-    requestAnimationFrame(() => setTimeout(() => { if (randomAt === at) randomSeenAt = performance.now(); }));   // once it's drawn
-  }
+let lastRandom = null;
+function randomMesh(ev){
+  return guardedPress(ev, async () => {
+    const card = meshesCache?.length ? null : await listedWithCard('a random mesh');
+    try {
+      const current = (meshesCache || []).filter(m => !m.replaced_by && !m.demo);
+      if (!current.length) return toast('No meshes yet.');
+      const m = pickWeighted(current.length > 1 ? current.filter(m => m.id !== lastRandom) : current);   // not the same one twice running
+      lastRandom = m.id;
+      viewMesh(m.id, null, 'random');
+    } finally { card?.(); }
+  });
 }
 $('#random').onclick = $('#vrandom').onclick = randomMesh;   // the viewer's, on a phone, where it hides the header
 
@@ -7748,10 +7788,12 @@ else {
 }
 addEventListener('hashchange', openLinked);
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
-$('#vothers').onclick = async () => {
-  const b = meshesById[shownMesh]?.boulder_link;
-  if (b) try { pickBoulder(await api(`/api/links/b/${b.slug}`)); } catch (e) { toast(e.message, 6000); }
-};
+$('#vothers').onclick = ev => guardedPress(ev, async () => {
+  const b = meshesById[shownMesh]?.boulder_link, el = $('#vothers');
+  if (!b) return;
+  el.disabled = true;     // while its list comes
+  try { await pickBoulder(await api(`/api/links/b/${b.slug}`)); } finally { el.disabled = false; }
+});
 
 // ---- first-visit tips (TIPS and the rest of them are with the page's first helpers, above)
 function showTips(tries = 0){
