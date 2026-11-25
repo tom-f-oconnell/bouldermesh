@@ -34,8 +34,9 @@ whose memory is short only for a climb says which kinds it takes meanwhile (shor
 script 32 on), and gets only those; one whose GPU hasn't memory free for the next job's (gpu_need_on()) is held back too, but one whose GPU is smaller than
 any waiting job's need is idle, as nothing waiting is for it. A reconstruction's need is VGGT's, should COLMAP not
 place its photos (2% of meshes, Nov 24), but a GPU too small for that in all (as disco's 8 GB GTX 1080, which placed as
-the big ones did, Nov 24) takes it for MESH_GPU_MB: it hands the job back if VGGT is needed after all, and the job
-then waits for a GPU big enough, so every mesh is made as it would be on one. Each machine's state as it asks
+the big ones did, Nov 24) takes it for MESH_GPU_MB: it hands the job back if VGGT is needed after all, as a big one
+does whose memory others keep for 20 min then (pipeline.VGGT_WAIT), and the job then waits for a GPU with room, so
+every mesh is made as it would be with VGGT. Each machine's state as it asks
 (working, idle, held back, awaiting approval, or offline once it stops asking) is kept as it changes, in machine_states,
 and logged, for the admin page's share of time in each.
 """
@@ -762,11 +763,11 @@ class Board:
                 self._requeue(j, f"remote: {j.machine_name} stopped before finishing: waiting for another machine")
                 return {"ok": True}
             back = HANDED_BACK.search(str(report.get("error") or "")) if status != "ok" and j.task == "reconstruct" else None
-            if back:        # its GPU too small for VGGT, needed after all: for a machine whose GPU is big enough
+            if back:        # VGGT needed after all, and its GPU too small for it, or short of memory: for one with room
                 j.gpu_mb = j.gpu_least = max(j.gpu_mb, int(back[1]))
                 self._ended(j, "handed back", str(report.get("error"))[:500])
-                self._requeue(j, f"remote: {j.machine_name} handed it back, its GPU too small for VGGT: waiting for a "
-                                 f"machine with {j.gpu_mb / 1024:.1f} GB")
+                self._requeue(j, f"remote: {j.machine_name} handed it back, as VGGT couldn't run there: waiting for a "
+                                 f"machine with {j.gpu_mb / 1024:.1f} GB of GPU memory free")
                 return {"ok": True}
             if status == "ok":
                 if j.out_size is None or not j.output.exists() or j.output.stat().st_size != j.out_size:

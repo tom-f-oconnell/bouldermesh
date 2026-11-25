@@ -97,8 +97,10 @@ try:
     pid = mesh("newphotos", made=current, tex=tex_now)
     (server.PROJECTS / pid / "photos" / "b.jpg").write_bytes(b"jpg")
     mesh("before", made=None, tex=None)       # from before meshes recorded what made them
+    mesh("novggt", made={**current, "vggt_skipped": "COLMAP's mapper placed only 4, and VGGT couldn't run: only 7149 MB"}, tex=tex_now)
     t = server.mesh_tiers(fresh=True)
-    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (9, 1, 2, 1), t
+    assert (t["meshes"], t["rules"], t["pipeline"], t["fallback"]["n"]) == (10, 1, 2, 1), t
+    assert t["ids"]["vggt"] == ["novggt"] and t["vggt"] == 1, "VGGT needed where it couldn't run: a tier of its own"
     assert set(t["ids"]["pipeline"]) == {"oldpipe", "before"} and t["ids"]["fallback"] == ["cpu"] and t["fallback"]["why"] == {"not-tried": 1}
     assert set(t["ids"]["texture"]) == {"oldtex", "before"} and t["texture_unkept"] == 1, t
     assert t["ids"]["new_data"] == ["newphotos"] and t["new_photos"] == 1, t

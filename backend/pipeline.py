@@ -355,7 +355,8 @@ def write_record(work: Path, out_dir: Path, texture: dict | None) -> dict:
            "image": os.environ.get("BOULDERMESH_COMMIT") or None,
            "features": {**features_record(read(work / EXTRACT_FILE), how, read(work / FALLBACKS_FILE) or []),
                         "gpu_sift": GPU_SIFT, "least": PLAIN_SIFT_LEAST},
-           "mapper": how.get("mapper"), "dense": _mvs24(MVS24_DENSIFY), "mesh": _mvs24(MVS24_MESH), "texture": texture}
+           "mapper": how.get("mapper"), "vggt_skipped": next((f["why"] for f in read(work / FALLBACKS_FILE) or []
+                                                               if f.get("step") == VGGT_SKIPPED), None), "dense": _mvs24(MVS24_DENSIFY), "mesh": _mvs24(MVS24_MESH), "texture": texture}
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / PIPELINE_FILE).write_text(json.dumps(rec, indent=1))
@@ -835,33 +836,70 @@ def _round_info(info: dict) -> dict:
 
 
 class NeedsBiggerGPU(RuntimeError):
-    """VGGT is needed, and this machine's GPU is too small for it (HAND_BACK): the job is for a machine with need_mb."""
+    """VGGT is needed, and this machine's GPU can't run it (HAND_BACK): too small in all, or still short of memory
+    after VGGT_WAIT. The job is for a machine with need_mb free."""
 
     def __init__(self, why: str, need_mb: int):
-        super().__init__(f"{why}: handed back for a bigger GPU (needs_gpu_mb={need_mb})")
+        super().__init__(f"{why}: handed back for a GPU with room for VGGT (needs_gpu_mb={need_mb})")
         self.need_mb = need_mb
 
 
-HAND_BACK = False   # a GPU too small for VGGT stops the job when VGGT is needed (NeedsBiggerGPU), rather than going
+HAND_BACK = False   # a GPU that can't run VGGT stops the job when VGGT is needed (NeedsBiggerGPU), rather than going
                     # without it: set by remote_job.py, as pullwork.py gives such GPUs meshing for less memory
+VGGT_WAIT, VGGT_WAIT_EVERY = 1200, 30   # seconds a job waits for the GPU memory VGGT needs, others using it, and how often it looks
+VGGT_SKIPPED = "vggt_skipped"           # the fallback recorded when VGGT was needed and couldn't run: vggt_tier()
+
+
+def vggt_tier(record: dict | None) -> str | None:
+    """Why a mesh was made without VGGT where its photos needed it (VGGT_SKIPPED, recorded in write_record()), for the
+    admin page to offer it to be made again, or None."""
+    return (record or {}).get("vggt_skipped")
+
+
+def _vggt_room(log: Log) -> str | None:
+    """Wait up to VGGT_WAIT for VGGT to fit in the GPU memory free, others using it: None once it does, else why not."""
+    end = time.time() + VGGT_WAIT
+    while True:
+        try:
+            vggt_place.capacity()
+            return None
+        except vggt_place.Unavailable as e:
+            if time.time() >= end:
+                return str(e)
+            log(f"VGGT: {e}: waiting for others' use of the GPU to end (up to {VGGT_WAIT // 60} min)")
+        for _ in range(VGGT_WAIT_EVERY):
+            jobctl.check()
+            time.sleep(1)
+
+
+def _without_vggt(work: Path, registered: int, why: str, photos: int, log: Log) -> None:
+    """VGGT was needed and can't run here: handed back for a GPU that can run it (HAND_BACK), or recorded as gone
+    without (VGGT_SKIPPED), so the mesh can be made again where it can."""
+    if HAND_BACK:
+        raise NeedsBiggerGPU(why, vggt_place.need_mb(photos))
+    _fell_back(work, VGGT_SKIPPED, f"COLMAP's mapper placed only {registered}, and VGGT couldn't run: {why}", log)
 
 
 def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log, tracker: Tracker, registered: int) -> None:
     """When the mapper placed too few photos: VGGT's placements, refined by COLMAP, as another model in sparse/ (vggt),
-    for the largest to be chosen from as before. Failing only costs the time.
+    for the largest to be chosen from as before. Failing only costs the time, but VGGT not running at all (not here,
+    a GPU too small, or others keeping its memory for VGGT_WAIT) hands the job back, or is recorded (_without_vggt()).
 
     Raises:
-        NeedsBiggerGPU: with HAND_BACK, this machine's GPU is too small for VGGT however free it is.
+        NeedsBiggerGPU: with HAND_BACK, VGGT can't run on this machine's GPU.
     """
+    photos = sum(1 for p in images.iterdir() if p.is_file())
     why = vggt_place.unavailable()
     if why:
         log(f"VGGT could try placing them instead, but not here: {why}")
+        if why != "VGGT_FALLBACK=0":    # turned off on purpose: as asked
+            _without_vggt(work, registered, why, photos, log)
         return
-    photos = sum(1 for p in images.iterdir() if p.is_file())
-    small = vggt_place.too_small(photos) if HAND_BACK else None
-    if small:
-        log(f"VGGT could try placing them, as COLMAP's mapper placed only {registered}, but {small}")
-        raise NeedsBiggerGPU(small, vggt_place.need_mb(photos))
+    short = vggt_place.too_small(photos) or _vggt_room(log)
+    if short:
+        log(f"VGGT could try placing them, as COLMAP's mapper placed only {registered}, but {short}")
+        _without_vggt(work, registered, short, photos, log)
+        return
     log(f"== VGGT: placing the photos, as COLMAP's mapper placed only {registered}")
     tracker.update("mapper", 0, "placing them with VGGT")
     try:
@@ -875,6 +913,9 @@ def _place_with_vggt(db: Path, images: Path, sparse: Path, work: Path, log: Log,
                        f"round {failed['round'] - 1} was kept", log, **_round_info(failed))
     except Cancelled:
         raise
+    except vggt_place.Unavailable as e:     # its memory taken again since it was looked at
+        log(f"placing them with VGGT failed: {e}")
+        _without_vggt(work, registered, str(e), photos, log)
     except vggt_place.RoundFailed as e:
         log(f"placing them with VGGT failed: {e}")
         _fell_back(work, "vggt_round", f"round 1 of VGGT's placing failed ({e.info['why']}): nothing was placed", log,

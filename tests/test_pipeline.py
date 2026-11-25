@@ -257,13 +257,15 @@ def with_vggt(why=None, placed=None, fails=None):
             raise fails
         model(out.parent, out.name, placed)
         return placed
-    saved = pipeline.vggt_place.unavailable, pipeline.vggt_place.place
-    pipeline.vggt_place.unavailable, pipeline.vggt_place.place = (lambda: why), place
+    v = pipeline.vggt_place
+    saved = v.unavailable, v.place, v.too_small, v.capacity
+    v.unavailable, v.place, v.too_small, v.capacity = (lambda: why), place, (lambda n: None), (lambda: ("cuda", 20))
     return calls, saved
 
 
 def restore(saved):
-    pipeline.vggt_place.unavailable, pipeline.vggt_place.place = saved
+    v = pipeline.vggt_place
+    v.unavailable, v.place, v.too_small, v.capacity = saved
 
 
 calls, saved = with_vggt(placed=12)
@@ -315,9 +317,9 @@ try:
 finally:
     restore(saved)
 # a GPU too small for VGGT hands the job back when VGGT is needed (remote_job.py's HAND_BACK), with the GPU it needs in
-# its error for the server (pullwork.HANDED_BACK); without HAND_BACK, or VGGT not needed, the job goes on as before
+# its error for the server (pullwork.HANDED_BACK); VGGT not needed, the job goes on as before; without HAND_BACK,
+# without VGGT, recorded so (below)
 calls, saved = with_vggt(placed=12)
-small = pipeline.vggt_place.too_small
 pipeline.vggt_place.too_small = lambda n: "its GPU has 8192 MB in all, and VGGT may need 9300 MB"
 try:
     pipeline.HAND_BACK = True
@@ -328,11 +330,52 @@ try:
         except pipeline.NeedsBiggerGPU as e:
             assert not calls and pullwork.HANDED_BACK.search(f"FAILED: {e}")[1] == str(e.need_mb) and e.need_mb >= 7600, e
     assert stops_at([{"models": {"0": 9}}]).endswith("sparse/0"), "enough placed: no VGGT, so nothing handed back"
-    pipeline.HAND_BACK = False
-    assert stops_at([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS).endswith("sparse/vggt") and calls, "not handing back: tried"
 finally:
-    pipeline.HAND_BACK, pipeline.vggt_place.too_small = False, small
+    pipeline.HAND_BACK = False
     restore(saved)
+
+
+def short_of_memory(e="only 7149 MB of GPU memory is free, and it needs 7600"):
+    def capacity():
+        raise pipeline.vggt_place.Unavailable(e)
+    return capacity
+
+
+# a big GPU whose memory others keep: waited for (VGGT_WAIT), then handed back too, or without HAND_BACK (the server's
+# own meshing) the mesh is made without VGGT and recorded so (VGGT_SKIPPED, its pipeline record's vggt_skipped: the
+# admin page's tier); VGGT turned off on purpose isn't recorded
+wait = pipeline.VGGT_WAIT
+for hand_back in (True, False):
+    calls, saved = with_vggt(placed=12)
+    pipeline.vggt_place.capacity, pipeline.VGGT_WAIT, pipeline.HAND_BACK = short_of_memory(), 0, hand_back
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            try:
+                run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+                raise AssertionError("too small a model should fail, or the job be handed back")
+            except pipeline.NeedsBiggerGPU as e:
+                assert hand_back and "only 7149 MB" in str(e) and not calls, e
+            except RuntimeError as e:
+                assert not hand_back and "only 2 image(s)" in str(e) and not calls, e
+                work = pathlib.Path(td) / "work"
+                got = json.loads((work / pipeline.FALLBACKS_FILE).read_text())
+                assert [f["step"] for f in got] == [pipeline.VGGT_SKIPPED] and "only 7149 MB" in got[0]["why"], got
+                rec = pipeline.write_record(work, pathlib.Path(td) / "out", None)
+                assert "only 7149 MB" in pipeline.vggt_tier(rec), rec
+    finally:
+        pipeline.HAND_BACK, pipeline.VGGT_WAIT = False, wait
+        restore(saved)
+calls, saved = with_vggt(why="VGGT_FALLBACK=0")
+try:
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            run_with_mapper([{"models": {"0": 2}}] * pipeline.MAPPER_ATTEMPTS, pathlib.Path(td))
+        except RuntimeError:
+            pass
+        assert not (pathlib.Path(td) / "work" / pipeline.FALLBACKS_FILE).exists(), "turned off: not recorded"
+finally:
+    restore(saved)
+assert pipeline.vggt_tier({"vggt_skipped": None}) is None and pipeline.vggt_tier(None) is None
 assert pipeline.vggt_place.need_mb(30) == pullwork.gpu_need_mb("reconstruct", 30), "the same need, both sides"
 print("VGGT placing OK")
 
@@ -869,8 +912,8 @@ for placed, vggt in ((2, True), (8, False)):
             work.mkdir(parents=True, exist_ok=True)
             (work / "placed.json").write_text(json.dumps({"by": "vggt", "photos": 7}))
             return 7
-        saved = pipeline.vggt_place.unavailable, pipeline.vggt_place.place
-        pipeline.vggt_place.unavailable, pipeline.vggt_place.place = (lambda: None), place
+        _, saved = with_vggt()
+        pipeline.vggt_place.place = place
         try:
             assert run_until(tmp, faces=50_000, placed=placed)[-1] == "TextureMesh"
         finally:
