@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -43,6 +44,7 @@ COLUMNS = (("confirmed", "REAL"), ("lost", "REAL"), ("lost_why", "TEXT"), ("appr
 # checked against the backup's copy
 # fetched videos (and their details) asked back from the backup's archive/, which the server no longer had: when asked
 ARCHIVE_WANTS = """CREATE TABLE IF NOT EXISTS archive_wants(path TEXT PRIMARY KEY, asked REAL)"""
+RESTORES = "restore-waits.jsonl"     # each path the backup sent back, a JSON line: when asked for, when back, how long that took
 ARCHIVED = "backup-archived.txt"      # what the backup holds in archive/ of cache/videos/: "<bytes>\t<mtime>\t<path>" lines
 FILES = """CREATE TABLE IF NOT EXISTS offload_files(path TEXT, file TEXT, bytes INTEGER, mtime REAL, sha1 TEXT, checked REAL,
               PRIMARY KEY(path, file))"""
@@ -262,13 +264,56 @@ def move_in(src: Path, dst: Path) -> None:
         src.unlink()
 
 
+def waited_since(q: Q, paths) -> float | None:
+    """When the longest-waiting of these paths was first asked back from the backup (offloaded or archived), or None."""
+    times = [r["t"] for p in paths for r in q("SELECT wanted AS t FROM offloads WHERE path=? AND wanted IS NOT NULL "
+                                               "UNION ALL SELECT asked AS t FROM archive_wants WHERE path=?", p, p)]
+    return min(times) if times else None
+
+
+def waiting(q: Q) -> list[dict]:
+    """What's been asked back from the backup and hasn't come yet, longest-waiting first: [{path, since}]."""
+    return q("SELECT path, wanted AS since FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL AND lost IS NULL "
+             "UNION ALL SELECT path, asked AS since FROM archive_wants ORDER BY since")
+
+
+def _record(data: Path, waits: list[dict]) -> None:
+    try:
+        with open(data / RESTORES, "a") as f:
+            for w in waits:
+                f.write(json.dumps(w) + "\n")
+    except OSError:
+        pass
+
+
+def restore_waits(data: Path, since: float) -> list[dict]:
+    """The paths put back from the backup since then, as take_restores() recorded them: [{path, from, asked, back,
+    seconds}]."""
+    out = []
+    try:
+        lines = (data / RESTORES).read_text(errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            w = json.loads(line)
+        except ValueError:
+            continue
+        if (w.get("back") or 0) >= since:
+            out.append(w)
+    return out
+
+
 def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[str], None] | None = None) -> list[str]:
     """Put back what the backup sent into the inbox (the handshake's restore), for paths wanted back, offloaded or from
-    its archive (each of those then given to came()). Returns them."""
-    inbox, back = data / INBOX, []
+    its archive (each of those then given to came()), recording how long each was waited for (RESTORES). Returns them."""
+    inbox, back, waits = data / INBOX, [], []
     if not inbox.is_dir():
         return back
-    for row in q("SELECT path FROM archive_wants"):
+    now = time.time()
+    wait = lambda row, src: waits.append({"path": row["path"], "from": src, "asked": row["asked"], "back": now,  # noqa: E731
+                                          "seconds": round(now - row["asked"]) if row["asked"] else None})
+    for row in q("SELECT path, asked FROM archive_wants"):
         src, dst = inbox / row["path"], data / row["path"]
         if not src.is_file():
             continue
@@ -276,12 +321,13 @@ def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[
         move_in(src, dst)
         q("DELETE FROM archive_wants WHERE path=?", row["path"], write=True)
         back.append(row["path"])
+        wait(row, "archive")
         if came:
             try:
                 came(row["path"])
             except Exception as e:  # noqa: BLE001 - it's here; what wanted it finds it in the cache
                 log(f"offload: telling of {row['path']} from the archive failed: {e!r}")
-    for row in q("SELECT path FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL"):
+    for row in q("SELECT path, wanted AS asked FROM offloads WHERE done IS NOT NULL AND wanted IS NOT NULL"):
         src, dst = inbox / row["path"], data / row["path"]
         if not src.exists():
             continue
@@ -299,9 +345,12 @@ def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[
             move_in(src, dst)
         drop(q, [row["path"]])
         back.append(row["path"])
+        wait(row, "offload")
     if back:
         write_lists(data, q)
-        log(f"offload: {len(back)} put back from the backup")
+        _record(data, waits)
+        longest = max((w["seconds"] or 0 for w in waits), default=0)
+        log(f"offload: {len(back)} put back from the backup, the longest asked for {longest / 60:.0f} min before")
     for leftover in sorted(inbox.rglob("*"), reverse=True):     # anything not wanted, or emptied folders
         if leftover.is_dir():
             try:

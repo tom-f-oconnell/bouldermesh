@@ -7331,8 +7331,15 @@ def need_back(pids, what: str) -> None:
         raise LostData(what, [r["path"] for r in gone])
     asked = offload_mod.want(DATA, q, paths)
     if asked:
-        raise PhotosAway(f"{what}: its photos are in the backup, and have been asked for back, which the backup's next "
-                         "run brings (half-hourly, with deploy/bouldermesh-restore.timer)")
+        since = offload_mod.waited_since(q, asked)
+        waited = f", {fmt_wait(time.time() - since)} ago" if since and time.time() - since >= 60 else ""
+        raise PhotosAway(f"{what}: its photos are in the backup, and have been asked for back{waited}, which the backup's "
+                         "next run brings (every 5 min, with deploy/bouldermesh-restore.timer)")
+
+
+def fmt_wait(seconds: float) -> str:
+    """A wait, as "12 min" or "3.5 h"."""
+    return f"{seconds / 60:.0f} min" if seconds < 5400 else f"{seconds / 3600:.1f} h"
 
 
 def _away(paths=(), video_ids=()) -> list[dict]:
@@ -10754,6 +10761,21 @@ MACHINE_TASKS = {"reconstruct": "meshing", "beta": "finding beta", "scale": "sca
 KINDS = {"reconstruct": "meshing"}     # deploy_state()'s kinds of work, from task or job types: else as they are
 
 
+def _waiting_on(pid: str) -> str:
+    """What a project not at work last said it waits for: its log's last "-- " line, without what it's of, shortened."""
+    try:
+        with open(PROJECTS / pid / "job.log", "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 65536))
+            lines = f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return "to be queued again"
+    said = next((x[3:] for x in reversed(lines) if x.startswith("-- ")), None)
+    if not said:
+        return "to be queued again"
+    said = said.split(": ", 1)[1] if said.startswith("pooling ") and ": " in said else said
+    return said if len(said) <= 90 else said[:89] + "…"
+
+
 def deploy_state() -> dict:
     """What a restart would cost now, for deploy.sh (cli.py deploy-check): each piece of work in progress, whether a
     restart loses much of it ("costly"), how long it's been going, and about how long it has left (eta, seconds, None
@@ -10820,10 +10842,16 @@ def deploy_state() -> dict:
         ppid = bp["id"] if bp else r["project_id"]
         p = q("SELECT progress FROM projects WHERE id=?", ppid, one=True) if ppid else None
         prog = json.loads(p["progress"]) if p and p["progress"] else None
-        step = next((s for s in (prog or {}).get("steps", []) if s.get("state") == "running"), None)
+        # a boulder's project not at work (waiting on the backup, say) still shows the step it was on: what it waits on instead
+        idle = bp and bp["status"] not in ("running", "harvesting")
+        step = None if idle else next((s for s in (prog or {}).get("steps", []) if s.get("state") == "running"), None)
         meshing_here = bool(step and step["key"] in mesh_keys and _local_meshing and not _executor)
-        items.append({"what": f"{r['area']}: " + ("its boulder: " if bp else "") + (step["label"].lower() if step else "starting"),
-                      "name": r["name"], "kind": "meshing" if meshing_here else "area", "project_id": ppid, "costly": meshing_here, "elapsed": round(now - (r["updated"] or now)),
+        how = step["label"].lower() if step else f"waiting: {_waiting_on(bp['id'])}" if idle else "starting"
+        # a boulder's step: how long that's been going, not how long since the climb that asked for it started
+        began = (step.get("started") if bp and step else None) or r["updated"] or now
+        items.append({"what": f"{r['area']}: " + ("its boulder: " if bp else "") + how,
+                      "name": f"{boulder_name(r['boulder'])}, for {r['name']}" if bp else r["name"],
+                      "kind": "meshing" if meshing_here else "area", "project_id": ppid, "costly": meshing_here, "elapsed": round(now - began),
                       "eta": (lambda t: round(t) if t is not None else None)(_left(ppid, prog, mesh_keys if meshing_here else None) if ppid else None),
                       "lost": "starts its step again after" if meshing_here else "pauses, and carries on after"})
     for j in asked:
@@ -12116,6 +12144,26 @@ SITE_HEALTH_HOUR = 16      # UTC: the day's summary is sent then, 8 in the morni
 SITE_HEALTH_SENT = DATA / "site-health-sent"     # the UTC day it was last sent, so a restart doesn't send it twice
 
 
+RESTORE_LATE = 2 * 3600     # asked back from the backup this long ago and not back: the day's summary says so (it runs every 5 min)
+
+
+def restore_note(now: float | None = None) -> tuple[str | None, bool]:
+    """The day's summary's line on getting things back from the backup: how many came back in the last day and how long
+    they were waited for, and what's waited RESTORE_LATE or more and still hasn't come. (None if nothing), and whether
+    anything's late."""
+    now = now or time.time()
+    day = sorted(w["seconds"] for w in offload_mod.restore_waits(DATA, now - 86400) if w.get("seconds") is not None)
+    late = [w for w in offload_mod.waiting(q) if w["since"] and now - w["since"] >= RESTORE_LATE]
+    bits = []
+    if day:
+        bits.append(f"Back from the backup in the last day: {len(day)}, waited for {fmt_wait(day[len(day) // 2])} at the median, "
+                    f"{fmt_wait(day[-1])} at the longest.")
+    if late:
+        bits.append(f"Still waiting on the backup: {len(late)}, the oldest asked for {fmt_wait(now - late[0]['since'])} ago "
+                    f"({late[0]['path']}).")
+    return (" ".join(bits) or None), bool(late)
+
+
 def site_health_loop() -> None:
     """A thread: once a day at SITE_HEALTH_HOUR, tell the admin's phone (notify.site_health) how the site went for
     visitors over the last day (sitehealth.py): meshes slow to load or given up on, views that moved badly, errors in
@@ -12139,13 +12187,17 @@ def site_health_loop() -> None:
                 holds = hold_note()
             except Exception as e:  # noqa: BLE001 - only this line is lost
                 holds = f"(videos' holds couldn't be read: {e})"
+            try:
+                restores, restores_late = restore_note()
+            except Exception as e:  # noqa: BLE001 - only this line is lost
+                restores, restores_late = f"(waits on the backup couldn't be read: {e})", False
             if got:
                 title, text, look = got
-                text = (text + "".join("\n" + x for x in (lists, pace, holds) if x))[:1990]
-                NOTIFIER.send(title, text, priority=3 if look or pace else 2, tags=["bar_chart"])
-            elif pace or holds:
-                NOTIFIER.send("Volunteers slower than usual" if pace else "Videos holding up meshes",
-                              "\n".join(x for x in (pace, holds) if x), priority=3 if pace else 2, tags=["bar_chart"])
+                text = (text + "".join("\n" + x for x in (lists, pace, holds, restores) if x))[:1990]
+                NOTIFIER.send(title, text, priority=3 if look or pace or restores_late else 2, tags=["bar_chart"])
+            elif pace or holds or restores_late:
+                NOTIFIER.send("Volunteers slower than usual" if pace else "Videos holding up meshes" if holds else "Waiting on the backup",
+                              "\n".join(x for x in (pace, holds, restores) if x), priority=3 if pace or restores_late else 2, tags=["bar_chart"])
         except Exception as e:
             print(f"error: the day's summary: {type(e).__name__}: {e}", flush=True)
 

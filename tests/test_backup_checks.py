@@ -272,6 +272,28 @@ try:
     assert view["needs_backup"] == 1, view["needs_backup"]
     assert server._needs_backup([got["Beta"]["climb_id"], got["Gamma"]["climb_id"]]) == 1
     print("needs data from the backup OK")
+
+    # --- how long what's asked back waits for the backup --------------------------------------------------------------
+    path = f"projects/{pid}/photos"
+    server.q("UPDATE offloads SET wanted=? WHERE path=?", time.time() - 3 * 3600, path, write=True)
+    assert [w["path"] for w in offload.waiting(server.q)] == [path]
+    text, late = server.restore_note()
+    assert late and "Still waiting on the backup: 1" in text and "3.0 h" in text, text
+    try:
+        server.need_back([pid], "meshing it")
+        raise AssertionError("away")
+    except server.PhotosAway as e:
+        assert "asked for back, 3.0 h ago" in str(e), e
+    (server.DATA / offload.INBOX / path).mkdir(parents=True)
+    (server.DATA / offload.INBOX / path / "a.jpg").write_bytes(b"x")
+    said = []
+    assert offload.take_restores(server.DATA, server.q, said.append) == [path]
+    waits = offload.restore_waits(server.DATA, time.time() - 60)
+    assert [w["path"] for w in waits] == [path] and abs(waits[0]["seconds"] - 3 * 3600) < 60, waits
+    assert "longest asked for 180 min before" in said[-1], said
+    text, late = server.restore_note()
+    assert not late and "Back from the backup in the last day: 1" in text, text
+    print("waits on the backup recorded OK")
     print("ALL BACKUP CHECKS TESTS PASSED")
 finally:
     import shutil

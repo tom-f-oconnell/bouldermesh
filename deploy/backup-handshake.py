@@ -17,7 +17,7 @@ here, through a key of its own whose forced command this is (README, "Backups"),
                             lines, cache/videos/ only), kept in data/backup-archived.txt: those wanted again are asked
                             back from it (backend/offload.py's archived()), and sent from there by restore
     asked                   when the admin page asked for a backup now (data/backup-asked), if it has and none has
-                            been reported since: the backup's half-hourly run then backs up at once
+                            been reported since: the backup's run every 5 min then backs up at once
 
 The command comes from SSH_ORIGINAL_COMMAND (over SSH) or the arguments (run here). The data folder is the checkout's
 data/, or BOULDERMESH_DATA.

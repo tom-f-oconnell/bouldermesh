@@ -1099,7 +1099,7 @@ which the server takes only for the handshake
     ssh-keygen -t ed25519 -N '' -C 'bouldermesh backup handshake' -f ~/.ssh/bouldermesh_handshake
     printf 'command="python3 /home/tom/bouldermesh/deploy/backup-handshake.py",restrict %s\n' "$(cat ~/.ssh/bouldermesh_handshake.pub)" | ssh bouldermesh 'cat >> ~/.ssh/authorized_keys'
     sudo cp deploy/bouldermesh-restore.service deploy/bouldermesh-restore.timer /etc/systemd/system/
-    sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.timer     # what's wanted back, half-hourly
+    sudo systemctl daemon-reload && sudo systemctl enable --now bouldermesh-restore.timer     # what's wanted back, every 5 min
 
 Without that key nothing is offloaded, and the server can't know of any backup. backup.sh finds it as
 `~/.ssh/bouldermesh_handshake` (`BACKUP_HANDSHAKE_KEY`). Through it each night's copy also says how it went
@@ -1407,7 +1407,7 @@ volunteers and for connecting the public site to whichever server harvests.
   (`videos_done()`: their climbs harvested and meshed, and beta found in them) are offloaded to the backup, the least
   recently used first, and asked back if wanted again; one still needed stays past it. The backup keeps them for good;
   deleting the oldest is by hand (*Backups*, below). A video volunteers are asked for that the backup keeps in its
-  `archive/` (one this server deleted before it kept them all) is asked of the backup instead: its half-hourly run sends
+  `archive/` (one this server deleted before it kept them all) is asked of the backup instead: its run every 5 min sends
   it back, and volunteers are given it only if that hasn't come within 6 hours.
 
 Volunteers reach the public site's `/volunteer/`, which Caddy passes to a port that answers nothing else (`VOLUNTEER_PORT`,

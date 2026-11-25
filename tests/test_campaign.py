@@ -3041,6 +3041,23 @@ st = server.deploy_state()
 (it,) = st["items"]
 assert it["name"] == "Alpha" and not it["costly"] and it["what"].endswith("download photos") and 100 < it["eta"] < 140, it
 assert st["costly"] == 0, "a harvest only pauses"
+# its boulder being meshed for it: named as the boulder, for the climb, going as long as the boulder's step; and when the
+# boulder's project waits (on the backup, say), that, not the step it was last on
+bkey, bpid = json.dumps(["Somewhere", "Big Rock"]), "b0" * 6
+server.q("INSERT INTO projects(id,name,created,kind,status,boulder,progress) VALUES(?,?,?,?,?,?,?)", bpid, "Big Rock (boulder)", time.time(),
+         "boulder", "running", bkey, json.dumps({"overall": 50, "steps": [{"key": "sparse", "label": "Place cameras", "frac": 0.5,
+                                                                            "state": "running", "started": time.time() - 60}]}), write=True)
+server.q("UPDATE campaign_items SET redo='boulder', boulder=?, updated=? WHERE campaign_id=? AND name='Alpha'", bkey, time.time() - 9000,
+         c["id"], write=True)
+(it,) = server.deploy_state()["items"]
+assert it["name"] == "Big Rock, for Alpha" and it["what"].endswith("its boulder: place cameras") and 50 < it["elapsed"] < 120, it
+server.q("UPDATE projects SET status='stopped' WHERE id=?", bpid, write=True)
+server.append_log(bpid, "-- pooling Big Rock: its photos are in the backup, and have been asked for back")
+(it,) = server.deploy_state()["items"]
+assert it["what"].endswith("its boulder: waiting: its photos are in the backup, and have been asked for back"), it
+server.q("DELETE FROM projects WHERE id=?", bpid, write=True)
+server.q("UPDATE campaign_items SET redo=NULL, boulder=NULL, updated=? WHERE campaign_id=? AND name='Alpha'", time.time() - 120, c["id"],
+         write=True)
 # a mesh on a machine: ends with a restart; about as long left as its last jobs took, less what's gone
 board = server.MACHINES
 for i, took in enumerate((600, 900, 1200)):
