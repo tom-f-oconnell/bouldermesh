@@ -8881,6 +8881,45 @@ def queue_beta(mid: str, ahead: bool = False) -> bool:
     return True
 
 
+CUT_FILE = "beta_cut.json"      # the beta of a mesh's videos as it was when only their first 150 s had been looked at, by url
+
+
+def requeue_cut_videos() -> int:
+    """Queue finding beta again for the videos that were cut short: those looked at while beta stopped at 150 s
+    (beta.LEAST_SECONDS) whatever was going on, which ran to that (as many frames, and no word of why it left, which
+    beta has said since it looks further: beta.seen_enough()). Only those in the cache now, so that none loses the beta
+    it has for a video that can't be had; only in current meshes whose beta is done; and each once, its beta as it was
+    kept in CUT_FILE (a machine on an older image would cut it the same again). The rest of the mesh's videos keep
+    theirs (beta.find() carries on from them).
+
+    Returns:
+        How many videos were queued.
+    """
+    least, n = int(beta_mod.LEAST_SECONDS * beta_mod.FPS) - 1, 0
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL ORDER BY created DESC"):
+        d = MESHES / m["id"]
+        rec = beta_mod.load(d)
+        if not rec or rec.get("status") != "done" or mesh_old(m["id"]):
+            continue
+        try:
+            was = json.loads((d / CUT_FILE).read_text())
+        except (OSError, ValueError):
+            was = {}
+        cut = [v for v in rec.get("videos") or [] if "left" not in v and (v.get("frames") or 0) >= least and v.get("url") not in was
+               and youtube_mod.cached(v["url"])]
+        if not cut:
+            continue
+        was.update({v["url"]: v for v in cut})
+        (d / CUT_FILE).write_text(json.dumps(was))
+        urls = {v["url"] for v in cut}
+        beta_mod.save(d, {**rec, "status": "queued", "videos": [v for v in rec["videos"] if v.get("url") not in urls], "progress": None, "at": None,
+                          "resume": True, "queued": time.time(), "ahead": False, "note": f"looking further into {plural(len(cut), 'video')} cut at 150 s"})
+        n += len(cut)
+    if n:
+        _beta_wake.set()
+    return n
+
+
 def beta_ready(mid: str) -> bool:
     """Whether a queued mesh's beta can be looked for now: any of the videos it waits for is in the cache, or this
     server may fetch videos from YouTube now (it isn't refusing, and they aren't left to volunteers), or, where they
@@ -15812,6 +15851,9 @@ def main() -> None:
         beta_mod.carry_on(d)        # finding beta and size carry on after a restart, like areas
         if scale_mod.carry_on(d):
             queue_job({"type": "scale", "mid": d.name})
+    again = requeue_cut_videos()
+    if again:
+        print(f"finding beta again for {plural(again, 'video')} that had only their first 150 s looked at", flush=True)
     _beta_spawn()
     threading.Thread(target=watch_usage, daemon=True).start()
     threading.Thread(target=snapshot_worker, daemon=True).start()

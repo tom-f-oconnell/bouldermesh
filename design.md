@@ -1565,9 +1565,10 @@ best. Tried, on the same boulders, with nothing changed for it:
   hasn't been placed on the rock for 30 s, or never was (`beta.seen_enough()`): what follows is talk,
   other boulders, the walk down. The same stop inside the first 150 s would have saved 2% of the
   seconds looked at and lost holds held later in 1% of videos (4 of 343: a rest of over 30 s out of
-  shot between goes), and at 15 s, 7% and 6%; so the first 150 s are always looked at. It only
-  changes beta found from now on: the 8% of videos that ran past 150 s aren't looked at again unless
-  their beta is found again.
+  shot between goes), and at 15 s, 7% and 6%; so the first 150 s are always looked at. The
+  videos already cut at 150 s (8% of those measured) are looked at again once, when the server starts
+  (`requeue_cut_videos()`): those still in the cache, in current meshes, each with its beta as it was
+  kept in `beta_cut.json`; the rest of their meshes' videos keep theirs.
 - *A line can be drawn by hand* (`lines_drawn.json`, an editor's ✎ in the viewer): points clicked on
   the rock from the climb's start to its top, joined, and laid on the mesh like any line. It's then
   the climb's line whatever its videos say, and for a climb with none; it speaks for all its climb's

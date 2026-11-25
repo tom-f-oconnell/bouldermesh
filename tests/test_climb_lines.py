@@ -7,6 +7,7 @@ Offline: a wall and tracks built here, no harvests or pose model.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import shutil
@@ -206,6 +207,24 @@ try:
     assert not server.make_lines("cc33") and server.mesh_lines("cc33")["lines"] == []
     server.draw_line("cc33", "cz", [[1, 1, 0], [3, 3, 0]], None)
     assert server.make_lines("cc33") and [x["climb"] for x in server.mesh_lines("cc33")["lines"]] == ["cz"] and not server.mesh_lines("cc33")["pending"]
+
+    # ---- videos cut at 150 s are looked at again, once: those in the cache, the others' beta kept as it is
+    full = int(beta_mod.LEAST_SECONDS * beta_mod.FPS)
+    vids = [{**video("yt/x1", 2.0), "frames": full}, {**video("yt/x2", 2.1), "frames": 120}, {**video("yt/x3", 2.2), "frames": full},
+            {**video("yt/x4", 2.3), "frames": full, "left": None}]
+    beta_mod.save(d2, {"status": "done", "videos": vids})
+    real, server.youtube_mod.cached = server.youtube_mod.cached, lambda u: pathlib.Path("v.mp4") if u != "yt/x3" else None
+    try:
+        assert server.requeue_cut_videos() == 0, "not in a mesh made under older rules: what replaces it gets its own"
+        server.q("UPDATE meshes SET rules=? WHERE id='bb22'", server.MESH_RULES, write=True)
+        assert server.requeue_cut_videos() == 1, "x1: cut, and here; x2 was shorter, x3 isn't here, x4 was looked at since"
+        rec = beta_mod.load(d2)
+        assert rec["status"] == "queued" and rec["resume"] and [v["url"] for v in rec["videos"]] == ["yt/x2", "yt/x3", "yt/x4"], rec
+        assert list(json.loads((d2 / server.CUT_FILE).read_text())) == ["yt/x1"], "its beta as it was, kept"
+        beta_mod.save(d2, {"status": "done", "videos": vids})       # as a machine on an older image would leave it
+        assert server.requeue_cut_videos() == 0, "not again"
+    finally:
+        server.youtube_mod.cached = real
 
     # ---- what's kept from a version of the rules since changed is made again
     betalines.VERSION += 1
