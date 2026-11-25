@@ -15748,6 +15748,7 @@ def main() -> None:
     if not diagnostics.allow_tracing():     # so that py-spy can attach to it, from a stall's dump or inside its container
         print("diagnostics: couldn't let py-spy attach to this process; a thread dump will only have Python's side", flush=True)
     threading.Thread(target=stall_watch, daemon=True, name="stall-watch").start()
+    threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()   # storyboards' checks, by today's comparison
     again = requeue_waiting()
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)

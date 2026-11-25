@@ -116,21 +116,24 @@ def tiles(images: list[bytes], spec: dict, size: tuple[int, int] | None = None) 
     if len(images) != len(spec["fragments"]):
         raise ValueError(f"{len(images)} image(s) of the storyboard's {len(spec['fragments'])}")
     w, h = size or shape(spec)
-    out, k, end = [], 0, length(spec)
-    for data in images:
+    out, end, per = [], length(spec), spec["rows"] * spec["columns"]
+    for i, data in enumerate(images):
         try:
             im = Image.open(io.BytesIO(data))
             im.load()
         except Exception as e:  # noqa: BLE001 - PIL raises many kinds
             raise ValueError(f"not an image: {e}") from None
         im = im.convert("L")
-        tw, th = im.width // spec["columns"], im.height // spec["rows"]
+        # the last image YouTube cuts short after the last row it fills (800x270 for 6 rows of 80x45): its tiles are
+        # the shape of the others, not its height shared among every row (Nov 24: every short video's check failed so)
+        tw, full = im.width // spec["columns"], im.height // spec["rows"]
+        th = round(tw * spec["height"] / spec["width"]) if spec.get("width") and spec.get("height") else full
+        th = full if abs(full - th) <= 1 else th
         if tw < 8 or th < 8:
             raise ValueError(f"an image of {im.width}x{im.height} can't hold {spec['columns']}x{spec['rows']} tiles")
-        for r in range(spec["rows"]):
+        for r in range(min(spec["rows"], im.height // th)):
             for c in range(spec["columns"]):
-                t = k * spec["interval"]
-                k += 1
+                t = (i * per + r * spec["columns"] + c) * spec["interval"]
                 if t < end:
                     tile = im.crop((c * tw, r * th, (c + 1) * tw, (r + 1) * th)).resize((w, h), Image.Resampling.BOX)
                     out.append((t, np.asarray(tile, np.uint8)))

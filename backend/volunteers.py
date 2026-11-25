@@ -778,6 +778,28 @@ class Broker:
                v["id"], result["verdict"], json.dumps(result), time.time(), c["id"])
         return self.q("SELECT * FROM checks WHERE id=?", c["id"], one=True)
 
+    def recompare(self) -> int:
+        """Compare again the checks whose video frames and storyboard are still kept (CHECK_KEEP_DAYS), with today's
+        storyboards.compare() and tiles(): a verdict that changes is kept, as after the fix for a storyboard's last
+        image YouTube cuts short (every short video's check had failed: 13 of ace-3's 29 were mismatches, Nov 24).
+        Returns how many changed."""
+        n = 0
+        for c in self.q("SELECT * FROM checks WHERE state='done' AND mode='given'"):
+            try:
+                frames = storyboards.load_frames(self.files / "checks" / f"{c['id']}.npz")
+                with zipfile.ZipFile(self.files / "checks" / f"{c['id']}.zip") as z:
+                    names = sorted((m for m in z.namelist() if re.fullmatch(r"\d+\.img", m)), key=lambda m: int(m.split(".")[0]))
+                    images = [z.read(m) for m in names]
+                spec = json.loads(c["spec"])
+                result = storyboards.compare(frames, storyboards.tiles(images, spec, frames["stretched"].shape[:0:-1]), spec["interval"])
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+                continue
+            if result["verdict"] != c["verdict"]:
+                self.q("UPDATE checks SET verdict=?, result=? WHERE id=?", result["verdict"], json.dumps(result), c["id"])
+                print(f"volunteers: check {c['id']} of {c['video_id']} compared again: {c['verdict']} -> {result['verdict']}", flush=True)
+                n += 1
+        return n
+
     def _expire_checks(self) -> None:
         """Checks no trusted volunteer did in CHECK_DAYS given up, and what checks compared deleted after CHECK_KEEP_DAYS:
         at most once an hour."""

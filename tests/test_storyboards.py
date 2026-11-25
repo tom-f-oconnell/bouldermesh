@@ -36,16 +36,20 @@ def make_video(path: Path, source: str, seconds: int = 60) -> Path:
     return path
 
 
-def board_images(video: Path, interval: float, cols: int = 5, rows: int = 5, w: int = 160, h: int = 90) -> list[bytes]:
-    """A storyboard as YouTube's look: tiles every interval, rows x cols to an image, as JPEG."""
+def board_images(video: Path, interval: float, cols: int = 5, rows: int = 5, w: int = 160, h: int = 90, cut: bool = False) -> list[bytes]:
+    """A storyboard as YouTube's look: tiles every interval, rows x cols to an image, as JPEG; with cut, the last image
+    ends after its last row of tiles, as YouTube's do."""
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", f"fps=1/{interval},scale={w}:{h}", "-f", "rawvideo",
                           "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
     frames = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
     out = []
     for start in range(0, len(frames), rows * cols):
         sheet = np.zeros((rows * h, cols * w, 3), np.uint8)
-        for i, fr in enumerate(frames[start:start + rows * cols]):
+        part = frames[start:start + rows * cols]
+        for i, fr in enumerate(part):
             sheet[i // cols * h:(i // cols + 1) * h, i % cols * w:(i % cols + 1) * w] = fr
+        if cut:
+            sheet = sheet[:-(-len(part) // cols) * h]
         buf = io.BytesIO()
         Image.fromarray(sheet).save(buf, "JPEG", quality=70)
         out.append(buf.getvalue())
@@ -80,6 +84,20 @@ def comparing() -> None:
         theirs = storyboards.compare(storyboards.video_frames(other, spec), storyboards.tiles(imgs, spec), spec["interval"])
         print(f"another video ({name}):", theirs)
         assert theirs["verdict"] == "mismatch", theirs
+    # YouTube's last image ends after its last row: 60 s at 2 s is 25 tiles and then 5, one row of 90 px; and a video
+    # shorter than one image, its only image cut (as 800x270 for a 55 s video's 57 tiles of 80x45, Nov 24)
+    cut = board_images(a, 2.0, cut=True)
+    assert Image.open(io.BytesIO(cut[-1])).size == (800, 90), Image.open(io.BytesIO(cut[-1])).size
+    got = storyboards.tiles(cut, spec)
+    assert len(got) == 30 and got[-1][0] == 58.0, (len(got), got[-1][0])
+    assert storyboards.compare(frames, got, spec["interval"])["verdict"] == "match"
+    short = make_video(TMP / "short.mp4", "testsrc2", 34)
+    one = board_images(short, 2.0, cut=True)
+    sspec = {**spec, "fragments": [{"url": spec["fragments"][0]["url"], "duration": 34}]}
+    assert len(one) == 1 and Image.open(io.BytesIO(one[0])).size == (800, 360), "17 tiles: 4 rows"
+    alone = storyboards.compare(storyboards.video_frames(short, sspec), storyboards.tiles(one, sspec), sspec["interval"])
+    print("cut short:", alone)
+    assert alone["verdict"] == "match" and alone["tiles"] == 17, alone
     # a's storyboard read as if it were 20 s later: the frames near each tile's time are others
     shifted = [(t + 20, tile) for t, tile in storyboards.tiles(imgs, spec)]
     late = storyboards.compare(frames, shifted, spec["interval"])
@@ -149,6 +167,10 @@ def through_the_broker() -> None:
     assert b.finish(bob, t["id"], {"status": "ok"})["ok"]
     (c, sender), = told
     assert c["verdict"] == "match" and c["checker"] == bob["id"] and sender["id"] == alice["id"], c
+    # compared again from what it kept, a verdict made by an older comparison is put right (and a right one left)
+    b.q("UPDATE checks SET verdict='mismatch' WHERE id=?", c["id"])
+    assert b.recompare() == 1 and b.q("SELECT verdict FROM checks WHERE id=?", c["id"])[0]["verdict"] == "match"
+    assert b.recompare() == 0
     # the next one's addresses don't work from bob's: asked again, afresh, and the storyboard he finds is used
     send_video(alice, "bcdefghijkl")
     wait_queued(1)
