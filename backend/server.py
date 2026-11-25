@@ -374,14 +374,16 @@ def init_db() -> None:
         if "rebuild_after" not in {r[1] for r in con.execute("PRAGMA table_info(pools)")}:
             con.execute("ALTER TABLE pools ADD COLUMN rebuild_after REAL")
         # started: when its latest go began (first taken, after any end), kept while it waits for volunteers, its boulder,
-        # a machine or a restart; ended: when that go ended (done, skipped or failed), NULL while it's under way. By
+        # a machine or a restart; ended: when that go ended (done, skipped, failed or hidden), NULL while it's under way. By
         # triggers, so that every way its status changes counts
         con.execute(f"""CREATE TRIGGER IF NOT EXISTS campaign_item_started AFTER UPDATE OF status ON campaign_items
             WHEN NEW.status='running' AND (OLD.started IS NULL OR OLD.ended IS NOT NULL) BEGIN
               UPDATE campaign_items SET started={now_sql}, ended=NULL WHERE campaign_id=NEW.campaign_id AND source_id=NEW.source_id;
             END""")
+        for t in ("campaign_item_ended", "again_item_queued", "again_item_ended"):   # made again: 'hidden' is through too
+            con.execute(f"DROP TRIGGER IF EXISTS {t}")
         con.execute(f"""CREATE TRIGGER IF NOT EXISTS campaign_item_ended AFTER UPDATE OF status ON campaign_items
-            WHEN NEW.status IN ('done','skipped','failed') AND OLD.status NOT IN ('done','skipped','failed') BEGIN
+            WHEN NEW.status IN ('done','skipped','failed','hidden') AND OLD.status NOT IN ('done','skipped','failed','hidden') BEGIN
               UPDATE campaign_items SET ended={now_sql} WHERE campaign_id=NEW.campaign_id AND source_id=NEW.source_id;
             END""")
         # every job run here (run_job(), and finding beta): when it was queued, started and ended, and how it ended.
@@ -401,10 +403,10 @@ def init_db() -> None:
         opened = (f"VALUES({{kind}}, {{cid}}, NEW.{{id}}, {now_sql}, NULL) ON CONFLICT(kind, campaign_id, id) DO UPDATE SET "
                   f"queued=CASE WHEN ended IS NULL THEN queued ELSE {now_sql} END, ended=NULL")
         con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_item_queued AFTER UPDATE OF status, redo ON campaign_items
-            WHEN (OLD.redo IS NULL AND NEW.redo IS NOT NULL) OR (OLD.status IN ('done','skipped','failed') AND NEW.status IN ('pending','running'))
+            WHEN (OLD.redo IS NULL AND NEW.redo IS NOT NULL) OR (OLD.status IN ('done','skipped','failed','hidden') AND NEW.status IN ('pending','running'))
             BEGIN INSERT INTO again_marks {opened.format(kind="'item'", cid="NEW.campaign_id", id="source_id")}; END""")
         con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_item_ended AFTER UPDATE OF status ON campaign_items
-            WHEN NEW.status IN ('done','skipped','failed') BEGIN UPDATE again_marks SET ended={now_sql}
+            WHEN NEW.status IN ('done','skipped','failed','hidden') BEGIN UPDATE again_marks SET ended={now_sql}
               WHERE kind='item' AND campaign_id=NEW.campaign_id AND id=NEW.source_id AND ended IS NULL; END""")
         con.execute(f"""CREATE TRIGGER IF NOT EXISTS again_project_queued AFTER UPDATE OF status ON projects
             WHEN NEW.status IN ('queued','running','harvesting') AND COALESCE(OLD.status, 'new') NOT IN ('new','queued','running','harvesting')
@@ -448,6 +450,18 @@ def init_db() -> None:
             con.execute("ALTER TABLE meshes ADD COLUMN preferred REAL")
         if "hidden" not in cols:        # why an editor hid it from visitors as a failure (hide_mesh()), NULL while shown
             con.execute("ALTER TABLE meshes ADD COLUMN hidden TEXT")
+        # an area's climb done with a mesh that's hidden as a failure (hide_mesh()) is hidden, however it came to be done
+        # with it (hidden itself, harvested again with nothing new, done with another of its meshes)
+        con.execute("DROP TRIGGER IF EXISTS campaign_item_hidden")
+        con.execute(f"""CREATE TRIGGER campaign_item_hidden AFTER UPDATE OF status, mesh_id ON campaign_items
+            WHEN NEW.status='done' AND EXISTS (SELECT 1 FROM meshes WHERE id=NEW.mesh_id AND hidden IS NOT NULL) BEGIN
+              UPDATE campaign_items SET status='hidden', note='{HIDDEN_NOTE}' || (SELECT hidden FROM meshes WHERE id=NEW.mesh_id)
+                WHERE campaign_id=NEW.campaign_id AND source_id=NEW.source_id;
+            END""")
+        # those failed by a hidden mesh, before 'hidden' was a status of its own: hidden, with the mesh's reason as it is now
+        con.execute("UPDATE campaign_items SET status='hidden', note=? || (SELECT hidden FROM meshes WHERE id=mesh_id) "
+                    "WHERE (status='hidden' OR (status='failed' AND note LIKE ?)) AND mesh_id IN (SELECT id FROM meshes WHERE hidden IS NOT NULL)",
+                    (HIDDEN_NOTE, HIDDEN_NOTE + "%"))
         cols = {r[1] for r in con.execute("PRAGMA table_info(projects)")}
         for c in ("device", "app"):     # what took its photos: the phone, and the app if one of ours (note_device())
             if c not in cols:
@@ -844,23 +858,25 @@ HIDDEN_NOTE = "its mesh was hidden as a failure: "
 
 def hide_mesh(mid: str, why: str | None) -> tuple[dict, int]:
     """Hide a mesh from visitors as a failure (a photo on a card, say), or show it again (why None). Editors still see
-    it, tagged so. The area climbs it's the mesh of are failed with why, so that Retry failed meshes them again; shown
-    again, those it failed are done again.
+    it, tagged so. The area climbs it's the mesh of are hidden too (status 'hidden', why in their note; hidden again,
+    their note takes the new why): counted apart from the meshed and the failed, left alone by Retry failed, and meshed
+    again only by what makes another mesh (Rebuild, new photos, a remake of what a change touches). Shown again, they're
+    done again.
 
     Returns:
-        The response, and its HTTP status.
+        The response (climbs: how many area climbs it's the mesh of), and its HTTP status.
     """
     if not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True):
         return {"error": "not found"}, 404
     q("UPDATE meshes SET hidden=? WHERE id=?", why, mid, write=True)
     if why:
-        where, args = "mesh_id=? AND status='done'", (mid,)
-        n = q(f"SELECT COUNT(*) n FROM campaign_items WHERE {where}", *args, one=True)["n"]
-        q(f"UPDATE campaign_items SET status='failed', note=?, updated=? WHERE {where}", HIDDEN_NOTE + why, time.time(), *args, write=True)
+        n = q("SELECT COUNT(*) n FROM campaign_items WHERE mesh_id=? AND status IN ('done','hidden')", mid, one=True)["n"]
+        q("UPDATE campaign_items SET note=? WHERE mesh_id=? AND status='hidden'", HIDDEN_NOTE + why, mid, write=True)
+        q("UPDATE campaign_items SET status='hidden', note=?, updated=? WHERE mesh_id=? AND status='done'", HIDDEN_NOTE + why, time.time(),
+          mid, write=True)
     else:
-        where, args = "mesh_id=? AND status='failed' AND note LIKE ?", (mid, HIDDEN_NOTE + "%")
-        n = q(f"SELECT COUNT(*) n FROM campaign_items WHERE {where}", *args, one=True)["n"]
-        q(f"UPDATE campaign_items SET status='done', note=NULL, updated=? WHERE {where}", time.time(), *args, write=True)
+        n = q("SELECT COUNT(*) n FROM campaign_items WHERE mesh_id=? AND status='hidden'", mid, one=True)["n"]
+        q("UPDATE campaign_items SET status='done', note=NULL, updated=? WHERE mesh_id=? AND status='hidden'", time.time(), mid, write=True)
     meshes_changed()
     return {"hidden": why, "climbs": n}, 200
 
@@ -3685,7 +3701,7 @@ def old_climbs(fresh: bool = False) -> dict:
         if m["boulder"] and not mesh_is_old(m):
             remade |= set(((viewpoints.load(MESHES / m["id"]) or {}).get("climbs") or {}))
     tried: dict[str, str] = {}
-    for r in q("SELECT climb_id, status, note FROM campaign_items WHERE climb_id IS NOT NULL AND status IN ('done','skipped','failed') "
+    for r in q("SELECT climb_id, status, note FROM campaign_items WHERE climb_id IS NOT NULL AND status IN ('done','skipped','failed','hidden') "
                "AND ((COALESCE(rerun_rules, 0)>=? AND COALESCE(old_rerun, 0)=0) OR (updated>=? AND COALESCE(note,'') NOT LIKE ?)) "
                "ORDER BY updated", MESH_RULES, since, ALREADY):
         tried[r["climb_id"]] = f"{r['status']} in its area since" + (f": {r['note']}" if r["note"] else "")
@@ -3723,7 +3739,7 @@ def queue_old(camp: dict) -> int:
     if not waiting:
         return 0
     rows = q("SELECT ci.source_id, ci.status, ci.climb_id, ci.project_id, p.status AS pstatus FROM campaign_items ci "
-             "LEFT JOIN projects p ON p.id=ci.project_id WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') "
+             "LEFT JOIN projects p ON p.id=ci.project_id WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed','hidden') "
              "AND ci.redo IS NULL AND ci.climb_id IS NOT NULL AND COALESCE(ci.rerun_rules, 0)<? AND ci.blocked IS NULL",
              camp["id"], MESH_RULES)
     n = 0
@@ -4526,7 +4542,7 @@ def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
             "roi": "OpenMVS cropped it to a region it guessed", "collapsed": "it placed some photos collapsed, shrunk to a speck",
             "vggt": "its photos needed VGGT, which couldn't run where it was made",
             "clip": "it was made from photos its filter now rejects"}[tier]
-    free = "ci.status IN ('done','skipped','failed') AND ci.redo IS NULL AND ci.blocked IS NULL"
+    free = "ci.status IN ('done','skipped','failed','hidden') AND ci.redo IS NULL AND ci.blocked IS NULL"
     for mid in dict.fromkeys(mids):
         rec = meshinputs.load(MESHES / mid) or {}
         kind, pid = rec.get("kind"), rec.get("project")
@@ -5281,8 +5297,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         keep_timings(mid, pid, started, log_from, tracker, remote)
         log("done")
         q("UPDATE projects SET status='done', mesh_id=?, demo=? WHERE id=?", current, int(demo), pid, write=True)
-        q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status='failed'",
-          current, time.time(), pid, write=True)   # made by hand since its area gave up on it
+        q("UPDATE campaign_items SET status='done', mesh_id=?, retry=0, note=NULL, updated=? WHERE project_id=? AND status IN ('failed','hidden')",
+          current, time.time(), pid, write=True)   # made by hand since its area gave up on it, or its mesh was hidden
         if not demo and not worse:
             if not (carried and (scale_mod.load(MESHES / mid) or {}).get("status") == "done"):     # its size, carried over
                 queue_scale(mid)
@@ -5944,7 +5960,7 @@ def reprocess_whole(climb_id: str, what: str, sources: list[str] | None = None) 
              "ORDER BY c.created DESC LIMIT 1", climb_id, one=True)
     if item:
         cid = item["campaign_id"]
-        if item["status"] not in ("done", "skipped", "failed") or item["pstatus"] in ("queued", "running", "harvesting"):
+        if item["status"] not in ("done", "skipped", "failed", "hidden") or item["pstatus"] in ("queued", "running", "harvesting"):
             return {"error": "its area is working on it now: try again once it's through"}, 409
         redo = WHOLE_REDO[what]
         if what == "rebuild" and rebuild_boulders(cid, [item]):
@@ -6682,7 +6698,7 @@ def join_climb(camp_id: str, source_id: str, pid: str, climb_id: str, leaf: str)
     harvested; rather than mesh it on its own first, which its pool's mesh would hide. Returns whether it was left so."""
     others = {r["climb_id"]: r["name"] for r in q(
         "SELECT climb_id, name FROM campaign_items WHERE campaign_id=? AND boulder=? AND source_id!=? AND climb_id IS NOT NULL "
-        "AND status IN ('done','skipped','failed','harvested')", camp_id, leaf, source_id)}
+        "AND status IN ('done','skipped','failed','hidden','harvested')", camp_id, leaf, source_id)}
     match = None
     for r in q("SELECT a, b FROM climb_links WHERE pairs >= ? AND (a=? OR b=?) ORDER BY pairs DESC", relevance_mod.LINK_MIN_PAIRS,
                climb_id, climb_id):
@@ -6969,7 +6985,7 @@ def _settle_late(key: str) -> int:
     if videos_moving(harvests) or harvests_busy(climbs) or late_wait(key, harvests):
         return 0
     what = "what volunteers fetched for its climbs after it was made" if late else "the videos of its climbs it waited for"
-    through = sorted((i for i in items if i["status"] in ("done", "skipped", "failed")),
+    through = sorted((i for i in items if i["status"] in ("done", "skipped", "failed", "hidden")),
                      key=lambda i: ({"running": 0, "done": 1}.get(i["area"], 2), i["rank"]))
     if through:
         i = through[0]
@@ -7943,7 +7959,8 @@ def halt_job(pid: str, stop: bool = True) -> tuple[list[dict], list]:
 
 
 ITEM_STATES = {"pending": "still to go", "running": "in progress", "waiting": "waiting for volunteers' YouTube searches and videos",
-               "harvested": "harvested, waiting for the rest of its boulder's", "done": "meshed", "skipped": "skipped", "failed": "failed"}
+               "harvested": "harvested, waiting for the rest of its boulder's", "done": "meshed", "skipped": "skipped", "failed": "failed",
+               "hidden": "hidden"}
 OWN_REDOS = ("harvest", "videos", "more", "new", "refilter", "rebuild", "rebuild-changed", "try-skipped", "own", "add")   # done in a climb's own project
 MESHES_FOR = ("boulder", "pool", "cluster")     # done in the project of the climb's boulder, or of a group of climbs
 
@@ -8044,7 +8061,7 @@ def project_effects(pid: str) -> dict | None:
     own = _area_items("ci.project_id=?", pid)
     for i in own:
         first, what = redo_head(i["redo"]), f"In {i['area']}, {i['name']}"
-        if i["status"] in ("done", "skipped", "failed"):
+        if i["status"] in ("done", "skipped", "failed", "hidden"):
             says.append(f"{what} stays {ITEM_STATES[i['status']]}{', with its mesh' if i['mesh_id'] else ''}. The area's Harvest "
                         "again and Rebuild leave it out from then on, with no harvest of it to go by.")
         elif first == "cluster":
@@ -8101,10 +8118,10 @@ def delete_project(pid: str) -> tuple[dict, int]:
         return {"error": f"Not deleted: {fx['delete']['blocked']}."}, 409
     for i in _area_items("ci.project_id=?", pid):
         first, at = redo_head(i["redo"]), (i["campaign_id"], i["source_id"])
-        if i["status"] in ("done", "skipped", "failed") or first in MESHES_FOR:
+        if i["status"] in ("done", "skipped", "failed", "hidden") or first in MESHES_FOR:
             set_item(*at, project_id=None)
         elif i["mesh_id"] and first in OWN_REDOS:
-            set_item(*at, status=i["was"] if i["was"] in ("done", "skipped", "failed") else "done", project_id=None, redo=None,
+            set_item(*at, status=i["was"] if i["was"] in ("done", "skipped", "failed", "hidden") else "done", project_id=None, redo=None,
                      retry=0, redo_started=0, changed=0, waiting_since=None,
                      note=f"its project was deleted, so it wasn't to {REDO_NAMES.get(i['redo'], first)} after all")
         else:
@@ -8151,7 +8168,7 @@ def boulders_to_mesh(camp_id: str) -> list[dict]:
     through, whose own mesh hasn't been made or queued: each one's highest-ranked climb that's been through, to queue it
     on."""
     rows = q("""SELECT ci.source_id, ci.boulder, ci.rank, ci.climb_id FROM campaign_items ci
-                WHERE ci.campaign_id=? AND ci.boulder IS NOT NULL AND ci.status IN ('done','skipped','failed') AND ci.redo IS NULL
+                WHERE ci.campaign_id=? AND ci.boulder IS NOT NULL AND ci.status IN ('done','skipped','failed','hidden') AND ci.redo IS NULL
                   AND NOT EXISTS (SELECT 1 FROM campaign_items z WHERE z.boulder=ci.boulder AND z.redo IN ('boulder','boulder+again','pool'))
                 ORDER BY ci.rank""", camp_id)
     have = {r["boulder"] for r in q("SELECT boulder FROM projects WHERE kind='boulder'")}
@@ -8235,7 +8252,7 @@ def queue_redo(camp_id: str, what: str) -> int:
 def redo_rows(camp_id: str, what: str) -> list[dict]:
     """An area's climbs that queue_redo() queues for what (not "try-skipped": triable()), in the area's order."""
     return q("SELECT ci.source_id, ci.status, ci.boulder, ci.climb_id FROM campaign_items ci JOIN projects p ON p.id=ci.project_id "
-             "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed') AND p.status NOT IN ('queued','running','harvesting')"
+             "WHERE ci.campaign_id=? AND ci.status IN ('done','skipped','failed','hidden') AND p.status NOT IN ('queued','running','harvesting')"
              + ("" if what.split("+")[0] in ("harvest", "videos", "more", "new") else " AND p.harvest IS NOT NULL")
              + (" AND ci.changed=1" if what == "rebuild-changed" else "") + " ORDER BY ci.rank", camp_id)
 
@@ -8515,7 +8532,7 @@ def settle_all_clusters(camp_id: str) -> int:
         by.setdefault(r["boulder"], []).append(r)
     queued = 0
     for leaf, items in by.items():
-        if not any(i["status"] in ("done", "skipped", "failed", "harvested") for i in items):
+        if not any(i["status"] in ("done", "skipped", "failed", "hidden", "harvested") for i in items):
             continue
         if _settled.get((camp_id, leaf)) == _settle_seen(items):
             continue
@@ -8553,7 +8570,7 @@ def settle_clusters(camp_id: str, leaf: str, kinds: dict | None = None, items: l
     # those harvested to join a pool (join_climb()) are through, for this
     if any(i["status"] in ("pending", "running", "waiting") or i["redo"] for i in due):
         return 0
-    ids = [i["climb_id"] for i in items if i["status"] in ("done", "skipped", "failed", "harvested") and i["climb_id"]
+    ids = [i["climb_id"] for i in items if i["status"] in ("done", "skipped", "failed", "hidden", "harvested") and i["climb_id"]
            and climb_harvests(i["climb_id"])]
     queued, grouped = 0, set()
     for group in clusters(ids) if len(ids) >= 2 else []:
@@ -14520,9 +14537,11 @@ class Handler(BaseHTTPRequestHandler):
                            "AND m.replaced_by IS NULL ORDER BY m.created DESC LIMIT 1", item["climb_id"], m[1], one=True)
                          or q("SELECT m.id, m.name FROM meshes m JOIN climbs c ON m.boulder=c.area_path WHERE c.id=? AND m.id!=? "
                               "AND m.replaced_by IS NULL ORDER BY m.created DESC LIMIT 1", item["climb_id"], m[1], one=True))
-                q("UPDATE campaign_items SET mesh_id=?, note=? WHERE campaign_id=? AND source_id=?", other and other["id"],
+                # one hidden with it: done with the other (hidden again by its trigger, if that's hidden too), or failed
+                q("UPDATE campaign_items SET mesh_id=?, note=?, status=CASE WHEN status='hidden' THEN ? ELSE status END "
+                  "WHERE campaign_id=? AND source_id=?", other and other["id"],
                   f"its mesh was deleted: done with {other['name']}" if other else "its mesh was deleted",
-                  item["campaign_id"], item["source_id"], write=True)
+                  "done" if other else "failed", item["campaign_id"], item["source_id"], write=True)
             keep_gone(m[1])     # for its /m/ links
             q("DELETE FROM meshes WHERE id=?", m[1], write=True)
             q("DELETE FROM mesh_links WHERE mesh_id=?", m[1], write=True)
@@ -14969,7 +14988,7 @@ def research_one(r: dict) -> None:
         log("no videos its harvest didn't have")
         return
     item = q("SELECT status, redo FROM campaign_items WHERE campaign_id=? AND source_id=?", r["campaign_id"], r["source_id"], one=True)
-    if item and item["status"] in ("done", "skipped", "failed") and not item["redo"]:
+    if item and item["status"] in ("done", "skipped", "failed", "hidden") and not item["redo"]:
         log(f"{plural(len(new), 'new video')}: queued to add them to its photos and mesh again, after everything else")
         set_item(r["campaign_id"], r["source_id"], status="pending", retry=0, redo="more+rebuild", was=item["status"],
                  redo_started=0, old_rerun=2, note=f"queued to add {plural(len(new), 'new video')} a newer YouTube search found")
@@ -15073,7 +15092,7 @@ def reharvest_with_videos(pid: str) -> bool:
                      redo_started=0, note="volunteers have fetched more for it: adding it to its photos for its boulder's mesh")
         if item["status"] in ("waiting", "harvested"):     # its area may have finished meanwhile (following())
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)
-        elif item["status"] in ("done", "skipped", "failed"):
+        elif item["status"] in ("done", "skipped", "failed", "hidden"):
             set_item(item["campaign_id"], item["source_id"], status="pending", retry=1, redo="more+rebuild", was=item["status"],
                      redo_started=0, note="queued to add the videos volunteers fetched to its photos")
             q("UPDATE campaigns SET status='running', only_retries=1, note=NULL WHERE id=? AND status='done'", item["campaign_id"], write=True)

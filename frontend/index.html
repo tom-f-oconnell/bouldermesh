@@ -3495,7 +3495,7 @@ function workTag(w) {
   if (w.kept) return `<span class="tag" title="Kept from before a restart, for the project to take up when it carries on (Retry, or its area's run): no machine is given it until then${w.drop_at ? `. Dropped at ${new Date(w.drop_at * 1000).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} if nothing has` : ''}">${what}, kept for a retry</span>`;
   return `<span class="tag" title="waiting for a machine">${what}, waiting</span>`;
 }
-const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs', done: 'meshed', failed: 'failed', skipped: 'skipped' };
+const AREA_ITEM = { pending: 'waiting its turn', running: 'being meshed now', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs', done: 'meshed', failed: 'failed', skipped: 'skipped', hidden: 'its mesh is hidden' };
 // The boulder a climb is on: its own mesh, made from the photos of every climb on it, seen from where this climb's own
 // photos were taken; meshes an area linked this climb to that were made for another climb on it; and the other climbs.
 // A mesh of several climbs' photos (a boulder's, of what a boulder's left out, or a pool's: climbs whose photos match): how
@@ -3842,7 +3842,7 @@ const BUSY = ['queued', 'running', 'harvesting'], RETRYABLE = ['failed', 'stoppe
 // a project made for an area: which, and what it is there (a climb's own harvest, with how that climb stands on the
 // list, or the mesh of its boulder, a group of its climbs, or what a boulder's mesh left out)
 const AREA_STATES = { pending: 'still to go', running: 'in progress', waiting: 'waiting for volunteers\' YouTube searches and videos',
-                      harvested: 'harvested, waiting for the climbs it\'s meshed with', done: 'meshed', skipped: 'skipped', failed: 'failed' };
+                      harvested: 'harvested, waiting for the climbs it\'s meshed with', done: 'meshed', skipped: 'skipped', failed: 'failed', hidden: 'its mesh is hidden' };
 const AREA_KINDS = { boulder: 'the mesh of its boulder', group: 'the mesh of a group of its climbs whose photos match',
                      rest: 'the mesh of what its boulder\'s mesh left out' };
 function projectAreasHtml(p){
@@ -4032,7 +4032,7 @@ $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create
 
 // ---------------------------------------------------------------- areas
 const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
-const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs' };
+const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', hidden: 'hidden', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null, meshMark = '';
 const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h1.5"/></svg>';
@@ -4142,7 +4142,7 @@ async function refreshCampaigns(kept = null){
       const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(c.name)}</a></b>
         <button class="copy" title="Copy its Mountain Project link, to enter it again above" aria-label="Copy its Mountain Project link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(named(i, true))}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(named(i, true))}</a>`}</span><small>${stars(i.stars)}${wentHtml(i)}</small>
-        <span>${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
+        <span>${i.mesh_id && i.status === 'hidden' ? '<span class="status hidden-mesh">hidden</span> ' : ''}${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
       const tip = { queued: 'Running, but waiting its turn: no worker is free for it. Areas are taken in the order they were entered, top first.',
                     'low priority': `Only remaking its old meshes, in the background, as no area has anything else to take. ${c.status === 'running' ? 'Its own list has nothing left to go.' : `Its own list stays ${c.status}.`}`,
@@ -4165,9 +4165,9 @@ async function refreshCampaigns(kept = null){
       d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="statcol"><span class="status ${st.cls}" title="${esc(st.tip)}">${esc(st.label)}</span>${c.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}${offloadedTag(c.away_bytes, "its climbs' photos and videos were", 'Resuming')}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>
         ${c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
-        <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
-        ${(() => { const fin = (n.done || 0) + (n.skipped || 0) + (n.failed || 0), all = fin + left + (n.waiting || 0) + (n.harvested || 0);
-          return all ? `${countBar(fin / all)}<small>${fin}/${all} climbs finished (meshed, skipped or failed)</small>` : ''; })()}
+        <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed${n.hidden ? ` · <span title="Their mesh was hidden from visitors as a failure. Retry failed leaves them: they're meshed again by Rebuild, by new photos, or when a change to how meshes are made touches them.">${n.hidden} hidden</span>` : ''} · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within half an hour)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
+        ${(() => { const fin = (n.done || 0) + (n.skipped || 0) + (n.failed || 0) + (n.hidden || 0), all = fin + left + (n.waiting || 0) + (n.harvested || 0);
+          return all ? `${countBar(fin / all)}<small>${fin}/${all} climbs finished (meshed, skipped, failed or hidden)</small>` : ''; })()}
         ${againBar(c.again_progress)}
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
@@ -4177,7 +4177,7 @@ async function refreshCampaigns(kept = null){
           ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
           <button class="sm sec lowprio" title="${c.low_priority ? 'Back in turn with the other areas: its climbs, and its projects\' jobs here and on the machines' : 'After everyone else\'s: its climbs are taken, and its projects\' jobs (here and on the machines) run, only when nothing else is waiting. Kept over restarts.'}">${c.low_priority ? 'Regular priority' : 'Low priority'}</button>
           ${n.failed && c.status !== 'stopping' ? `<button class="sm sec retryfailed" title="${c.status === 'running' ? 'They go next, each from the last step it finished' : 'Only these run, each from the last step it finished, and then it stops'}">Retry ${n.failed} failed</button>` : ''}
-          ${c.status !== 'stopping' && (n.done || n.skipped || n.failed) ? `<button class="sm sec checknew" title="Looks in every source again for each climb, and downloads only the photos and videos it hadn't found before; what it has, and the filter's verdicts, stay. Then Rebuild changed makes meshes with what's new.">Check for new photos</button>
+          ${c.status !== 'stopping' && (n.done || n.skipped || n.failed || n.hidden) ? `<button class="sm sec checknew" title="Looks in every source again for each climb, and downloads only the photos and videos it hadn't found before; what it has, and the filter's verdicts, stay. Then Rebuild changed makes meshes with what's new.">Check for new photos</button>
           <button class="sm sec checknewrebuild" title="As Check for new photos, and each climb whose photos changed is meshed again straight after, once the YouTube videos its searches found have come from volunteers: a boulder meshed whole is meshed again from all its climbs' photos, and pools with a changed climb are meshed together again.">Check for new photos, then rebuild</button>
           <button class="sm sec refilter" title="Has the filter judge every climb's photos again from scratch, as after it's improved, keeping those put back by hand. Nothing is downloaded. Then Rebuild changed makes meshes from what it keeps.">Judge photos again</button>
           <button class="sm sec rebuildchanged" ${c.again.changed ? '' : 'disabled'} title="Meshes the climbs whose photos changed when harvested again: a boulder meshed whole is meshed again from all its climbs\' photos, and pools of climbs with a changed one are meshed together again. Older meshes stay, as older versions.">Rebuild ${c.again.changed || ''} changed</button>
@@ -4659,7 +4659,7 @@ function showRate(changed = false){
   if (!h.hidden) {
     h.textContent = m.hidden ? 'Show to visitors' : 'Hide as a failure';
     h.title = m.hidden ? `Hidden as: ${m.hidden}. Shows it to visitors again, and its climbs this failed as meshed again`
-      : 'Hides it from visitors (editors still see it) and fails its climbs in their areas, so that Retry failed meshes them again. Your comment above is the reason it starts with.';
+      : 'Hides it from visitors (editors still see it) and marks its climbs hidden in their areas, with this reason: counted apart from the failed, and left by Retry failed. Your comment above is the reason it starts with.';
     h.onclick = () => { flushRating(); hideAsFailure(m); };
   }
   if (changed) { showAvg(meshesById[id]?.rating); $('#ratestate').textContent = ''; }
@@ -4754,7 +4754,7 @@ function renderMeshes(filter = true){
     if (editor) {    // hidden from visitors as a failure (a photo on a card, say), its climbs failed; or shown again
       const b = document.createElement('button'); b.className = 'sm sec w'; b.textContent = m.hidden ? 'Show to visitors' : 'Hide as a failure';
       b.title = m.hidden ? `Hidden as: ${m.hidden}. Shows it to visitors again, and its climbs this failed as meshed again`
-        : 'Hides it from visitors (editors still see it) and fails its climbs in their areas, so that Retry failed meshes them again';
+        : 'Hides it from visitors (editors still see it) and marks its climbs hidden in their areas, with the reason: counted apart from the failed, and left by Retry failed';
       b.onclick = () => hideAsFailure(m);
       d.querySelector('.chips').before(b);
     }

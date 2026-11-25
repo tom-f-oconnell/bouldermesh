@@ -1580,7 +1580,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /api/campaigns/{id}/boulders                   its boulders with more than one climb, each meshed from all their photos
     GET  /api/videos                                    every video, with the climber's size if stated
     POST /api/meshes/{id}/make-current                  go back to an older version of a rebuilt mesh
-    POST /api/meshes/{id}/hide {why}                    hide it from visitors as a failure, its area climbs failed ({why: null}: show it)
+    POST /api/meshes/{id}/hide {why}                    hide it from visitors as a failure, its area climbs hidden with why ({why: null}: show it)
     POST /api/meshes/{id}/label {label}                 what an editor says it is: rock, card, landscape, ground, indoor or other (null: forget)
     GET  /api/labels                                    editors: every current mesh, its label and shape measures, for /label
     GET|POST /api/meshes/{id}/beta                      the holds found in its videos (off: beyond a reach of its climb's line; found_role: its role before the line gave it another), and those marked; POST finds them

@@ -4062,24 +4062,44 @@ finally:
     server.q("DELETE FROM projects WHERE id LIKE 'ap00000000%'", write=True)
     server.q("DELETE FROM again_marks", write=True)
 print("work done again, counted OK")
-# a mesh hidden as a failure: visitors' counts leave it out, its area climbs fail (Retry failed meshes them again), and
-# shown again, those it failed are done again
+# a mesh hidden as a failure: its area climbs are hidden with its reason (counted apart, left by Retry failed, the reason
+# kept up with the mesh's), a climb that comes to be done with it is hidden too, and shown again, they're done again
 server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('hd0000000001','Hide Area','0','popularity',?,'stopped')",
          time.time(), write=True)
 server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('hm0000000001','Card','m.glb','project:hp0000000001',?)", time.time(), write=True)
 for sid, status in (("h1", "done"), ("h2", "done"), ("h3", "failed")):
     server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,mesh_id) VALUES('hd0000000001',?,1,?,?,'hm0000000001')",
              sid, sid, status, write=True)
+hidden_items = lambda: {r["source_id"]: r for r in server.q("SELECT source_id, status, note FROM campaign_items WHERE campaign_id='hd0000000001'")}
 try:
     assert server.hide_mesh("nope00000000", "x")[1] == 404
     got, st = server.hide_mesh("hm0000000001", "a photo on a card, not a rock")
     assert st == 200 and got == {"hidden": "a photo on a card, not a rock", "climbs": 2}, got
-    items = {r["source_id"]: r for r in server.q("SELECT source_id, status, note FROM campaign_items WHERE campaign_id='hd0000000001'")}
-    assert items["h1"]["status"] == "failed" and items["h1"]["note"] == server.HIDDEN_NOTE + "a photo on a card, not a rock", items
+    items = hidden_items()
+    assert items["h1"]["status"] == "hidden" and items["h1"]["note"] == server.HIDDEN_NOTE + "a photo on a card, not a rock", items
+    assert items["h3"]["status"] == "failed", "one that failed by itself stays failed"
+    got, st = server.hide_mesh("hm0000000001", "a card, bent")      # hidden again with more to say: their notes say it too
+    assert got["climbs"] == 2 and hidden_items()["h2"]["note"] == server.HIDDEN_NOTE + "a card, bent", hidden_items()
+    view = server.campaign_view(server.q("SELECT * FROM campaigns WHERE id='hd0000000001'", one=True))
+    assert view["counts"].get("hidden") == 2 and view["counts"].get("failed") == 1, view["counts"]
+    assert server.retry_campaign("hd0000000001") == 1, "Retry failed leaves the hidden"
+    assert {k: v["status"] for k, v in hidden_items().items()} == {"h1": "hidden", "h2": "hidden", "h3": "pending"}
+    server.set_item("hd0000000001", "h3", status="done")    # done with the hidden mesh by another way: hidden as well
+    assert hidden_items()["h3"]["status"] == "hidden" and hidden_items()["h3"]["note"] == server.HIDDEN_NOTE + "a card, bent"
+    server.set_item("hd0000000001", "h3", status="failed", note="failed by itself")
     got, st = server.hide_mesh("hm0000000001", None)
     assert got["climbs"] == 2 and server.q("SELECT hidden FROM meshes WHERE id='hm0000000001'", one=True)["hidden"] is None
-    items = {r["source_id"]: r["status"] for r in server.q("SELECT source_id, status FROM campaign_items WHERE campaign_id='hd0000000001'")}
-    assert items == {"h1": "done", "h2": "done", "h3": "failed"}, "only those it failed are done again"
+    items = hidden_items()
+    assert {k: v["status"] for k, v in items.items()} == {"h1": "done", "h2": "done", "h3": "failed"}, "only those it hid are done again"
+    assert items["h1"]["note"] is None
+    # those failed by a hidden mesh before 'hidden' was a status: hidden as the server starts, with the mesh's reason now
+    server.q("UPDATE meshes SET hidden='in two pieces' WHERE id='hm0000000001'", write=True)
+    server.q("UPDATE campaign_items SET status='failed', note=? WHERE campaign_id='hd0000000001' AND source_id='h1'",
+             server.HIDDEN_NOTE + "two pieces", write=True)
+    server.init_db()
+    items = hidden_items()
+    assert items["h1"]["status"] == "hidden" and items["h1"]["note"] == server.HIDDEN_NOTE + "in two pieces", items
+    assert items["h2"]["status"] == "done" and items["h3"]["status"] == "failed", items
 finally:
     server.q("DELETE FROM campaign_items WHERE campaign_id='hd0000000001'", write=True)
     server.q("DELETE FROM campaigns WHERE id='hd0000000001'", write=True)
