@@ -246,8 +246,14 @@ def init_db() -> None:
           id TEXT PRIMARY KEY, name TEXT, area_id TEXT, ord TEXT, created REAL, note TEXT,
           status TEXT,                 -- running | stopping | stopped | done
           only_retries INTEGER DEFAULT 0);   -- run only its retries, and then stop
-        -- a boulder or climb held up by videos volunteers are still fetching: since when, how many, when the phone was told
-        CREATE TABLE IF NOT EXISTS video_holds(key TEXT PRIMARY KEY, what TEXT, since REAL, coming INTEGER, seen REAL, notified REAL);
+        -- a boulder or climb held up by videos volunteers are still fetching: since when, how many, when the phone was
+        -- last told and at which mark (told_h: hours; very large for a quiet hold, which it isn't told of)
+        CREATE TABLE IF NOT EXISTS video_holds(key TEXT PRIMARY KEY, what TEXT, since REAL, coming INTEGER, seen REAL, notified REAL,
+          told_h REAL);
+        -- holds that ended (hold_ended()): how long each lasted, how many it waited for when last looked at, and how it ended ("came": let go,
+        -- as its videos came or were given up on; "gone": nothing looked at it for an hour)
+        CREATE TABLE IF NOT EXISTS hold_log(key TEXT, what TEXT, since REAL, ended REAL, coming INTEGER, quiet INTEGER, how TEXT);
+        CREATE INDEX IF NOT EXISTS hold_log_ended ON hold_log(ended);
         -- a boulder's or pool's mesh whose climbs' harvests had volunteers' videos added since their photos were last pooled
         -- (note_late()): when the first and the last of them came, until it's meshed again with them (settle_late())
         CREATE TABLE IF NOT EXISTS late_photos(key TEXT PRIMARY KEY, first REAL, last REAL);
@@ -303,6 +309,10 @@ def init_db() -> None:
         if "boulder" not in cols:   # a mesh of a whole boulder (a boulder project's): the area path of its climbs
             con.execute("ALTER TABLE meshes ADD COLUMN boulder TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS meshes_boulder ON meshes(boulder)")    # its climbs' count of them (MESH_COUNT)
+        cols = {r[1] for r in con.execute("PRAGMA table_info(video_holds)")}
+        if "told_h" not in cols:    # holds told of before marks were kept: quiet ones (told as made) never, others at the first
+            con.execute("ALTER TABLE video_holds ADD COLUMN told_h REAL")
+            con.execute(f"UPDATE video_holds SET told_h=CASE WHEN notified-since<60 THEN {QUIET_MARK} ELSE 2 END WHERE notified IS NOT NULL")
         cols = {r[1] for r in con.execute("PRAGMA table_info(campaigns)")}
         if "only_retries" not in cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN only_retries INTEGER DEFAULT 0")
@@ -6827,41 +6837,108 @@ def videos_moving(pids) -> list[dict]:
 
 # ---------------------------------------------------- boulders and climbs held up by their videos (the phone is told)
 _holds_lock = threading.Lock()
+QUIET_MARK = 1e9    # video_holds.told_h of a quiet hold: past every mark, so never told of
+HOLD_MARKS = (1, 3, 6, 12)    # the phone is told at these multiples of videos.hold_alert_hours, then every 12 multiples more
+HOLD_ALERTS_APART = 3       # more holds than this reaching a mark together are told of in one message
 
 
-def hold(key: str, what: str, coming: int, quiet: bool = False) -> None:
+def hold(key: str, what: str, coming: int, quiet: bool = False, since: float | None = None) -> None:
     """A boulder or climb is held up by coming videos: when it first was is kept (video_holds), for hold_alerts(). quiet:
-    held up by something else that ends by itself (settle_boulder()), which the phone isn't told of."""
+    held up by something else that ends by itself (settle_boulder()), which the phone isn't told of. since: when it
+    began waiting, if before now (a climb's waiting_since), kept if earlier than what's kept."""
+    now = time.time()
     with _holds_lock:
-        q("INSERT OR IGNORE INTO video_holds(key, what, since, notified) VALUES(?,?,?,?)", key, what, time.time(),
-          time.time() if quiet else None, write=True)
-        q("UPDATE video_holds SET coming=?, seen=? WHERE key=?", coming, time.time(), key, write=True)
+        q("INSERT OR IGNORE INTO video_holds(key, what, since, notified, told_h) VALUES(?,?,?,?,?)", key, what, since or now,
+          now if quiet else None, QUIET_MARK if quiet else None, write=True)
+        q("UPDATE video_holds SET coming=?, seen=?, since=min(since, ?) WHERE key=?", coming, now, since or now, key, write=True)
+
+
+def hold_ended(row: dict, ended: float, how: str) -> None:
+    """Keep how long a hold lasted (hold_log), for the day's summary (hold_note())."""
+    q("INSERT INTO hold_log(key, what, since, ended, coming, quiet, how) VALUES(?,?,?,?,?,?,?)", row["key"], row["what"],
+      row["since"], ended, row["coming"], int((row.get("told_h") or 0) >= QUIET_MARK), how, write=True)
 
 
 def unhold(key: str, log=None) -> None:
     with _holds_lock:
-        row = q("SELECT since FROM video_holds WHERE key=?", key, one=True)
+        row = q("SELECT * FROM video_holds WHERE key=?", key, one=True)
         if row:
             q("DELETE FROM video_holds WHERE key=?", key, write=True)
+            hold_ended(row, time.time(), "came")
             if log:
                 log(f"held up by its videos for {(time.time() - row['since']) / 3600:.1f} h")
 
 
+def hold_mark(hours: float, after: float | None) -> float:
+    """The next mark past after (hours; None: none told yet) at which the phone is told of a hold: HOLD_MARKS times
+    hours, then every 12 times hours more (2, 6, 12, 24, 48, 72... for 2)."""
+    marks = [m * hours for m in HOLD_MARKS]
+    for m in marks:
+        if after is None or m > after + 1e-9:
+            return m
+    step = HOLD_MARKS[-1] * hours
+    return (int(after / step + 1e-9) + 1) * step
+
+
 def hold_alerts() -> int:
-    """Say on the phone, once each, which boulders and climbs videos have held up longer than videos.hold_alert_hours,
-    and let go of holds nothing has looked at in an hour (whatever held them is gone). Returns how many were said."""
+    """Say on the phone which boulders and climbs videos have held up past each of hold_mark()'s marks (the first at
+    videos.hold_alert_hours), once each, and let go of holds nothing has looked at in an hour (whatever held them is
+    gone), keeping how long they lasted. Returns how many were said."""
     hours = float(settings().get("videos.hold_alert_hours") or 0)
-    q("DELETE FROM video_holds WHERE seen < ?", time.time() - 3600, write=True)
+    with _holds_lock:
+        for r in q("SELECT * FROM video_holds WHERE seen < ?", time.time() - 3600):
+            q("DELETE FROM video_holds WHERE key=?", r["key"], write=True)
+            hold_ended(r, r["seen"] or r["since"], "gone")
     if hours <= 0:
         return 0
-    rows = q("SELECT * FROM video_holds WHERE notified IS NULL AND since < ?", time.time() - hours * 3600)
-    for r in rows:
-        q("UPDATE video_holds SET notified=? WHERE key=?", time.time(), r["key"], write=True)
+    now, told = time.time(), []
+    for r in q("SELECT * FROM video_holds WHERE COALESCE(told_h, 0) < ? AND since < ? ORDER BY since", QUIET_MARK, now - hours * 3600):
+        waited = (now - r["since"]) / 3600
+        mark = hold_mark(hours, r["told_h"])
+        if waited < mark:
+            continue
+        while hold_mark(hours, mark) <= waited:     # past several marks at once (as after a restart): told once, at the last
+            mark = hold_mark(hours, mark)
+        q("UPDATE video_holds SET notified=?, told_h=? WHERE key=?", now, mark, r["key"], write=True)
+        told.append((r, waited, mark))
+    if not told:
+        return 0
+
+    def one(r: dict, waited: float) -> tuple[str, str]:
+        return ("Videos are still holding up a mesh" if r["told_h"] is not None else "Videos are holding up a mesh",
+                f"{r['what']} has waited {waited:.1f} h for {r['coming']} YouTube video(s) volunteers are still fetching")
+    if len(told) > HOLD_ALERTS_APART:     # many at once (as after a restart): one message for them all
+        messages = [(f"Videos are holding up {len(told)} meshes",
+                     "\n".join(f"{r['what']}: {waited:.1f} h, {r['coming']} video(s)" for r, waited, _ in told),
+                     max(mark for _, _, mark in told))]
+    else:
+        messages = [(*one(r, waited), mark) for r, waited, mark in told]
+    for title, text, mark in messages:
         threading.Thread(target=NOTIFIER.send, args=(
-            "Videos are holding up a mesh", f"{r['what']} has waited {(time.time() - r['since']) / 3600:.1f} h for {r['coming']} "
-            f"YouTube video(s) volunteers are still fetching (given up after {settings().get('videos.give_up_hours')} h with no "
-            "progress)", None, 3, ["hourglass"]), daemon=True).start()
-    return len(rows)
+            title, f"{text}\n(given up after {settings().get('videos.give_up_hours')} h with no progress)", None,
+            4 if mark >= 24 else 3, ["hourglass"]), daemon=True).start()
+    return len(told)
+
+
+def hold_note(now: float | None = None) -> str:
+    """For the day's summary: the boulders and climbs videos hold up now and for how long, and the holds that ended in
+    the last day, by how long they lasted (quiet ones apart: held by harvests, not videos). Empty if neither."""
+    now = now or time.time()
+    out = []
+    live = q("SELECT what, since FROM video_holds WHERE COALESCE(told_h, 0) < ? ORDER BY since", QUIET_MARK)
+    if live:
+        waits = [(now - r["since"]) / 3600 for r in live]
+        held = f"{len(live)} boulders and climbs" if len(live) != 1 else "1 boulder or climb"
+        out.append(f"Videos hold up {held} now: {sum(w >= 12 for w in waits)} for 12 h or more, "
+                   f"{sum(w >= 24 for w in waits)} for a day or more; longest {live[0]['what']}, {waits[0]:.0f} h.")
+    ended = [(r["ended"] - r["since"]) / 3600 for r in q("SELECT since, ended FROM hold_log WHERE ended > ? AND quiet=0", now - 86400)]
+    if ended:
+        ended.sort()
+        bands = [(0, 2), (2, 6), (6, 12), (12, 24), (24, None)]
+        counts = ", ".join(f"{sum(lo <= w < (hi or 1e9) for w in ended)} {f'{lo}-{hi} h' if hi else f'{lo} h+'}" for lo, hi in bands)
+        out.append(f"Holds that ended in the last day: {len(ended)}, median {ended[len(ended) // 2]:.1f} h, longest "
+                   f"{ended[-1]:.0f} h ({counts}).")
+    return " ".join(out)
 
 
 def holds_worker() -> None:
@@ -6871,10 +6948,11 @@ def holds_worker() -> None:
     while True:
         time.sleep(300)
         try:
-            for r in q("SELECT campaign_id, source_id, name, project_id FROM campaign_items WHERE status='waiting' AND project_id IS NOT NULL"):
+            for r in q("SELECT campaign_id, source_id, name, project_id, waiting_since FROM campaign_items WHERE status='waiting' "
+                       "AND project_id IS NOT NULL"):
                 n = VOLUNTEERS.pending("harvest", r["project_id"])
                 if n:
-                    hold(f"climb|{r['campaign_id']}|{r['source_id']}", r["name"], n)
+                    hold(f"climb|{r['campaign_id']}|{r['source_id']}", r["name"], n, since=r["waiting_since"])
             for r in q("SELECT key FROM video_holds WHERE key LIKE 'boulder|%'"):
                 _, camp_id, boulder = r["key"].split("|", 2)
                 settle_boulder(camp_id, boulder)
@@ -7043,7 +7121,8 @@ def wait_for_volunteers(cid: str, sid: str, pid: str, since: float | None) -> No
             "area mesh without")
     set_item(cid, sid, status="waiting", waiting_since=since or time.time(), redo=None, retry=0, redo_started=0, note=note)
     if n:
-        hold(f"climb|{cid}|{sid}", (q("SELECT name FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True) or {}).get("name") or sid, n)
+        hold(f"climb|{cid}|{sid}", (q("SELECT name FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True) or {}).get("name") or sid, n,
+             since=since)
     VOLUNTEERS.resettle("harvest", pid)
 
 
@@ -7051,11 +7130,11 @@ def settle_waiting(camp_id: str, only_old: bool = False) -> None:
     """An area's climbs that have waited for volunteers for VOLUNTEER_WAIT, and whose videos have stopped moving on
     (videos_moving()): harvested again and meshed with what's come. Only those queued again as their meshes are old
     (queue_old()) if only_old."""
-    for r in q("SELECT source_id, project_id, name FROM campaign_items WHERE campaign_id=? AND status='waiting' AND waiting_since<?"
+    for r in q("SELECT source_id, project_id, name, waiting_since FROM campaign_items WHERE campaign_id=? AND status='waiting' AND waiting_since<?"
                f"{' AND old_rerun>=1' if only_old else ''}", camp_id, time.time() - VOLUNTEER_WAIT):
         coming = videos_moving([r["project_id"]]) if r["project_id"] else []
         if coming:      # still moving on: it waits on (videos.give_up_hours without, and it's given up on)
-            hold(f"climb|{camp_id}|{r['source_id']}", r["name"], len(coming))
+            hold(f"climb|{camp_id}|{r['source_id']}", r["name"], len(coming), since=r["waiting_since"])
             continue
         unhold(f"climb|{camp_id}|{r['source_id']}")
         set_item(camp_id, r["source_id"], status="pending", retry=1, redo="more+rebuild", was="waiting", redo_started=0,
@@ -12089,12 +12168,17 @@ def site_health_loop() -> None:
                 pace = volunteer_pace_note()
             except Exception as e:  # noqa: BLE001 - only this line is lost
                 pace = f"(volunteers' pace couldn't be checked: {e})"
+            try:
+                holds = hold_note()
+            except Exception as e:  # noqa: BLE001 - only this line is lost
+                holds = f"(videos' holds couldn't be read: {e})"
             if got:
                 title, text, look = got
-                text = (text + "".join("\n" + x for x in (lists, pace) if x))[:1990]
+                text = (text + "".join("\n" + x for x in (lists, pace, holds) if x))[:1990]
                 NOTIFIER.send(title, text, priority=3 if look or pace else 2, tags=["bar_chart"])
-            elif pace:
-                NOTIFIER.send("Volunteers slower than usual", pace, priority=3, tags=["bar_chart"])
+            elif pace or holds:
+                NOTIFIER.send("Volunteers slower than usual" if pace else "Videos holding up meshes",
+                              "\n".join(x for x in (pace, holds) if x), priority=3 if pace else 2, tags=["bar_chart"])
         except Exception as e:
             print(f"error: the day's summary: {type(e).__name__}: {e}", flush=True)
 

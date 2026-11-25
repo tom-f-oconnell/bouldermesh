@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Boulders and climbs held up by YouTube videos volunteers are still fetching: they wait while those move on, and are
-let go once nothing has for videos.give_up_hours; the phone is told of holds past videos.hold_alert_hours, once; and
+let go once nothing has for videos.give_up_hours; the phone is told of holds past videos.hold_alert_hours, and again
+at later marks; how long each lasted is kept for the day's summary; and
 volunteers are given one boulder's videos before the next's. Offline: the volunteers' broker is a stand-in.
 
     python3 tests/test_video_holds.py
@@ -76,11 +77,37 @@ try:
     assert (row["status"], row["redo"]) == ("pending", "more+rebuild"), row
     print("a climb waiting OK")
 
-    # ---- the phone told of a hold past videos.hold_alert_hours, once; holds nothing looks at go
+    # ---- the phone told of a hold past each mark of videos.hold_alert_hours (2, 6, 12, 24, then every 24 h), once
+    # each; holds nothing looks at go, and how long each lasted is kept
+    assert [server.hold_mark(2, m) for m in (None, 2, 6, 12, 24, 48)] == [2, 6, 12, 24, 48, 72]
     server.hold("climb|a|9", "Crimp Boulder", 3)
     server.q("UPDATE video_holds SET since=? WHERE key='climb|a|9'", now - 3 * 3600, write=True)
     assert server.hold_alerts() == 1 and "Crimp Boulder has waited 3.0 h for 3" in told[-1][1], told
     assert server.hold_alerts() == 0, "once"
+    server.q("UPDATE video_holds SET since=? WHERE key='climb|a|9'", now - 7 * 3600, write=True)
+    assert server.hold_alerts() == 1 and told[-1][0] == "Videos are still holding up a mesh", "again at 6 h"
+    assert server.hold_alerts() == 0
+    server.q("UPDATE video_holds SET since=? WHERE key='climb|a|9'", now - 50 * 3600, write=True)
+    assert server.hold_alerts() == 1 and "50.0 h" in told[-1][1], "past 12, 24 and 48 at once: told once"
+    assert server.q("SELECT told_h FROM video_holds WHERE key='climb|a|9'", one=True)["told_h"] == 48
+    assert server.hold_alerts() == 0
+    server.hold("boulder|a|q", "Quiet", 0, quiet=True)
+    server.q("UPDATE video_holds SET since=? WHERE key='boulder|a|q'", now - 30 * 3600, write=True)
+    assert server.hold_alerts() == 0, "a quiet hold is never told of"
+    server.hold("climb|a|7", "Waited Long", 2, since=now - 40 * 3600)
+    assert server.q("SELECT since FROM video_holds WHERE key='climb|a|7'", one=True)["since"] == now - 40 * 3600, \
+        "a climb's hold begins when it began waiting"
+    server.hold("climb|a|7", "Waited Long", 2, since=now - 3600)
+    assert server.q("SELECT since FROM video_holds WHERE key='climb|a|7'", one=True)["since"] == now - 40 * 3600, "the earliest kept"
+    note = server.hold_note(now)
+    assert "Videos hold up 2 boulders and climbs now: 2 for 12 h or more, 2 for a day or more; longest Crimp Boulder, 50 h" in note, note
+    server.unhold("climb|a|7")
+    for i in range(5):
+        server.hold(f"climb|b|{i}", f"Many {i}", 1, since=now - 3 * 3600)
+    sent = len(told)
+    assert server.hold_alerts() == 5 and len(told) == sent + 1 and told[-1][0] == "Videos are holding up 5 meshes", "together: one message"
+    assert "Many 4: 3.0 h, 1 video(s)" in told[-1][1], told[-1]
+    server.q("DELETE FROM video_holds WHERE key LIKE 'climb|b|%'", write=True)
     server.settings().update({"videos.hold_alert_hours": 0.0})
     server.hold("climb|a|8", "Other", 1)
     server.q("UPDATE video_holds SET since=? WHERE key='climb|a|8'", now - 5 * 3600, write=True)
@@ -88,6 +115,13 @@ try:
     server.q("UPDATE video_holds SET seen=?", now - 7200, write=True)
     server.hold_alerts()
     assert not server.q("SELECT 1 FROM video_holds"), "gone once nothing looks at them"
+    log = {r["key"]: r for r in server.q("SELECT * FROM hold_log")}
+    assert log["climb|a|7"]["how"] == "came" and log["climb|a|9"]["how"] == "gone" and log["boulder|a|q"]["quiet"] == 1, log
+    assert abs(log["climb|a|9"]["ended"] - log["climb|a|9"]["since"] - 48 * 3600) < 60, "gone: ended when last looked at"
+    note = server.hold_note()
+    # with the boulder's (0 h) and climb 2's (30 h, from its waiting_since) above; the quiet one apart
+    assert note.startswith("Holds that ended in the last day: 5, median 30.0 h, longest 48 h (1 0-2 h, 1 2-6 h, 0 6-12 h, "
+                           "0 12-24 h, 3 24 h+)."), note
     print("telling the phone OK")
 
     # ---- volunteers get one boulder's videos before the next's: the one waiting longest first

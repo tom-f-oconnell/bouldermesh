@@ -104,7 +104,7 @@ DEFAULTS = {
     # get work and how much. Machines meshing: whether provisional ones get work (then what they make waits for approval).
     # a boulder (or a climb) whose YouTube videos volunteers are still fetching isn't meshed until they've come, or until
     # none has moved on (wanted, given out, heard of) for videos.give_up_hours; held longer than videos.hold_alert_hours,
-    # it's said on the phone (0: never)
+    # it's said on the phone (0: never), and again at 3, 6 and 12 times that, then every 12 times more (2, 6, 12, 24, 48 h...)
     "videos.give_up_hours": 12.0,
     "videos.hold_alert_hours": 2.0,
     # videos that come after a boulder's or pool's mesh was made: it's made again with them once the rest of what volunteers
