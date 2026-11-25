@@ -18,6 +18,7 @@ in cache/videos/, or one file of a mesh in meshes/<id>/.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -247,6 +248,20 @@ def want_archived(data: Path, q: Q, paths) -> list[str]:
     return asked
 
 
+def move_in(src: Path, dst: Path) -> None:
+    """Move a file the backup sent into its place: by a copy beside it first if that's on another disk (data/cache is,
+    on the server), so that nothing finds it there half copied."""
+    try:
+        os.replace(src, dst)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        part = dst.with_name(dst.name + ".part")    # as a fetch in progress, which the cache passes over
+        shutil.copy2(src, part)
+        os.replace(part, dst)
+        src.unlink()
+
+
 def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[str], None] | None = None) -> list[str]:
     """Put back what the backup sent into the inbox (the handshake's restore), for paths wanted back, offloaded or from
     its archive (each of those then given to came()). Returns them."""
@@ -258,7 +273,7 @@ def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[
         if not src.is_file():
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
-        src.replace(dst)
+        move_in(src, dst)
         q("DELETE FROM archive_wants WHERE path=?", row["path"], write=True)
         back.append(row["path"])
         if came:
@@ -274,14 +289,14 @@ def take_restores(data: Path, q: Q, log: Callable[[str], None], came: Callable[[
             dst.mkdir(parents=True, exist_ok=True)
             for f in src.iterdir():
                 if f.is_file():
-                    os.replace(f, dst / f.name)
+                    move_in(f, dst / f.name)
             shutil.rmtree(src, ignore_errors=True)
             times = [f.stat().st_mtime for f in dst.iterdir() if f.is_file()]
             if times:   # as it was before (the files keep theirs): what compares a harvest's photos with a pool's sees no change
                 os.utime(dst, (max(times), max(times)))
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            src.replace(dst)
+            move_in(src, dst)
         drop(q, [row["path"]])
         back.append(row["path"])
     if back:

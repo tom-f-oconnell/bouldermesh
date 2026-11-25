@@ -7,6 +7,7 @@ so that what wanted them carries on. Offline: the broker is real, the backup a f
 """
 from __future__ import annotations
 
+import errno
 import os
 import pathlib
 import shutil
@@ -48,7 +49,20 @@ try:
     inbox.mkdir(parents=True)
     (inbox / "aaaaaaaaaaa.mp4").write_bytes(b"old video")
     (inbox / "aaaaaaaaaaa.json").write_text("{}")
-    did = server.offload_step()
+    real_replace, crossed = os.replace, []
+
+    def other_disk(src, dst):   # the cache on a disk of its own, as on the server (data/cache): no rename into it
+        if "restore-inbox" in str(src):
+            crossed.append(src)
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(src, dst)
+    os.replace = other_disk
+    try:
+        did = server.offload_step()
+    finally:
+        os.replace = real_replace
+    assert crossed, "the move was across disks"
+    assert not list((D / "cache/videos").glob("*.part")), "and left nothing half done"
     assert sorted(did["back"]) == ["cache/videos/aaaaaaaaaaa.json", "cache/videos/aaaaaaaaaaa.mp4"], did
     assert server.youtube_mod.cached("aaaaaaaaaaa") and (D / "cache/videos/aaaaaaaaaaa.json").exists()
     assert B.q("SELECT state FROM tasks WHERE video_id='aaaaaaaaaaa'", one=True)["state"] == "done"
