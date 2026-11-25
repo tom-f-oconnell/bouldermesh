@@ -12,3 +12,7 @@
   be had.
 - When pointing the user at meshes or climbs to look at, give full links (https://boulderme.sh/m/<mesh id>,
   https://boulderme.sh/c/<climb slug>), never bare IDs.
+- When the user asks to deploy, run `WAIT_MINUTES=100000 ./deploy.sh --after` (in the background), as if they'd answered
+  [a] at its question: no new work is taken, and it restarts once what's in progress has finished. The large
+  WAIT_MINUTES matches [a] at a terminal, which waits as long as it takes; without it, a run with no terminal restarts
+  anyway after 90 min.
