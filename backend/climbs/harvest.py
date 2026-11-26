@@ -221,6 +221,8 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
 # moment linked (the same frames as before); otherwise by its shots, from its linked moment, or over a long video's
 # thinner candidates (extract_frames()).
 FRAMES_VERSION = 2
+# what's asked of YouTube for a video: the best at up to 1080p that fits in 500 MB (volunteers.VIDEO_FORMAT, which says why)
+VIDEO_FORMAT = "bv*[height<=1080][filesize<?500M][filesize_approx<?500M]/b"
 MOMENT_BEFORE = 10.0        # seconds before a linked moment that frames are taken from (links are often a little late)
 MOMENT_SECONDS = 300.0      # and after it: as long as beta looks at a video (beta.MAX_SECONDS)
 LONG_SECONDS = 900.0        # a video longer than this (the longest a search keeps: youtube.MAX_MINUTES) has its candidate
@@ -547,7 +549,7 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                     infos[v.url] = {**details, "frames": 0}
             else:
                 log(f"youtube: downloading {v.url}")
-                youtube.call([ytdlp, "-q", "--no-playlist", "-f", "bv*[height<=1080]/b", "--max-filesize", "500m",
+                youtube.call([ytdlp, "-q", "--no-playlist", "-f", VIDEO_FORMAT, "--max-filesize", "500m",
                               "--write-info-json", "-o", str(tmp / "video.%(ext)s"), v.url], timeout=900,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 info_file = tmp / "video.info.json"

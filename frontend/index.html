@@ -3625,6 +3625,7 @@ async function openClimb(id, focus=true){
       ${c.lat!=null?'<button class="sm sec fly">Map</button>':''}<button class="sm sec editll">Edit coords</button>
       <a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm sec"${c.source === 'climbinghistory' ? ' title="Its page on climbing-history.org, where this climb\'s details and video links come from"' : ''}>Source ↗</button></a></div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then import it again, or Edit coords here.` : ''}</div>` : ''}
+    ${(c.twins || []).map(t => `<div class="meta" title="${esc(t.how || '')}. They stay two climbs here, each with its own meshes; the videos climbing-history.org's page links to are used for the Mountain Project climb too, so its boulder's mesh has them.">The same climb on ${esc(SOURCE_NAME[t.source] || t.source)}: ${t.id ? `<a href="#" data-twin="${t.id}">${esc(t.name || 'its card')}</a>` : `<a href="${esc(t.url)}" target="_blank" rel="noopener">its page ↗</a> <small>(on an area's list here, not read yet)</small>`}</div>`).join('')}
     ${data.raw?.stub?`<div class="row notice" style="margin-top:6px"><span class="grow">Summary from the area page. Harvesting fetches the problem page first, or fetch it now for its photos and description.</span><button class="sm sec details">Fetch problem page</button></div>`:''}
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
     <div class="meta" style="margin-top:6px">Photos (${imgs.length}) ${imgs.length?'<small>— from the source page; © their uploaders</small>':''}</div>
@@ -3673,6 +3674,7 @@ async function openClimb(id, focus=true){
     try { const r = await api(`/api/climbs/${id}/boulder`, { method: 'POST', json: { again: same } }); toast('Queued → see Projects tab'); active = r.project_id; d.remove(); openClimb(id, false); poll(); }
     catch (e) { toast(e.message, 6000); }
   });
+  d.querySelectorAll('[data-twin]').forEach(a => a.onclick = ev => { ev.preventDefault(); openClimb(a.dataset.twin); });
   d.querySelectorAll('[data-proj]').forEach(ch => ch.onclick = () => { document.querySelector('.tabs button[data-tab=projects]').click(); active = ch.dataset.proj; refreshProjects(); });
   d.querySelector('.linksel').onchange = async ev => {
     if (!ev.target.value) return;

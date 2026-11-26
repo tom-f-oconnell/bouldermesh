@@ -194,7 +194,18 @@ leaf = server.boulder_of(row["area_path"])
 assert server.leaf_kind(leaf) == "group" and row["boulder"]["kind"] == "group" and row["boulder"]["url"] == f"{BASE}/crag/17691/lappnor", row["boulder"]
 assert not server.pools_whole(leaf) and server.joins_pools(leaf)
 obj = server.climb_obj(cid)
-assert obj.search_place == "Lappnor" and youtube.query(obj) == "Burden of Dreams V17 Lappnor", youtube.query(obj)
+assert obj.search_place == "Lappnor" and youtube.query(obj) == "Burden of Dreams 9A Lappnor", youtube.query(obj)
+# a title with its Font grade is of it, as one with its V grade is; one that only names it isn't, nor another grade's
+assert youtube.matches(obj, "Burden of Dreams 9A - Will Bosi") and youtube.matches(obj, "BURDEN OF DREAMS (V17)")
+assert youtube.matches(obj, "Burden of Dreams", "Nalle's project in Finland") and youtube.matches(obj, "Burden of Dreams | Lappnor")
+assert not youtube.matches(obj, "Burden of Dreams") and not youtube.matches(obj, "Burden of Dreams 8A replica")
+american = Climb(source="climbinghistory", source_id="ch1", url="", name="Return of the Sleepwalker", grade="V17 9A",
+                 grades={"vscale": "V17", "font": "9A"}, area_path=["United States", "Nevada", "Clark County", "Black Velvet Canyon"],
+                 search_place="Black Velvet Canyon", raw={"country": "United States"})
+assert youtube.query(american) == "Return of the Sleepwalker V17 Black Velvet Canyon", youtube.query(american)
+mp_climb = Climb(source="mountainproject", source_id="1", url="", name="Burden of Dreams", grade="V17 9A", grades={"font": "9A"},
+                 area_path=["International", "Europe", "Finland", "Lappnor"])
+assert not youtube.matches(mp_climb, "Burden of Dreams 9A - Will Bosi"), "Mountain Project's climbs are matched as they were"
 assert server.is_area_url(f"{BASE}/hardest?discipline=boulder&grade=8C%2B") and not server.is_area_url(f"{BASE}/climb/826/burden-of-dreams")
 print("import OK")
 
@@ -309,6 +320,60 @@ assert sorted(harvested) == ["Alphane", "Burden of Dreams", "Exodia", "Pneuma"],
 assert sorted(u.rsplit("/", 1)[1] for u, afresh in reads if afresh) == ["alphane", "burden-of-dreams", "exodia", "pneuma"], reads
 assert all(i["status"] == "done" for n, i in items(camp["id"]).items() if n != "Missing"), items(camp["id"])
 print("check for new OK")
+
+# --- the same climb on Mountain Project: told by its name and where it is, and given the page's videos ---------------
+assert server.twin_name("Bloody Sunday SDS") == server.twin_name("bloody sunday (sit start)") == "bloody sunday sit"
+assert server.twin_name("The Ice Knife sit") == "ice knife sit" and server.twin_name("Révolutionnaire") == "revolutionnaire"
+HEAD = 'Route,Location,URL,"Avg Stars","Your Stars","Route Type",Rating,Pitches,Length,"Area Latitude","Area Longitude"\n'
+
+
+def mp_row(rid: int, name: str, where: str, lat: float, lng: float) -> str:
+    return f'{name},"{where}",https://www.mountainproject.com/route/{rid}/x,3.5,-1,Boulder,V16,,,{lat},{lng}\n'
+
+
+web[f"{BASE}/climb/1116/return-of-the-sleepwalker"] = page(1116, "Return of the Sleepwalker", "9A", "Black Velvet Canyon", 4226,
+                                                            ["United States", "Nevada", "Clark County"], ascent(
+    1, "Daniel Woods", "2021-03-31", "First ascent.", link("https://www.youtube.com/watch?v=IoEeHwd5GTs") + link("https://youtu.be/8awesjyAGTg")))
+web[f"{BASE}/climb/5000/karoshi"] = page(5000, "Karoshi", "8C+", "Hueco Tanks", 777, ["United States", "Texas"], ascent(
+    1, "Someone", "2020-01-01", "", link("https://youtu.be/KAROSHIvid1")))
+positions["crag_id=4226"] = {"latitude": 36.034941, "longitude": -115.462274}
+positions["crag_id=777"] = {"latitude": 31.92, "longitude": -106.04}
+red_rocks = server.create_campaign("", "popularity", HEAD + mp_row(501, "Return Of The Sleepwalker", "Wet Dream Boulder > Black Velvet Canyon > Red Rocks > Nevada", 36.03, -115.46)
+                                   + mp_row(502, "Sleepwalker", "Wet Dream Boulder > Black Velvet Canyon > Red Rocks > Nevada", 36.03, -115.46)
+                                   + mp_row(503, "Burden of Dreams", "Some Boulder > Joshua Tree > California", 34.0, -116.0), start=False)
+rots = ch.fetch(f"{BASE}/climb/1116/return-of-the-sleepwalker")[0]
+rots_id = server.upsert_climb(rots)
+same = server.q("SELECT * FROM same_climbs")
+assert [(r["ch"], r["mp"]) for r in same] == [("ch1116", "501")] and "km apart" in same[0]["how"] and same[0]["km"] < 1, same
+assert server.twin_find(burden) is None, "a climb of the same name half the world away isn't it"
+assert server.twins_of(server.climb_row(rots_id))[0]["url"] == "https://www.mountainproject.com/route/501", "on an area's list, not read yet"
+# the Mountain Project climb, once read, has the page's videos after its own; its card names the other, and the other it
+mp_id = server.upsert_climb(Climb(source="mountainproject", source_id="501", url="https://www.mountainproject.com/route/501/x",
+                                  name="Return Of The Sleepwalker", lat=36.03, lng=-115.46, coord_source="area",
+                                  area_path=["Nevada", "Red Rocks", "Black Velvet Canyon", "Wet Dream Boulder"],
+                                  videos=[Media(url="https://www.youtube.com/watch?v=MPSownVIDEO", kind="video"),
+                                          Media(url="https://www.youtube.com/watch?v=IoEeHwd5GTs", kind="video")]))
+assert [v.url[-11:] for v in server.climb_obj(mp_id).videos] == ["MPSownVIDEO", "IoEeHwd5GTs", "8awesjyAGTg"], server.climb_obj(mp_id).videos
+assert len(server.climb_obj(rots_id).videos) == 2, "the climbing-history.org climb keeps its own"
+assert server.climb_row(mp_id, full=True)["twins"] == [{"id": rots_id, "name": "Return of the Sleepwalker", "url": rots.url,
+                                                        "source": "climbinghistory", "how": same[0]["how"]}]
+assert server.climb_row(rots_id, full=True)["twins"][0]["id"] == mp_id
+# an area's climb that's been through is queued, after everything else, to add the videos it hasn't and mesh again
+pid = server.new_id()
+(server.PROJECTS / pid / "photos").mkdir(parents=True)
+server.q("INSERT INTO projects(id,name,created,kind,climb_id,status,harvest) VALUES(?,?,?,?,?,'done',?)", pid, "x (harvest)", 0, "harvest", mp_id,
+         json.dumps({"images": 5, "videos": [{"url": "https://www.youtube.com/watch?v=IoEeHwd5GTs"}]}), write=True)
+server.set_item(red_rocks["id"], "501", status="done", climb_id=mp_id, project_id=pid)
+assert server.twin_noted(rots)["mp"] == "501"
+it = server.q("SELECT status, redo, old_rerun, note, was FROM campaign_items WHERE campaign_id=? AND source_id='501'", red_rocks["id"], one=True)
+assert (it["status"], it["redo"], it["old_rerun"], it["was"]) == ("pending", "more+rebuild", 2, "done") and "1 video" in it["note"], it
+assert server.q("SELECT redo FROM campaign_items WHERE campaign_id=? AND source_id='502'", red_rocks["id"], one=True)["redo"] is None
+# a climb imported before Mountain Project's area is listed is found when it is
+karoshi = server.upsert_climb(ch.fetch(f"{BASE}/climb/5000/karoshi")[0])
+assert not server.q("SELECT 1 FROM same_climbs WHERE ch='ch5000'")
+server.create_campaign("", "popularity", HEAD + mp_row(601, "Karoshi", "Some Boulder > North Mountain > Hueco Tanks > Texas", 31.925, -106.045), start=False)
+assert server.q("SELECT mp FROM same_climbs WHERE ch='ch5000'", one=True)["mp"] == "601"
+print("the same climb on Mountain Project OK")
 
 ch.http.get_text, ch.http.get_json = real_get_text, real_get_json
 print("ALL CLIMBING-HISTORY TESTS PASSED")

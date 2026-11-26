@@ -286,6 +286,11 @@ def init_db() -> None:
         -- neither kind of old (old_by_data()): "old" (it's old by data after all) or "keep" (both stay current)
         CREATE TABLE IF NOT EXISTS old_decisions(
           mesh_id TEXT, newer TEXT, verdict TEXT, decided REAL, PRIMARY KEY(mesh_id, newer));
+        -- a climbing-history.org climb (ch: its source_id) that's a Mountain Project climb here too (mp: its source_id,
+        -- which may only be on an area's list yet), and how that was told (twin_find()); the Mountain Project climb is
+        -- given the videos its page links to (climb_obj())
+        CREATE TABLE IF NOT EXISTS same_climbs(ch TEXT PRIMARY KEY, mp TEXT, how TEXT, km REAL, found REAL);
+        CREATE INDEX IF NOT EXISTS same_climbs_mp ON same_climbs(mp);
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         offload_mod.migrate(con)            # what's been offloaded to the backup, or marked to be, and its files (offload.py)
@@ -699,7 +704,132 @@ def upsert_climb(c: Climb) -> str:
     _doubts["at"] = 0.0
     if c.source == ch_mod.SOURCE and not c.raw.get("stub"):
         crag_noted(c, cid)
+        try:
+            twin_noted(c)
+        except Exception as e:  # noqa: BLE001 - the climb is kept either way
+            print(f"error: looking for {c.name} on Mountain Project: {type(e).__name__}: {e}", flush=True)
     return cid
+
+
+# ---- the same climb on climbing-history.org and Mountain Project. Many of the hardest are in areas Mountain Project
+# covers (28 of 81 in the US, Nov 2026). Where one is listed here from both, they stay two climbs for now, but the
+# Mountain Project one is given the videos climbing-history.org's page links to, so that its mesh (its boulder's, made
+# the usual way from every climb on it) has them. Only told among what's here: Mountain Project has no search by name.
+TWIN_KM = 10.0      # the same name this close is the same climb: a crag's position can be a canyon's length from a boulder
+
+
+def twin_name(name: str | None) -> str:
+    """A climb's name as the two sites may each write it: no accents or punctuation, no leading "the", and a sit or
+    stand start said one way ("Bloody Sunday SDS", "Bloody Sunday Sit Start")."""
+    t = youtube_mod.norm(name).strip()
+    t = re.sub(r"\b(sit down start|sit start|sitstart|sds)\b", "sit", t)
+    t = re.sub(r"\b(stand start|standing start)\b", "stand", t)
+    t = re.sub(r"\blow start\b", "low", t)
+    return re.sub(r"^the ", "", " ".join(t.split()))
+
+
+def twin_find(c: Climb) -> dict | None:
+    """The Mountain Project climb here that a climbing-history.org climb is: one of the same name (twin_name(); its
+    "also known as" too), among those imported and those on areas' lists, within TWIN_KM of it where both have a
+    position, else in an area named as its crag is. The nearest, if several.
+
+    Returns:
+        {mp (its source_id), name, km (None where a position is missing), how}, or None.
+    """
+    names = {twin_name(c.name), twin_name(c.raw.get("aka"))} - {""}
+    word = max(twin_name(c.name).split(), key=len, default="")
+    if len(word) < 3:
+        return None
+    crag = youtube_mod.norm(c.raw.get("crag")).strip()
+    found = [(r["source_id"], r["name"], r["lat"], r["lng"], json.loads(r["area_path"] or "[]"))
+             for r in q("SELECT source_id, name, lat, lng, area_path FROM climbs WHERE source='mountainproject' AND kind!='area' "
+                        "AND name LIKE ?", f"%{word}%")]
+    for r in q("SELECT ci.source_id, ci.name, ci.data FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id "
+               "WHERE COALESCE(ca.area_id, '') NOT LIKE 'ch:%' AND ci.name LIKE ? AND ci.data IS NOT NULL", f"%{word}%"):
+        d = json.loads(r["data"])
+        if d.get("source") == "mountainproject":
+            found.append((r["source_id"], r["name"], d.get("lat"), d.get("lng"), d.get("area_path") or []))
+    best = None
+    for sid, name, lat, lng, path in found:
+        if twin_name(name) not in names:
+            continue
+        if None not in (lat, lng, c.lat, c.lng):
+            km = _km(c.lat, c.lng, lat, lng)
+            if km > TWIN_KM:
+                continue
+            got = {"mp": sid, "name": name, "km": round(km, 2), "how": f"the same name, {km:.1f} km apart"}
+        elif len(crag) >= 5 and any(crag in youtube_mod.norm(p) or (len(youtube_mod.norm(p).strip()) >= 5 and youtube_mod.norm(p).strip() in crag)
+                                    for p in path):
+            got = {"mp": sid, "name": name, "km": None, "how": f"the same name, in {c.raw.get('crag')}"}
+        else:
+            continue
+        if best is None or (got["km"] is not None and (best["km"] is None or got["km"] < best["km"])):
+            best = got
+    return best
+
+
+def twin_noted(c: Climb) -> dict | None:
+    """Look for a climbing-history.org climb among Mountain Project's here (twin_find()), keep what's found
+    (same_climbs), and have the Mountain Project climb's areas add the videos its page links to that they haven't
+    (twin_videos_queued()). One found before stays, where it's no longer found (its area's list removed)."""
+    found = twin_find(c)
+    if found:
+        q("INSERT OR REPLACE INTO same_climbs(ch, mp, how, km, found) VALUES(?,?,?,?,?)", c.source_id, found["mp"], found["how"],
+          found["km"], time.time(), write=True)
+    kept = q("SELECT mp FROM same_climbs WHERE ch=?", c.source_id, one=True)
+    if kept:
+        twin_videos_queued(c, kept["mp"])
+    return found
+
+
+def twins_sought() -> int:
+    """Look again for every climbing-history.org climb here that has no Mountain Project climb told for it (twin_noted()),
+    as when an area's list is added. Returns how many were found."""
+    n = 0
+    for r in q("SELECT data FROM climbs WHERE source=? AND source_id NOT IN (SELECT ch FROM same_climbs)", ch_mod.SOURCE):
+        c = Climb.from_dict(json.loads(r["data"]))
+        if not c.raw.get("stub"):
+            n += bool(twin_noted(c))
+    return n
+
+
+def twin_videos_queued(c: Climb, mp: str) -> int:
+    """Queue the areas' climbs that are Mountain Project's mp, and have been through, to add the videos a
+    climbing-history.org climb's page links to that their harvests haven't, and mesh again: after everything else, as
+    what a newer YouTube search finds is (research_one()). Its boulder, where it's meshed whole, is made again with it,
+    from every climb on it as ever. Returns how many were queued."""
+    vids = {youtube_mod.video_id(v.url) or v.url for v in c.videos}
+    n = 0
+    for it in q("SELECT ci.campaign_id, ci.source_id, ci.status, ci.project_id FROM campaign_items ci JOIN campaigns ca ON "
+                "ca.id=ci.campaign_id WHERE ci.source_id=? AND COALESCE(ca.area_id, '') NOT LIKE 'ch:%' AND ci.redo IS NULL AND "
+                "ci.status IN ('done','skipped','failed','hidden') AND ci.project_id IS NOT NULL", mp):
+        have = {e["url"] for e in provenance.harvested(PROJECTS / it["project_id"]).values() if e.get("url")}
+        try:
+            h = json.loads(q("SELECT harvest FROM projects WHERE id=?", it["project_id"], one=True)["harvest"] or "{}")
+            have |= {v["url"] for v in h.get("videos") or [] if v.get("url")}
+        except (TypeError, ValueError):
+            pass
+        new = vids - {youtube_mod.video_id(u) or u for u in have}
+        if new:
+            set_item(it["campaign_id"], it["source_id"], status="pending", retry=0, redo="more+rebuild", was=it["status"],
+                     redo_started=0, old_rerun=2, note=f"queued to add {plural(len(new), 'video')} climbing-history.org links to for it")
+            n += 1
+    return n
+
+
+def twins_of(climb: dict) -> list[dict]:
+    """For a climb's card: the same climb from the other site, [{id (its climb here, if it's been read), name, url,
+    source, how}]."""
+    if climb.get("source") == ch_mod.SOURCE:
+        rows = q("SELECT s.mp AS sid, s.how, c.id, c.name, c.url FROM same_climbs s LEFT JOIN climbs c ON c.source='mountainproject' "
+                 "AND c.source_id=s.mp WHERE s.ch=?", climb["source_id"])
+        return [{"id": r["id"], "name": r["name"], "url": r["url"] or f"https://www.mountainproject.com/route/{r['sid']}",
+                 "source": "mountainproject", "how": r["how"]} for r in rows]
+    if climb.get("source") == "mountainproject":
+        rows = q("SELECT s.how, c.id, c.name, c.url FROM same_climbs s JOIN climbs c ON c.source=? AND c.source_id=s.ch WHERE s.mp=?",
+                 ch_mod.SOURCE, climb["source_id"])
+        return [{"id": r["id"], "name": r["name"], "url": r["url"], "source": ch_mod.SOURCE, "how": r["how"]} for r in rows]
+    return []
 
 
 def crag_noted(c: Climb, climb_id: str) -> None:
@@ -867,6 +997,7 @@ def climb_row(cid: str, full=False, visitor: bool = False) -> dict | None:
         r["meshes"] = q("SELECT m.*, l.note FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') NOT LIKE ?"
                         + (" AND m.hidden IS NULL" if visitor else ""), cid, SHARED + "%")
         r["boulder"] = boulder_info(r, visitor=visitor)
+        r["twins"] = twins_of(r)
         r["projects"] = q("SELECT id,name,status,kind,mesh_id,harvest FROM projects WHERE climb_id=? ORDER BY created DESC", cid)
         # the areas it's in, and how far meshing it there got: an area's climbs it hasn't reached have no climb yet
         r["areas"] = q("""SELECT c.id, c.name, c.status AS area_status, ci.status, ci.note, ci.rank, ci.mesh_id, ci.project_id
@@ -938,6 +1069,14 @@ def climb_obj(cid: str) -> Climb:
     c.search_place = area["name"] if area else None    # its YouTube search names the area (youtube.place())
     if c.source == ch_mod.SOURCE:       # or its crag: the list of the hardest it's in isn't a place
         c.search_place = c.raw.get("crag")
+    elif c.source == "mountainproject":     # the videos climbing-history.org's page of the same climb links to (same_climbs)
+        have = {youtube_mod.video_id(v.url) or v.url for v in c.videos}
+        for t in q("SELECT c.data FROM same_climbs s JOIN climbs c ON c.source=? AND c.source_id=s.ch WHERE s.mp=?",
+                   ch_mod.SOURCE, c.source_id):
+            for v in Climb.from_dict(json.loads(t["data"])).videos:
+                if (youtube_mod.video_id(v.url) or v.url) not in have:
+                    have.add(youtube_mod.video_id(v.url) or v.url)
+                    c.videos.append(v)
     c.boulder_mates = [m["name"] for m in q("SELECT name FROM climbs WHERE area_path=? AND id<>? AND name IS NOT NULL",
                                             json.dumps(c.area_path), cid)] if c.area_path else []
     return c
@@ -6431,6 +6570,11 @@ def add_new_climbs(cid: str, recs: list[Climb]) -> int:
     with _db_lock, db() as con:
         con.executemany("INSERT OR IGNORE INTO campaign_items(campaign_id,source_id,rank,name,grade,stars,url,boulder,data) "
                         "VALUES(?,?,?,?,?,?,?,?,?)", rows)
+    if rows and any(c.source == "mountainproject" for c in new):    # climbing-history.org's climbs that are among them
+        try:
+            twins_sought()
+        except Exception as e:  # noqa: BLE001 - the list is added either way
+            print(f"error: looking for climbing-history.org climbs on the list: {type(e).__name__}: {e}", flush=True)
     return len(rows)
 
 

@@ -239,18 +239,37 @@ def v_grade(c: Climb) -> str | None:
     return m[0].upper() if m else None
 
 
+def font_grades(c: Climb) -> list[str]:
+    """The Fontainebleau grades a climbing-history.org climb's page gives it, lower case without their plus ("8c",
+    "9a" for 8C+/9A), as norm() leaves them in a title; none for any other climb, whose searches go by V grades as they
+    always have."""
+    if c.source != "climbinghistory":
+        return []
+    return list(dict.fromkeys(m[0] for part in str(c.grades.get("font") or "").lower().split("/")
+                              if (m := re.match(r"[3-9][abc]?", part.strip()))))
+
+
+def said_grade(c: Climb) -> str | None:
+    """The grade its search names: its V grade; or, for a climbing-history.org climb outside the US, its Fontainebleau
+    grade ("9A"), as videos of it are titled."""
+    font = str(c.grades.get("font") or "").split("/")[0].strip() if font_grades(c) else ""
+    return font if font and c.raw.get("country") not in (None, "United States") else v_grade(c)
+
+
 def query(c: Climb) -> str:
-    return " ".join(x for x in (c.name, v_grade(c), place(c)) if x)
+    return " ".join(x for x in (c.name, said_grade(c), place(c)) if x)
 
 
 def wide(c: Climb) -> str:
     """Its search without the place, for when the one with it finds nothing of it (youtube.wide_retry)."""
-    return " ".join(x for x in (c.name, v_grade(c)) if x)
+    return " ".join(x for x in (c.name, said_grade(c)) if x)
 
 
 def context(c: Climb) -> list[str]:
     """Words that place a video at this climb, normalised: any one of them is enough."""
     out = [place(c), region(c), c.boulder_name or "", *(c.area_path[-3:] if c.area_path else [])]
+    if c.source == "climbinghistory":      # its country too: its path's last three stop at a region few titles name
+        out.append(c.raw.get("country") or "")
     out = [norm(x) for x in out if x and x.strip().lower() not in GENERIC and len(x.strip()) >= 4 and x.strip().lower() != c.name.lower()]
     out += [" " + x.split(" ", 2)[2] for x in out if x.startswith(" the ") and len(x) > 10]    # "The Tramway" titled "Tramway"
     return [x for x in dict.fromkeys(out) if x.strip()]    # not its grade alone: "The Wave V1" is in many places
@@ -293,7 +312,8 @@ def names_only_its_boulder(c: Climb, title: str | None) -> bool:
 
 def matches(c: Climb, title: str | None, description: str | None = None) -> bool:
     """Whether a video is of this climb: its title names it (name_forms()), and the title or description places it, or
-    the title gives its grade too and its name is distinctive(). Not if it names it only within its boulder's name,
+    the title gives its grade too and its name is distinctive(): its V grade, or for a climbing-history.org climb its
+    Fontainebleau grade (font_grades(): "Burden of Dreams 9A"). Not if it names it only within its boulder's name,
     and names another of its boulder's climbs (names_only_its_boulder())."""
     forms = [f for f in name_forms(c.name) if len(f.strip()) >= 3]
     if not forms or not any(f in norm(title) for f in forms) or names_only_its_boulder(c, title):
@@ -301,8 +321,8 @@ def matches(c: Climb, title: str | None, description: str | None = None) -> bool
     text = norm(f"{title} {description or ''}")
     if any(x in text for x in context(c)):
         return True
-    grade = v_grade(c)
-    return bool(grade) and re.search(rf"\b{grade.lower()}\b", norm(title)) is not None and distinctive(c.name)
+    grades = [g.lower() for g in [v_grade(c)] if g] + font_grades(c)
+    return any(re.search(rf"\b{g}\b", norm(title)) for g in grades) and distinctive(c.name)
 
 
 def _ytdlp(args: list[str], timeout: int = 180, video: bool = True) -> dict:

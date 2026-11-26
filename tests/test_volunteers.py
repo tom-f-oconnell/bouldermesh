@@ -363,7 +363,7 @@ def script_and_broker() -> None:
         assert "formats" not in info and "203.0.113.9" not in json.dumps(info), "nothing of the volunteer's own"
         assert ready == [("harvest", "p1")]
         cmd = (TMP / "fake.log").read_text().splitlines()[-1]
-        assert "--sleep-requests 0.75" in cmd and "bv*[height<=1080]/b" in cmd and cmd.endswith("https://www.youtube.com/watch?v=vvvvvvvvvvv")
+        assert "--sleep-requests 0.75" in cmd and volunteers.VIDEO_FORMAT in cmd and cmd.endswith("https://www.youtube.com/watch?v=vvvvvvvvvvv")
 
         conf = json.loads((TMP / "home" / "config.json").read_text())
         assert conf["token"] == token and oct((TMP / "home" / "config.json").stat().st_mode)[-3:] == "600"

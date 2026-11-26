@@ -319,4 +319,10 @@ with tempfile.TemporaryDirectory() as td:
         assert done == [urls[2], urls[0], urls[1]] and rec["status"] == "done", "the one done isn't done again"
     finally:
         youtube.cached, youtube.via = real
+# --- where a video is looked at from: its start, unless its placed frames are past the first five minutes ----------
+assert beta.begin_at([]) == 0.0 and beta.begin_at([None, None]) == 0.0, "frames from before their times were kept"
+assert beta.begin_at([12.0, 140.5, 299.0]) == 0.0, "all within what was always looked at"
+assert beta.begin_at([2895.0, 2950.0, None]) == 2885.0 and beta.begin_at([4.0, 900.0]) == 0.0
+assert beta.seen_enough(40.0, None) is False and beta.seen_enough(160.0, 100.0) is True
+print("where a video is looked at from OK")
 print("ALL BETA TESTS PASSED")

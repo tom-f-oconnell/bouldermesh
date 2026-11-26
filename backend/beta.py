@@ -43,6 +43,7 @@ ROLES = ("start", "hand", "finish", "foot")     # the order the Tension Board ap
 COLORS = {"start": (60, 210, 25), "hand": (255, 107, 47), "finish": (42, 42, 255), "foot": (245, 61, 255)}   # BGR
 FPS = 2.0               # frames a second looked at
 MAX_SECONDS = 300       # of each video, at most
+BEFORE_PLACED = 10      # where a video is looked at from its placed frames on (begin_at()): this long before the earliest
 LEAST_SECONDS = 150     # and at least (if it's that long): past this, a video is left once its climber is off the rock,
 IDLE_SECONDS = 30       # for this long (or never was on it): what follows is talk, other rock, the way down
 DET_EVERY = 5           # frames between person detections; the tracker follows them in between
@@ -690,8 +691,19 @@ def climber(kps, scs, previous=None) -> int | None:
 
 
 # ------------------------------------------------------------------ one video
-def frames_of(url: str, tmp: Path, log: Log) -> list[tuple[float, Path]]:
-    """FPS frames a second of a video, up to MAX_SECONDS, at up to 720p, from youtube's cache if it's there."""
+def begin_at(times) -> float:
+    """Where in a video to start looking, in seconds, from the times of its frames placed in the mesh (None for those
+    taken before times were kept): its start, as ever, unless some of them are past the first MAX_SECONDS (a moment
+    linked far into a long video, a film that comes to the rock late); then BEFORE_PLACED before the earliest."""
+    ts = [t for t in times if isinstance(t, (int, float))]
+    if not ts or max(ts) <= MAX_SECONDS:
+        return 0.0
+    return max(0.0, min(ts) - BEFORE_PLACED)
+
+
+def frames_of(url: str, tmp: Path, log: Log, begin: float = 0.0) -> list[tuple[float, Path]]:
+    """FPS frames a second of a video, for MAX_SECONDS from begin, at up to 720p, from youtube's cache if it's there:
+    each with its time in the video."""
     from climbs import youtube
     from climbs.common import jobctl
     import subprocess
@@ -701,11 +713,11 @@ def frames_of(url: str, tmp: Path, log: Log) -> list[tuple[float, Path]]:
         youtube.call(["yt-dlp", "-q", "--no-playlist", "-f", "bv*[height<=720]/b[height<=720]/b", "--max-filesize", "300m",
                       "-o", str(tmp / "video.%(ext)s"), url], timeout=900, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         video = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
-    jobctl.run(["ffmpeg", "-loglevel", "error", "-t", str(MAX_SECONDS), "-i", str(video), "-vf", f"fps={FPS},scale=-2:'min(720,ih)'",
-                "-q:v", "3", str(tmp / "f%05d.jpg")], timeout=900)
+    jobctl.run(["ffmpeg", "-loglevel", "error", *(["-ss", f"{begin:.2f}"] if begin > 0 else []), "-t", str(MAX_SECONDS), "-i", str(video),
+                "-vf", f"fps={FPS},scale=-2:'min(720,ih)'", "-q:v", "3", str(tmp / "f%05d.jpg")], timeout=900)
     if video.parent == tmp:
         video.unlink()
-    return [((i + 0.5) / FPS, p) for i, p in enumerate(sorted(tmp.glob("f*.jpg")))]
+    return [(begin + (i + 0.5) / FPS, p) for i, p in enumerate(sorted(tmp.glob("f*.jpg")))]
 
 
 class Matcher:
@@ -790,10 +802,11 @@ def seen_enough(t: float, on_rock: float | None) -> bool:
 
 
 def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, tracker, tmp: Path, log: Log,
-                  progress: Callable[..., None] = lambda s, frame=None: None) -> dict:
+                  progress: Callable[..., None] = lambda s, frame=None: None, begin: float = 0.0) -> dict:
     """The holds a video's climber used on a mesh.
 
     Args:
+        begin: where in the video to start looking, in seconds (begin_at()).
         placed: the video's frames placed in the mesh: their cameras.json entries, by file name.
         photos: where those frames are.
         progress: told how far it is, as text, and with frame: (frames done, of how many).
@@ -808,7 +821,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     import cv2
     import numpy as np
     from climbs.common import jobctl
-    frames = frames_of(url, tmp, log)
+    frames = frames_of(url, tmp, log, begin)
     matcher = Matcher({n: photos / n for n in placed})
     sizes = {n: v[2] for n, v in matcher.refs.items()}
     tracker.reset()
@@ -817,7 +830,7 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     on_rock, looked, left = None, 0, None     # when the climber was last placed on the rock; frames looked at; why it stopped early
     for i, (t, path) in enumerate(frames):
         jobctl.check()
-        if seen_enough(t, on_rock):
+        if seen_enough(t - begin, on_rock - begin if on_rock is not None else None):
             left = {"at": round(t, 2), "why": f"its climber was off the rock for {IDLE_SECONDS} s" if on_rock is not None else "no climber was placed on the rock"}
             log(f"beta: {url}: left at {t:.0f} s of {frames[-1][0]:.0f}: {left['why']}")
             break
@@ -951,7 +964,8 @@ def frames_seen(mesh_dir: Path, tag: str) -> dict | None:
 
 # ------------------------------------------------------------------ a mesh
 def videos(mesh_dir: Path) -> dict[str, dict]:
-    """A mesh's videos with frames placed in it: {url: {tag, title, uploader, frames: {name: camera}}}."""
+    """A mesh's videos with frames placed in it: {url: {tag, title, uploader, frames: {name: camera}, times: {name:
+    seconds into the video, or None}}}."""
     import provenance
     record = provenance.load(mesh_dir)
     cams = mesh_dir / "cameras.json"
@@ -962,8 +976,9 @@ def videos(mesh_dir: Path) -> dict[str, dict]:
     for p in record["photos"]:
         if p.get("source") == "youtube" and p.get("url") and p["file"] in placed:
             v = out.setdefault(p["url"], {"tag": hashlib.sha1(p["url"].encode()).hexdigest()[:8], "title": p.get("title"),
-                                           "uploader": p.get("credit"), "frames": {}})
+                                           "uploader": p.get("credit"), "frames": {}, "times": {}})
             v["frames"][p["file"]] = placed[p["file"]]
+            v["times"][p["file"]] = p.get("t")      # seconds into the video, where its harvest kept them
     return out
 
 
@@ -1084,7 +1099,8 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
                 report(record["progress"], record["at"])
         progress("downloading")
         try:
-            result = analyse_video(url, v["frames"], photos, mesh, tracker, mesh_dir / "beta_tmp", log, progress)
+            entry["begin"] = begin_at((v.get("times") or {}).values())
+            result = analyse_video(url, v["frames"], photos, mesh, tracker, mesh_dir / "beta_tmp", log, progress, begin=entry["begin"])
             poses[url] = result.pop("poses")
             (mesh_dir / POSES_FILE).write_text(json.dumps(poses))
             entry.update(result, status="done" if result["holds"] else "no holds found")

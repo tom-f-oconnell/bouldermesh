@@ -75,7 +75,10 @@ IDLE_WAIT = 60              # seconds an idle volunteer waits before asking agai
 # a volunteer not heard from for this long has left (presence.py), unless it said goodbye: scripts from version 6 keep in
 # touch while they wait (at least every 10 min); older ones wait silently through a day's limit or a rest
 GONE_AFTER, GONE_AFTER_OLD = 30 * 60, 26 * 3600
-VIDEO_FORMAT = "bv*[height<=1080]/b"   # as the harvest downloads: video only, no audio
+# As the harvest downloads: video only, no audio, the best at up to 1080p that fits in what a volunteer sends at most
+# (unknown sizes pass). A video too big at 1080p (most over about 40 min) comes at the best size that fits, rather than
+# failing as "larger than max-filesize", as it did until Nov 26, 2026; one that fit before comes as it did.
+VIDEO_FORMAT = "bv*[height<=1080][filesize<?500M][filesize_approx<?500M]/b"
 VIDEO_EXT = {"mp4", "webm", "mkv", "mov", "m4v", "3gp"}
 FAILED_DAYS = 30            # a video that failed for good isn't asked for again for this long
 # what YouTube says of a video that won't come however often it's asked: removed, private, members-only, or its account
