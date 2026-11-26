@@ -297,5 +297,18 @@ assert new == ["https://www.youtube.com/watch?v=zilINHowP2g"], new
 assert len(server.climb_obj(a["climb_id"]).videos) == 2
 print("new videos OK")
 
+# --- the area's "Check for new photos" reads each climb's page afresh ------------------------------------------------
+reads: list[tuple[str, bool]] = []
+ch.http.get_text = lambda url, **kw: reads.append((url, kw.get("ttl") == 0)) or (list_page(LIST) if "/hardest" in url else web[url])
+del harvested[:]
+queued = server.queue_redo(camp["id"], "new")
+assert queued == 4, queued      # the four that have been through and have photos of their own; Missing never was read
+for _ in range(10):
+    server.next_campaign_step()
+assert sorted(harvested) == ["Alphane", "Burden of Dreams", "Exodia", "Pneuma"], harvested
+assert sorted(u.rsplit("/", 1)[1] for u, afresh in reads if afresh) == ["alphane", "burden-of-dreams", "exodia", "pneuma"], reads
+assert all(i["status"] == "done" for n, i in items(camp["id"]).items() if n != "Missing"), items(camp["id"])
+print("check for new OK")
+
 ch.http.get_text, ch.http.get_json = real_get_text, real_get_json
 print("ALL CLIMBING-HISTORY TESTS PASSED")
