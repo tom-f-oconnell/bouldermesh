@@ -295,6 +295,9 @@ def init_db() -> None:
         -- (frames_check()): how many shots it has, and its length, which say whether its frames would be chosen
         -- differently now (frames_differ())
         CREATE TABLE IF NOT EXISTS video_shots(url TEXT PRIMARY KEY, shots INTEGER, seconds REAL, checked REAL);
+        -- climbers to ask for footage that's only on Instagram (asks_listed()): where each ask has got to, and the climbs
+        -- it covered when it was marked asked (names, JSON), so that a climber is asked once, not once a climb
+        CREATE TABLE IF NOT EXISTS asks(climber TEXT PRIMARY KEY, status TEXT, note TEXT, updated REAL, climbs TEXT);
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         offload_mod.migrate(con)            # what's been offloaded to the backup, or marked to be, and its files (offload.py)
@@ -16776,6 +16779,86 @@ def admin_abtest(body: dict) -> dict:
     return {"result": f"queued {n} A/B test(s): each runs on a machine when nothing of anyone's own is waiting"}
 
 
+# ---- asks for footage that's only on Instagram. climbing-history.org's pages link to more Instagram posts than YouTube
+# videos (315 to 212 over the 81 read, Nov 2026), and Instagram's aren't fetched. So the admin page lists the climbers
+# who posted them, with a message to each drafted here. Nothing is ever sent from here: the drafts are to be read, changed
+# and sent by hand. One draft a climber, covering every climb of theirs, and where each ask got to is kept, so that
+# nobody is asked twice or a climb at a time.
+ASK_STATES = ("to ask", "asked", "sent footage", "declined", "leave")     # "leave": not to be asked (no way to reach them, say)
+
+
+def ask_draft(climber: str, climbs: list[dict]) -> str:
+    """A message to a climber asking for the footage of their ascents that's only on Instagram: a draft, to be changed
+    and sent by hand."""
+    first = climber.split()[0] if climber else "there"
+    lines = [f"- {c['name']}{' (' + c['grade'] + ')' if c.get('grade') else ''}{', ' + c['crag'] if c.get('crag') else ''}: {c['posts'][0]}"
+             + (f" (and {plural(len(c['posts']) - 1, 'other post')})" if len(c["posts"]) > 1 else "") for c in climbs]
+    one = len(climbs) == 1
+    return (f"Hi {first},\n\nI run boulderme.sh, which builds 3D models of boulders from videos of people climbing them, so that a "
+            f"problem can be looked at from any side.\n\nI'd like to make {'one of ' + climbs[0]['name'] if one else 'them of the problems below'}, "
+            f"and the only footage I can find of your {'ascent' if one else 'ascents'} is on Instagram, which I can't use from "
+            f"there:\n\n" + "\n".join(lines) + "\n\nWould you be willing to send me the original "
+            "clips? Uncut is best, and anything where the camera moves round the boulder helps most. A link to the files is "
+            "fine. The model is made from frames of the video, with you credited beside it; the video itself isn't put up.\n\n"
+            "No worries at all if not: I won't ask again.\n\nThanks,\nTom\nhttps://boulderme.sh")
+
+
+def asks_listed() -> list[dict]:
+    """The climbers whose ascents climbing-history.org's pages give Instagram posts for, each with those climbs (those
+    with no YouTube video at all first), where asking them has got to, the climbs that have come up since they were
+    asked, and a draft of the message: those still to ask first, those with most climbs that have no other video first."""
+    by: dict[str, dict] = {}
+    for r in q("SELECT id, name, grade, url, data FROM climbs WHERE source=?", ch_mod.SOURCE):
+        d = json.loads(r["data"] or "{}")
+        raw = d.get("raw") or {}
+        tube = [v for v in d.get("videos") or [] if "youtube.com" in (v.get("url") or "")]
+        for post in raw.get("instagram") or []:
+            who = post.get("climber")
+            if not who:
+                continue
+            a = by.setdefault(who, {"climber": who, "climber_url": post.get("climber_url"), "climbs": {}})
+            a["climber_url"] = a["climber_url"] or post.get("climber_url")
+            c = a["climbs"].setdefault(r["id"], {"id": r["id"], "name": r["name"], "grade": (d.get("grades") or {}).get("font") or r["grade"],
+                                                 "crag": raw.get("crag"), "url": r["url"], "eight_a": (d.get("cross_refs") or {}).get("8a"),
+                                                 "posts": [], "videos": len(tube), "theirs": sum(v.get("credit") == who for v in tube)})
+            c["posts"].append(post["url"])
+    kept = {r["climber"]: r for r in q("SELECT * FROM asks")}
+    out = []
+    for who, a in by.items():
+        climbs = sorted(a["climbs"].values(), key=lambda c: (c["videos"] > 0, c["theirs"] > 0, c["name"]))
+        st = kept.get(who) or {}
+        covered = set(json.loads(st.get("climbs") or "[]"))
+        status = st.get("status") or ASK_STATES[0]
+        out.append({"climber": who, "climber_url": a["climber_url"], "climbs": climbs, "only": sum(c["videos"] == 0 for c in climbs),
+                    "status": status, "note": st.get("note"), "updated": st.get("updated"),
+                    "since": [c["name"] for c in climbs if status != ASK_STATES[0] and c["name"] not in covered],
+                    "draft": ask_draft(who, climbs)})
+    out.sort(key=lambda a: (ASK_STATES.index(a["status"]) if a["status"] in ASK_STATES else 9, -a["only"], -len(a["climbs"]), a["climber"]))
+    return out
+
+
+def admin_asks(_: dict) -> dict:
+    asks = asks_listed()
+    return {"result": f"{len(asks)} climber(s)", "asks": asks, "states": list(ASK_STATES)}
+
+
+def admin_ask_set(body: dict) -> dict:
+    """Keep where asking a climber has got to: {"climber", "status" (ASK_STATES), "note"}. Marked asked (or past it), the
+    climbs the ask covered are kept, so that those found later show as new since."""
+    who, status = str(body.get("climber") or "").strip(), body.get("status")
+    if status not in ASK_STATES:
+        raise ValueError(f"status must be one of {', '.join(ASK_STATES)}")
+    mine = next((a for a in asks_listed() if a["climber"] == who), None)
+    if not mine:
+        raise ValueError("no such climber among those with Instagram posts")
+    old = q("SELECT status, climbs FROM asks WHERE climber=?", who, one=True)
+    covered = (old["climbs"] if old and old["status"] != ASK_STATES[0] and status == old["status"]
+               else None if status == ASK_STATES[0] else json.dumps([c["name"] for c in mine["climbs"]]))
+    q("INSERT OR REPLACE INTO asks(climber, status, note, updated, climbs) VALUES(?,?,?,?,?)", who, status,
+      str(body.get("note") or "")[:500] or None, time.time(), covered, write=True)
+    return {"result": f"{who}: {status}"}
+
+
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
     {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi" | "collapsed" | "vggt" | "clip" | "frames", "add": true to add new photos to meshes' models rather than
@@ -16930,7 +17013,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "frames-check": admin_frames_check, "abtest": admin_abtest,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "frames-check": admin_frames_check, "asks": admin_asks, "ask-set": admin_ask_set, "abtest": admin_abtest,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial, "volunteer-trust": admin_volunteer_trust,

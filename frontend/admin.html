@@ -443,6 +443,14 @@
     <div id="gps-areas-list"></div>
     <div class="row"><button class="sec" id="gps-areas-match">Look up uploads with no area yet</button></div>
   </section>
+  <section id="asks">
+    <h2>Footage to ask for</h2>
+    <p class="note">Climbers whose ascents climbing-history.org's pages give only Instagram posts for, which can't be fetched. Each has
+      a message drafted to copy, change and send yourself: nothing is sent from here. One message a climber, covering all their
+      climbs. Mark what you've sent, so nobody is asked twice.</p>
+    <button class="sec" id="asks-load">Show them</button>
+    <div id="asks-list"></div>
+  </section>
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
@@ -1213,6 +1221,37 @@ for (const [id, tier, n, what, add] of [['#tier-pipeline', 'pipeline', t => t.pi
     if (!state?.tiers || !confirm(`Make again the ${n(state.tiers)} mesh(es) ${what}? Each takes as long as meshing does (an add, or from its cameras as they were, less), but only when nothing else is waiting.`)) return;
     try { msg((await call('/api/admin/actions/remake-tier', { tier, add: !!add })).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); }
   };
+// ---- footage to ask for: climbers with Instagram-only footage, a draft each, and where asking has got to
+async function loadAsks(){
+  const box = $('#asks-list');
+  let got;
+  try { got = await call('/api/admin/actions/asks', {}); } catch (e) { return msg(e.message, 8000); }
+  const toAsk = got.asks.filter(a => a.status === 'to ask').length;
+  box.innerHTML = `<p class="note"><b>${got.asks.length}</b> climber(s), ${toAsk} still to ask. Those whose climbs have no other video come first.</p>` + got.asks.map((a, i) => `
+    <details data-ask="${i}" style="margin:6px 0"><summary><b>${esc(a.climber)}</b> · ${a.climbs.length} climb(s)${a.only ? `, ${a.only} with no other video` : ''}
+      · <span class="${a.status === 'to ask' ? '' : 'note'}">${esc(a.status)}</span>${a.since.length ? ` · <b>new since asked: ${esc(a.since.join(', '))}</b>` : ''}</summary>
+      <div class="note" style="margin:4px 0">${a.climbs.map(c => `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a>${c.grade ? ` ${esc(c.grade)}` : ''} (${c.videos ? `${c.videos} YouTube video(s), ${c.theirs} of them theirs` : 'no YouTube video'}; ${c.posts.map((p, k) => `<a href="${esc(p)}" target="_blank" rel="noopener">post ${k + 1}</a>`).join(', ')}${c.eight_a ? `; <a href="${esc(c.eight_a)}" target="_blank" rel="noopener">8a.nu</a>` : ''})`).join(' · ')}
+        ${a.climber_url ? ` · <a href="${esc(a.climber_url)}" target="_blank" rel="noopener">their climbing-history.org page</a>` : ''}</div>
+      <textarea rows="12" style="width:100%" class="ask-draft"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px">
+        <button class="sec ask-copy">Copy the message</button>
+        <select class="ask-status">${got.states.map(st => `<option${st === a.status ? ' selected' : ''}>${esc(st)}</option>`).join('')}</select>
+        <input type="text" class="ask-note" placeholder="a note: where you wrote, what they said" style="flex:1;min-width:160px">
+        <button class="sec ask-save">Save</button></div></details>`).join('');
+  box.querySelectorAll('[data-ask]').forEach(d => {
+    const a = got.asks[+d.dataset.ask];
+    d.querySelector('.ask-draft').value = a.draft; d.querySelector('.ask-note').value = a.note || '';
+    d.querySelector('.ask-copy').onclick = async () => {
+      try { await navigator.clipboard.writeText(d.querySelector('.ask-draft').value); msg('Copied. Nothing was sent: paste it where you write to them.', 5000); }
+      catch { d.querySelector('.ask-draft').select(); msg('Select and copy it from the box.', 5000); }
+    };
+    d.querySelector('.ask-save').onclick = async () => {
+      try { msg((await call('/api/admin/actions/ask-set', { climber: a.climber, status: d.querySelector('.ask-status').value, note: d.querySelector('.ask-note').value })).result, 5000); loadAsks(); }
+      catch (e) { msg(e.message, 8000); }
+    };
+  });
+}
+$('#asks-load').onclick = loadAsks;
 $('#frames-check').onclick = async () => {
   const n = state?.tiers?.frames_unchecked || 0;
   if (!n || !confirm(`Look at ${n} video(s) for cuts? A few seconds each, one at a time at low priority: about ${Math.max(1, Math.round(n * 4 / 60))} min in all.`)) return;

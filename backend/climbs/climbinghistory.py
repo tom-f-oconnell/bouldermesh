@@ -104,8 +104,8 @@ def _info(doc: htmlmini.Node) -> dict[str, htmlmini.Node]:
 
 
 def _ascents(doc: htmlmini.Node) -> tuple[list[dict], dict[str, dict]]:
-    """A page's ascents in its order, [{climber, date, style, note, done}], and each by its row's id (which its notes'
-    row carries too)."""
+    """A page's ascents in its order, [{climber, climber_url, date, style, note, done}], and each by its row's id (which
+    its notes' row carries too)."""
     out, by_row = [], {}
     for tr in doc.find_all("tr", cls="collapsible-row"):
         if "ascent" not in tr.classes:
@@ -113,8 +113,10 @@ def _ascents(doc: htmlmini.Node) -> tuple[list[dict], dict[str, dict]]:
         tds = [c for c in tr.children if isinstance(c, htmlmini.Node) and c.tag == "td"]
         if len(tds) < 4:
             continue
+        who = tds[1].find("a")
         a = {"climber": tds[1].text() or None, "style": tds[2].text() or None,
-             "date": tds[3].get("data-sort-value") or tds[3].text() or None, "done": "dnf" not in tr.classes}
+             "date": tds[3].get("data-sort-value") or tds[3].text() or None, "done": "dnf" not in tr.classes,
+             "climber_url": BASE + who.get("href") if who is not None and (who.get("href") or "").startswith("/climber/") else None}
         out.append(a)
         by_row[tr.get("data-row-id") or ""] = a
     for small in doc.find_all("small", cls="ascent-subtitle"):
@@ -204,7 +206,7 @@ def parse_climb(html: str, url: str) -> Climb:
         elif ig and ig[1] not in seen:
             seen.add(ig[1])
             instagram.append({"url": href.split("?")[0], "climber": asc.get("climber") if asc else None,
-                              "date": asc.get("date") if asc else None})
+                              "date": asc.get("date") if asc else None, **({"climber_url": asc["climber_url"]} if asc and asc.get("climber_url") else {})})
     crag_id = CRAG_RE.search(crag_url or "")
     return Climb(source=SOURCE, source_id=source_id(cid), url=url, name=name, kind=kind, grade=grade, grades=by_scale, fa=fa,
                  area_path=above + ([crag] if crag else []), area_urls=[crag_url] if crag_url else [],

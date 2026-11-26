@@ -88,10 +88,11 @@ assert [(v.url[-11:], v.credit, v.start) for v in c.videos if "youtube" in v.url
 assert [v.url for v in c.videos if "vimeo" in v.url] == ["https://vimeo.com/138381117"], "a film to pay for isn't a video to fetch"
 assert c.videos[0].title == "Nalle Hukkataival, 2016-10-24" and all(v.page == c.url and v.source == "climbinghistory" for v in c.videos)
 # Instagram is listed, with whose ascent each post was given for, and isn't among its videos
+who = {"climber_url": f"{BASE}/climber/1/x"}     # the climber's own page there, for asking them for it
 assert c.raw["instagram"] == [
-    {"url": "https://www.instagram.com/p/DNIgOzIs8zE/", "climber": "Nalle Hukkataival", "date": "2016-10-24"},
-    {"url": "https://www.instagram.com/p/d34fcpSEr-/", "climber": "Nalle Hukkataival", "date": "2016-10-24"},
-    {"url": "https://www.instagram.com/reel/CrB1L4ctXrR/", "climber": "Will Bosi", "date": "2023-04-12"}], c.raw["instagram"]
+    {"url": "https://www.instagram.com/p/DNIgOzIs8zE/", "climber": "Nalle Hukkataival", "date": "2016-10-24", **who},
+    {"url": "https://www.instagram.com/p/d34fcpSEr-/", "climber": "Nalle Hukkataival", "date": "2016-10-24", **who},
+    {"url": "https://www.instagram.com/reel/CrB1L4ctXrR/", "climber": "Will Bosi", "date": "2023-04-12", **who}], c.raw["instagram"]
 assert not any("instagram" in v.url for v in c.videos)
 assert c.raw["aka"] == "The Lappnor Project" and c.raw["crag_id"] == "17691" and c.raw["country"] == "Finland" and not c.raw["has_map"], c.raw
 assert c.cross_refs["8a"].startswith("https://www.8a.nu/") and set(c.raw["links"]) == {"UKClimbing.com", "8a.nu"}, c.cross_refs
@@ -374,6 +375,32 @@ assert not server.q("SELECT 1 FROM same_climbs WHERE ch='ch5000'")
 server.create_campaign("", "popularity", HEAD + mp_row(601, "Karoshi", "Some Boulder > North Mountain > Hueco Tanks > Texas", 31.925, -106.045), start=False)
 assert server.q("SELECT mp FROM same_climbs WHERE ch='ch5000'", one=True)["mp"] == "601"
 print("the same climb on Mountain Project OK")
+
+# --- footage to ask for: one draft a climber, where asking got to kept, climbs found since shown --------------------
+asks = server.admin_asks({})["asks"]
+assert [(a["climber"], len(a["climbs"]), a["only"], a["status"]) for a in asks] == [
+    ("Nalle Hukkataival", 1, 0, "to ask"), ("Will Bosi", 1, 0, "to ask")], asks
+will = asks[1]
+assert will["draft"].startswith("Hi Will,") and "https://www.instagram.com/reel/CrB1L4ctXrR/" in will["draft"] and "Burden of Dreams (9A), Lappnor" in will["draft"]
+assert will["climbs"][0]["theirs"] == 1 and will["climbs"][0]["eight_a"].startswith("https://www.8a.nu/") and will["climber_url"] == f"{BASE}/climber/1/x"
+assert "(and 1 other post)" in asks[0]["draft"], asks[0]["draft"]
+try:
+    server.admin_ask_set({"climber": "Will Bosi", "status": "spammed"})
+    raise AssertionError("not a state")
+except ValueError as e:
+    assert "status must be" in str(e), e
+server.admin_ask_set({"climber": "Will Bosi", "status": "asked", "note": "Instagram DM, Nov 26"})
+web[f"{BASE}/climb/2000/honey-badger"] = page(2000, "Honey Badger", "8C+", "Badger Cove", 55, ["United Kingdom", "England"], ascent(
+    7, "Will Bosi", "2021-11-01", "First ascent.", link("https://www.instagram.com/p/HONEYBADGER1/")))
+server.upsert_climb(ch.fetch(f"{BASE}/climb/2000/honey-badger")[0])
+asks = server.admin_asks({})["asks"]
+assert [(a["climber"], a["status"]) for a in asks] == [("Nalle Hukkataival", "to ask"), ("Will Bosi", "asked")], "those still to ask first"
+will = asks[1]
+assert will["since"] == ["Honey Badger"] and will["only"] == 1 and will["note"] == "Instagram DM, Nov 26", will
+assert [c["name"] for c in will["climbs"]] == ["Honey Badger", "Burden of Dreams"], "the climb with no other video first"
+server.admin_ask_set({"climber": "Will Bosi", "status": "asked", "note": "Instagram DM, Nov 26"})     # saved again: what it covered stands
+assert server.admin_asks({})["asks"][1]["since"] == ["Honey Badger"]
+print("footage to ask for OK")
 
 ch.http.get_text, ch.http.get_json = real_get_text, real_get_json
 print("ALL CLIMBING-HISTORY TESTS PASSED")
