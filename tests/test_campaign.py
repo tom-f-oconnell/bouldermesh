@@ -2474,6 +2474,35 @@ assert "this has 400 faces, under half the 1,000 of mesh" in server.read_log(kep
 faces_made["n"] = 600
 m7 = server.run_reconstruct(kept, keep_better=True)
 assert current() == m7, "over half the faces: the newest is current"
+checked = {"consistent": {}}
+
+
+def placing_checked(images, work, out_dir, log, use_gpu=False, internet=False, tracker=None):
+    got = placing_faces(images, work, out_dir, log, use_gpu, internet, tracker)
+    (out_dir / pipeline.MAPPER_FILE).write_text(json.dumps(checked))
+    return got
+
+
+pipeline.reconstruct = placing_checked
+placing[:] = "ab"
+checked["consistent"] = {"collapsed": ["c.jpg"], "placed_again": ["c.jpg"]}
+m8 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m7, "placed again in agreement, yet not in the mesh: it counts"
+assert server.dropped_by_checks(m8) == set()
+checked["consistent"] = {"collapsed": ["c.jpg"], "placed_again": []}
+placing[:] = "a"
+m9 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m7, "one dropped, yet another the mesh before placed missing: the one before stays"
+assert "not counting 1 this one's checks dropped as misplaced" in server.read_log(kept)
+placing[:] = "ab"
+m10 = server.run_reconstruct(kept, keep_better=True)
+assert current() == m10, "the one camera its checks dropped as collapsed doesn't count against it"
+assert not (server.MESHES / m9 / "scale.json").exists(), "kept behind as it was made: never given its size"
+server.make_current(m9)
+assert current() == m9 and (server.scale_mod.load(server.MESHES / m9) or {}).get("status") == "queued", \
+    "made current by hand: given what a new current mesh is"
+server.make_current(m10)
+assert current() == m10
 pipeline.reconstruct = fake_reconstruct
 print("the same photos once, and keeping the better mesh OK")
 

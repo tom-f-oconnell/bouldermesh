@@ -1555,15 +1555,49 @@ def supersede(old: str, new: str) -> None:
 
 
 def make_current(mid: str) -> None:
-    """Go back to an older version of a mesh, which takes over from the one that replaced it."""
-    m = q("SELECT replaced_by, source FROM meshes WHERE id=?", mid, one=True)
+    """Go back to an older version of a mesh, which takes over from the one that replaced it. One that never was
+    current (a rebuild that placed fewer photos than the mesh before: run_reconstruct()'s keep_better) is given what a
+    new mesh is given as it takes over (take_over())."""
+    m = q("SELECT replaced_by, source, demo FROM meshes WHERE id=?", mid, one=True)
     if not m or not m["replaced_by"]:
         return
+    never = not any((MESHES / mid / f).exists() for f in (viewpoints.FILE, scale_mod.FILE, beta_mod.FILE))
     supersede(m["replaced_by"], mid)
-    if m["source"].startswith("project:"):
-        q("UPDATE projects SET mesh_id=? WHERE id=?", mid, m["source"].split(":", 1)[1], write=True)
-    settle_versions(mid)
+    pid = m["source"].split(":", 1)[1] if m["source"].startswith("project:") else None
+    if pid:
+        q("UPDATE projects SET mesh_id=? WHERE id=?", mid, pid, write=True)
+    if never and pid and (PROJECTS / pid).is_dir():
+        take_over(mid, pid, lambda line: append_log(pid, line), demo=bool(m["demo"]))
+    else:
+        settle_versions(mid)
     meshes_changed()
+
+
+def take_over(mid: str, pid: str, log, demo: bool = False, carried: bool = False) -> None:
+    """What a project's new mesh is given as it becomes the current one: its climbs placed on it, what it left out (a
+    boulder's), the old meshes it covers retired, and its size, splat, scenery and beta queued.
+
+    Args:
+        carried: what was made from its cameras was carried over from the mesh it was made again from (run_kept()):
+            its size and beta aren't found again where they were.
+    """
+    proj = q("SELECT kind, boulder FROM projects WHERE id=?", pid, one=True)
+    if proj and proj["kind"] == "boulder":
+        place_climbs(mid, pid, log)
+        if not is_pool(proj["boulder"]):    # however it was asked for: an area, its boulder's job, or Rebuild
+            keep_rest(mid, pid, log, queue=settings().get("boulders.rest_auto"), untied=False)
+            log_shares(mid, log)
+            settle_versions(mid, log)
+    retire_covered(mid, log)
+    if demo:
+        return
+    if not (carried and (scale_mod.load(MESHES / mid) or {}).get("status") == "done"):     # its size, carried over
+        queue_scale(mid)
+    queue_splat(mid)
+    if (PROJECTS / pid / "scenery" / SCENERY_DONE).exists():     # a capture's scenery, all sent before its mesh was made
+        queue_scenery(pid)
+    if settings().get("beta.auto") and beta_mod.videos(MESHES / mid) and not (carried and (MESHES / mid / "beta.json").exists()):
+        queue_beta(mid)     # while its videos are still in the cache
 
 
 def clean_mesh(mid: str, log) -> None:
@@ -4989,14 +5023,27 @@ def run_rest(pid: str, key: str, resume: bool, log, tracker) -> None:
         attempt(status="failed" if why else "error", mesh=None, climbs=[], why=why or last_failure(pid))
 
 
-def fewer_placed(before: str, mid: str, photos: Path) -> tuple[int, int] | None:
-    """(how many photos mesh mid placed, how many mesh before did), if mid was made from photos that included every one
-    before placed, and placed fewer of them; else None."""
+def dropped_by_checks(mid: str) -> set[str]:
+    """The photos mesh mid's placing checks dropped as misplaced (pipeline._keep_consistent(): cameras outside the
+    largest agreeing group of a global placing, and those placed collapsed and not placed again in agreement)."""
+    c = (_read_json(MESHES / mid / pipeline.MAPPER_FILE) or {}).get("consistent") or {}
+    gone = set(c.get("dropped") or []) | set(c.get("collapsed") or []) | set(c.get("collapsed_again") or [])
+    return gone - (set(c.get("placed_again") or []) - set(c.get("collapsed_again") or []))
+
+
+def fewer_placed(before: str, mid: str, photos: Path) -> tuple[int, int, int] | None:
+    """(how many photos mesh mid placed, how many mesh before did, how many of before's were left out of that count),
+    if mid was made from photos that included every one before placed, and placed fewer of them; else None. Photos
+    mid's checks dropped as misplaced (dropped_by_checks()) don't count for before: on Nov 25 a remake of Wedge Boulder
+    lost to the mesh before by the one camera it dropped as collapsed, which that mesh, made before the check, kept."""
     was, now = placed_photos(before), placed_photos(mid)
-    if not was or now is None or len(now) >= len(was):
+    if not was or now is None:
         return None
     given = {f.name for f in photos.iterdir()} if photos.is_dir() else set()
-    return (len(now), len(was)) if set(was) <= given else None
+    if not set(was) <= given:
+        return None
+    counted = [n for n in was if n not in dropped_by_checks(mid)]
+    return (len(now), len(counted), len(was) - len(counted)) if len(now) < len(counted) else None
 
 
 # a rebuild with fewer than this share of the mesh before's faces leaves that one current (fewer_faces()): on Nov 23 a
@@ -5282,7 +5329,8 @@ def run_reconstruct(pid: str, internet: bool = False, tracker: Tracker | None = 
         worse = placed or smaller
         if worse:
             supersede(mid, before)
-            log((f"this placed {placed[0]} of its photos, fewer than the {placed[1]} mesh {before} placed from them" if placed else
+            log((f"this placed {placed[0]} of its photos, fewer than the {placed[1]} mesh {before} placed from them"
+                 + (f" (not counting {placed[2]} this one's checks dropped as misplaced)" if placed[2] else "") if placed else
                  f"this has {smaller[0]:,} faces, under half the {smaller[1]:,} of mesh {before}") +
                 ": that one stays the current one, and this is kept as an older version of it")
         elif before:
