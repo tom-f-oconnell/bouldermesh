@@ -4194,8 +4194,10 @@ async function refreshCampaigns(kept = null){
       // its page: a Mountain Project area's, or the climbing-history.org list of the hardest it is
       const mpUrl = c.list_url || (c.area_id ? `https://www.mountainproject.com/area/${encodeURIComponent(c.area_id)}` : null);
       const site = c.list_url ? 'climbing-history.org' : 'Mountain Project';
-      const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on ${site}">${esc(c.name)}</a></b>
-        <button class="copy" title="Copy its ${site} link, to enter it again above" aria-label="Copy its ${site} link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
+      // its name lists its meshes (as its circle on the map does); its page has a button of its own
+      const title = ((c.meshed || n.done) ? `<b><a href="#" class="tomeshes" title="Its meshes, on the Meshes tab">${esc(c.name)}</a></b>` : `<b>${esc(c.name)}</b>`)
+        + (mpUrl ? ` <button class="sm sec topage" title="Its page on ${site}, in a new tab">${site} ↗</button>
+        <button class="copy" title="Copy its ${site} link, to enter it again above" aria-label="Copy its ${site} link">${COPY_ICON}</button>` : '');
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(named(i, true))}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(named(i, true))}</a>`}</span><small>${stars(i.stars)}${wentHtml(i)}</small>
         <span>${i.mesh_id && i.status === 'hidden' ? '<span class="status hidden-mesh">hidden</span> ' : ''}${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
@@ -4271,6 +4273,8 @@ async function refreshCampaigns(kept = null){
       d.querySelector('.tryskipped')?.addEventListener('click', () => { if (ask(`Try meshing the ${c.again.triable} climbs in "${c.name}" that were skipped for too few viewpoints, which the check now lets COLMAP try? Those it can't place enough photos of take a few minutes each; those it can, most of an hour. ${alone}`)) post('rebuild', { skipped_only: true }); });
       d.querySelector('.boulders')?.addEventListener('click', () => { if (ask(`Mesh the ${c.again.boulders} boulders in "${c.name}" with more than one climb, each from the photos of all its climbs, as meshes of their own? No climb's own mesh changes. Climbs on them never harvested are harvested first, at about a minute each for their pages; then pooling takes a few minutes per boulder, and meshing most of an hour for those with enough viewpoints. ${alone}`)) post('boulders'); });
       d.querySelector('.rebuildall')?.addEventListener('click', async () => { if (await askDanger(`Mesh every climb in "${c.name}" with enough viewpoints again?`, `Boulders meshed whole are meshed again from all their climbs' photos, once each, and pools of climbs whose photos match are meshed together again after. Each can take most of an hour, so this can take days. Each new mesh becomes the one shown (unless "keep the mesh before" holds it back); the one before stays as an older version. ${alone}`, 'Rebuild all')) post('rebuild'); });
+      d.querySelector('.tomeshes')?.addEventListener('click', ev => { ev.preventDefault(); listArea(c.name); });
+      d.querySelector('.topage')?.addEventListener('click', () => window.open(mpUrl, '_blank', 'noopener'));
       d.querySelector('.copy')?.addEventListener('click', async ev => {
         const b = ev.currentTarget;
         if (!await copyText(mpUrl)) return toast(`Couldn't copy it: ${mpUrl}`, 10000);
