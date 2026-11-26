@@ -1,7 +1,7 @@
 # BoulderMesh — prototype photogrammetry web app for boulders
 
 Upload photos or a video → reconstruct a mesh (COLMAP + OpenMVS) → view it in the browser.
-Import climbs from Mountain Project / OpenBeta / Kaya, put them on a map, link meshes to
+Import climbs from Mountain Project / climbing-history.org / OpenBeta / Kaya, put them on a map, link meshes to
 the problems on them, and try **rough photogrammetry from publicly available photos**
 of a boulder (source-page photos, Google Images, geotagged Commons/Flickr photos, beta
 video frames).
@@ -60,11 +60,20 @@ uses its mesh, or carries on from its harvest, rather than doing them again. KAY
 prohibit scraping and circumventing their app, so the Kaya adapter only records links
 and imports files you already hold.
 
+**climbing-history.org** is a fourth source, for hard climbs anywhere (Mountain Project is thin outside the US). The
+Climbs tab's *Import* takes a climb's link (`climbing-history.org/climb/826/burden-of-dreams`): its name, grade, crag,
+first ascent, and position (its own where the site has one, else its crag's). Its videos are the YouTube links in its
+ascents' references. Instagram posts are only listed, never fetched. A list of its hardest boulder problems
+(`climbing-history.org/hardest?discipline=boulder&grade=8C%2B`) goes in the Areas tab's *Start a job* box, like an
+area: with *First N meshes*, its hardest N, and its card says how far that's got. Its terms allow browsing and ask only
+that automated traffic not load its servers, so pages are cached and requests seconds apart. `design.md` has the rest.
+
 ### CLI
 
     python cli.py fetch  https://www.mountainproject.com/route/105835104/midnight-lightning
     python cli.py fetch  https://www.mountainproject.com/area/109861444/big-columbia-boulder   # area + problem summaries
     python cli.py fetch  https://openbeta.io/climbs/<uuid>
+    python cli.py fetch  https://climbing-history.org/climb/826/burden-of-dreams
     python cli.py search "Camp 4 Boulders"              # OpenBeta by name
     python cli.py search --near 37.7417 -119.6035 --radius 1500
     python cli.py mp-csv 105833471 --type boulder        # Mountain Project route-finder export
@@ -1531,7 +1540,7 @@ Security, then WAF, then *Rate limiting rules* (or *Security rules*, then a rate
     backend/occlusion.py           person masks for reconstruction
     backend/progress.py            per-step job progress, behind the UI's progress bars
     backend/climbs/common.py       Climb/Media types, cached + rate-limited + robots-aware HTTP client
-    backend/climbs/mountainproject.py, openbeta.py, kaya.py   adapters
+    backend/climbs/mountainproject.py, openbeta.py, kaya.py, climbinghistory.py   adapters
     backend/climbs/harvest.py      photo sources, download, provenance
     backend/climbs/youtube.py      finding climbs' videos, and climbers' heights and ape indexes in their text
     backend/provenance.py          where each mesh's photos came from, kept with the mesh
@@ -1593,13 +1602,15 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
                                                         area or grade), with meshes, or whose coordinates look wrong; multi: those
                                                         with more than one mesh first
     GET  /api/climbs/count · GET|PATCH|DELETE /api/climbs/{id}
-    POST /api/climbs/import {url}                       one climb's MP / OpenBeta / Kaya URL (areas: an area's job)
+    POST /api/climbs/import {url}                       one climb's MP / climbing-history.org / OpenBeta / Kaya URL (areas
+                                                        and lists of the hardest: an area's job)
     POST /api/climbs/search {q, lat, lng, radius_m}     OpenBeta live search
     POST /api/climbs/manual {...} · POST /api/climbs/kaya-export (multipart csv/json)
     POST /api/climbs/{id}/harvest {sources:[climb,google,ddg,commons,flickr,youtube], reconstruct, filter}
     POST /api/climbs/{id}/boulder                       mesh its boulder from every photo of its climbs, harvesting those never harvested
     GET  /api/campaigns · POST /api/campaigns {area, order:popularity|rating|data, start, csv, without_youtube, max_meshes, count_failures, check_new,
                                                same_photos_once, keep_better, mapper_below, mapper_more}
+                                               (area: an MP area's URL or id, or a climbing-history.org list of the hardest's URL)
     POST /api/campaigns/{id}/options {without_youtube, max_meshes, count_failures, same_photos_once, keep_better, mapper_below, mapper_more}   an area listed again is taken up again
     POST /api/campaigns/{id}/start · POST /api/campaigns/{id}/stop {now} · DELETE /api/campaigns/{id}
     POST /api/campaigns/{id}/pause {source_id, paused}  pause one of its climbs (false: resume it)
@@ -1684,6 +1695,7 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
 gets every optional check; the tests also pass without them.
 
     python3 tests/test_parsers.py     # offline: MP/OpenBeta/Kaya parsers on fixtures
+    python3 tests/test_climbinghistory.py   # offline: climbing-history.org's pages and lists, a climb imported, a list meshed as an area's job
     python3 tests/test_relevance.py   # offline: relevance filter on synthetic photos, progress tracking (CLIP downloads its model)
     python3 tests/test_meshmetrics.py # offline: the Meshes tab's numbers: distinct viewpoints, coverage round the rock
     python3 tests/test_pipeline.py    # offline: reconstruction steps with COLMAP/OpenMVS stubbed, progress parsing

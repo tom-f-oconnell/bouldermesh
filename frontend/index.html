@@ -540,10 +540,10 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       <section class="w">
         <h2>Import</h2>
         <div class="row">
-          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route URL · openbeta.io/climbs/<uuid> · kaya link">
+          <input type="text" id="imp-url" class="grow" placeholder="mountainproject.com route URL · climbing-history.org/climb/… · openbeta.io/climbs/<uuid> · kaya link">
           <button id="imp-go">Import</button>
         </div>
-        <p class="meta" style="margin:6px 0 0">One climb's link. A whole area: start a job for it in the Areas tab.</p>
+        <p class="meta" style="margin:6px 0 0">One climb's link. A whole area, or a climbing-history.org list of the hardest: start a job for it in the Areas tab.</p>
         <details style="margin-top:8px"><summary>Add manually / Kaya export</summary>
           <div class="row" style="margin-top:6px"><input type="text" id="m-name" placeholder="name" class="grow"><input type="text" id="m-grade" placeholder="grade" style="width:80px"></div>
           <div class="row" style="margin-top:6px"><input type="text" id="m-boulder" placeholder="boulder name" class="grow"><input type="text" id="m-ll" placeholder="lat, lng" style="width:150px"></div>
@@ -573,7 +573,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
     <div class="pane" id="pane-areas">
       <section class="w">
         <details id="ca-box" open><summary><h2>Start a job</h2></summary>
-        <textarea id="ca-area" rows="3" style="width:100%" placeholder="MP area URLs, one a line, meshed in the order listed, e.g. mountainproject.com/area/105720495/joshua-tree-national-park"></textarea>
+        <textarea id="ca-area" rows="3" style="width:100%" placeholder="MP area URLs, one a line, meshed in the order listed, e.g. mountainproject.com/area/105720495/joshua-tree-national-park&#10;or a climbing-history.org list of the hardest, e.g. climbing-history.org/hardest?discipline=boulder&amp;grade=8C%2B (set First N below for its hardest N)"></textarea>
         <div class="row" style="margin-top:8px">
           <label>Order
             <select id="ca-order" style="width:auto">
@@ -587,7 +587,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
         </div>
         <details style="margin-top:6px"><summary>More options</summary>
           <label class="row" style="margin-top:6px" title="Off: a climb waits until YouTube has been searched for its videos (by a volunteer, on a server YouTube refuses) before it's meshed. On: meshes it anyway, as when no volunteer is connected to search."><input type="checkbox" id="ca-noyt" autocomplete="off"> Mesh climbs without searching YouTube</label>
-          <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check MP for climbs added since</label>
+          <label class="row" style="margin-top:6px" title="An area listed already keeps the list Mountain Project gave when it was first entered. On: asks Mountain Project again (up to a minute each), and adds the problems posted since, without changing the order of those listed: by popularity, the new ones come after them. A climbing-history.org list is read again too, and its climbs put in the order it has them now, so one added among its hardest N is meshed."><input type="checkbox" id="ca-checknew" autocomplete="off"> For areas listed already, check MP (or the list) for climbs added since</label>
           <label class="row" style="margin-top:6px" title="On: a boulder whose mesh was made from the photos its climbs have now isn't meshed again, as when one of its climbs comes round again after it was. Off: it's meshed again, which can come out different. Rebuild still rebuilds."><input type="checkbox" id="ca-samephotos" checked autocomplete="off"> Don't mesh a boulder again from the same photos</label>
           <label class="row" style="margin-top:6px" title="On: when a mesh is rebuilt from photos that include every one the mesh before placed, and places fewer of them, or has under half the faces the mesh before has, the mesh before stays the current one, and the new one is kept as an older version. Off: the newest is always current."><input type="checkbox" id="ca-keepbetter" checked autocomplete="off"> Keep the mesh before when a rebuild places fewer of the same photos, or has under half its faces</label>
           <label class="row" style="margin-top:6px" title="COLMAP can place many fewer photos of the same set from one run to the next (19 of 19, then 13, for one boulder). When the model it keeps places under this share of a climb's or boulder's photos, it tries this many more random seeds, a minute or so each, and keeps the model placing most. 0 in either turns it off.">When COLMAP places under
@@ -617,6 +617,11 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
             take for now (waiting for volunteers) is passed over until it has. An area listed already is taken up again with these
             settings, keeping what's done, and moves to its place in the new list. One removed and entered again starts over,
             but its climbs that have meshes keep them.</p>
+          <p>A climbing-history.org list of the hardest boulder problems (climbing-history.org/hardest?discipline=boulder&amp;grade=8C%2B)
+            is a job of its own, in the list's order whatever order is chosen: with a limit of N, its hardest N. Its card says how
+            many of them have been tried. Each climb's page is read as its turn comes, for its position (its own, else its
+            crag's) and the YouTube videos its ascents link to, which it's meshed from with what a search finds. Instagram posts
+            are only listed, never fetched.</p>
         </div></details>
         </details>
       </section>
@@ -3407,7 +3412,8 @@ function climbsCount(list, searching){
     ? `(${total})`
     : `(${total})`;
 }
-const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya' };
+const SOURCE_NAME = { mountainproject: 'Mountain Project', openbeta: 'OpenBeta', kaya: 'Kaya', climbinghistory: 'climbing-history.org' };
+const SOURCE_TAG = { climbinghistory: 'climbing-history.org' };     // what a card's source tag says, where it isn't the source's key
 function climbCard(c){
   const meshes = (c.n_links || 0) + (c.n_boulder || 0), multi = $('#c-multi').checked && meshes > 1;
   // for an editor, the green counts only meshes made under the current rules, and the old ones are counted apart
@@ -3416,7 +3422,7 @@ function climbCard(c){
   // meshes hidden from visitors as failures (only an editor's list counts them): all of them hidden, and it's as unmeshed to a visitor
   const hiddenN = (c.n_links_hidden || 0) + (c.n_boulder_hidden || 0), allHidden = !!hiddenN && hiddenN === meshes && (c.n_shared_hidden || 0) === (c.n_shared || 0);
   const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : '') + (allHidden ? ' dim' : ''); d.dataset.id = c.id;
-  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${hiddenN?`<span class="tag" style="color:var(--bad)" title="${allHidden ? 'Every mesh of it is hidden from visitors as a failure: to them it has no mesh, and it isn\'t among the meshed climbs' : `${hiddenN} of its meshes ${hiddenN === 1 ? 'is' : 'are'} hidden from visitors as failures`}">${allHidden ? 'hidden: mesh failed' : `${hiddenN} mesh${hiddenN === 1 ? '' : 'es'} hidden`}</span>`:''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+  d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(SOURCE_TAG[c.source] || c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${hiddenN?`<span class="tag" style="color:var(--bad)" title="${allHidden ? 'Every mesh of it is hidden from visitors as a failure: to them it has no mesh, and it isn\'t among the meshed climbs' : `${hiddenN} of its meshes ${hiddenN === 1 ? 'is' : 'are'} hidden from visitors as failures`}">${allHidden ? 'hidden: mesh failed' : `${hiddenN} mesh${hiddenN === 1 ? '' : 'es'} hidden`}</span>`:''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
@@ -3567,9 +3573,9 @@ function boulderHtml(c){
   if (!b) return '';
   const seen = m => m.view ? `from ${plural(m.view.photos, 'photo')} of its own` : m.unplaced ? `none of its ${m.unplaced} photos were placed` : 'none of its own photos in it';
   const busy = b.project && BUSY.includes(b.project.status);
-  const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(b.name)}</a>` : esc(b.name);
+  const name = b.url ? `<a href="${esc(b.url)}" target="_blank" rel="noopener" title="Its page on ${c.source === 'climbinghistory' ? 'climbing-history.org' : 'Mountain Project'}">${esc(b.name)}</a>` : esc(b.name);
   const group = b.kind === 'group', reading = b.kind == null && c.source === 'mountainproject';
-  const where = group ? `In <b>${name}</b>, a Mountain Project area of several boulders` : b.kind === 'unknown'
+  const where = group ? (c.source === 'climbinghistory' ? `At <b>${name}</b>, a crag of many boulders` : `In <b>${name}</b>, a Mountain Project area of several boulders`) : b.kind === 'unknown'
     ? `In <b>${name}</b> <small title="${esc(b.why || '')}">(Mountain Project doesn't say it's one boulder)</small>`
     : `On the boulder <b>${name}</b>${reading ? ' <small class="reading">(reading its Mountain Project page…)</small>' : ''}`;
   const running = (b.areas || []).filter(a => ['running', 'stopping'].includes(a.status)), stopped = (b.areas || []).filter(a => !running.includes(a));
@@ -3612,12 +3618,12 @@ async function openClimb(id, focus=true){
   const searched = (c.videos_found||[]).filter(v => v.found_by === 'search' && !vids.some(p => p.url === v.url));
   const sizes = (c.videos_found||[]).map(climberSize).filter(Boolean);
   d.innerHTML = `
-    <div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small><span class="tag src">${esc(c.source)}</span></span><button class="sm sec close">✕ close</button></div>
+    <div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small><span class="tag src">${esc(SOURCE_TAG[c.source] || c.source)}</span></span><button class="sm sec close">✕ close</button></div>
     <div class="meta">${esc((c.area_path||[]).join(' › '))}</div>
     <div class="meta">Boulder: <b>${esc(c.boulder_name||'?')}</b> · FA: <b>${esc(data.fa||'?')}</b>${data.rating?` · ★ ${data.rating} (${data.votes||'?'})`:''}</div>
     <div class="row" style="margin-top:6px"><span class="meta grow">📍 <b>${fmtLL(c.lat,c.lng)}</b> <small>(${esc(c.coord_source||'none')})</small></span>
       ${c.lat!=null?'<button class="sm sec fly">Map</button>':''}<button class="sm sec editll">Edit coords</button>
-      <a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm sec">Source ↗</button></a></div>
+      <a href="${esc(c.url)}" target="_blank" rel="noopener"><button class="sm sec"${c.source === 'climbinghistory' ? ' title="Its page on climbing-history.org, where this climb\'s details and video links come from"' : ''}>Source ↗</button></a></div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then import it again, or Edit coords here.` : ''}</div>` : ''}
     ${data.raw?.stub?`<div class="row notice" style="margin-top:6px"><span class="grow">Summary from the area page. Harvesting fetches the problem page first, or fetch it now for its photos and description.</span><button class="sm sec details">Fetch problem page</button></div>`:''}
     ${data.description?`<details style="margin-top:6px"><summary>Description / location</summary><div class="meta">${esc(data.description)}</div><div class="meta">${esc(data.location||'')}</div></details>`:''}
@@ -3709,7 +3715,7 @@ async function openClimb(id, focus=true){
 
 $('#imp-go').onclick = async () => {
   const url = $('#imp-url').value.trim(); if (!url) return;
-  toast('Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
+  toast(/climbing-history\.org/i.test(url) ? 'Fetching its page and position…' : 'Fetching… (polite rate limit: up to a minute per Mountain Project page)', 120000);
   try {
     const r = await api('/api/climbs/import', { method: 'POST', json: { url } });
     toast(`Imported ${r.imported.length} record(s)`); $('#imp-url').value = '';
@@ -4076,7 +4082,7 @@ $('#create').onclick = async () => {
 $('#pname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create').click(); });
 
 // ---------------------------------------------------------------- areas
-const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first' };
+const ORDER_NAMES = { popularity: 'most popular first', rating: 'highest rated first', data: 'most photos and videos first', list: 'hardest first, as climbing-history.org lists them' };
 const ITEM_NAMES = { done: 'meshed', skipped: 'skipped', failed: 'failed', hidden: 'hidden', waiting: 'waiting for volunteers', harvested: 'harvested, for a mesh with other climbs' };
 const stars = v => v == null ? '' : `★${(+v).toFixed(1)}`;
 let campaignShown = null, meshedShown = null, meshMark = '';
@@ -4183,9 +4189,11 @@ async function refreshCampaigns(kept = null){
       const n = c.counts, active = c.status === 'running' || c.status === 'stopping';
       const left = (n.pending || 0) + (n.running || 0);
       const d = document.createElement('div'); d.className = 'card'; d.dataset.camp = c.id;
-      const mpUrl = c.area_id ? `https://www.mountainproject.com/area/${encodeURIComponent(c.area_id)}` : null;
-      const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(c.name)}</a></b>
-        <button class="copy" title="Copy its Mountain Project link, to enter it again above" aria-label="Copy its Mountain Project link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
+      // its page: a Mountain Project area's, or the climbing-history.org list of the hardest it is
+      const mpUrl = c.list_url || (c.area_id ? `https://www.mountainproject.com/area/${encodeURIComponent(c.area_id)}` : null);
+      const site = c.list_url ? 'climbing-history.org' : 'Mountain Project';
+      const title = mpUrl ? `<b><a href="${esc(mpUrl)}" target="_blank" rel="noopener" title="Its page on ${site}">${esc(c.name)}</a></b>
+        <button class="copy" title="Copy its ${site} link, to enter it again above" aria-label="Copy its ${site} link">${COPY_ICON}</button>` : `<b>${esc(c.name)}</b>`;
       const row = i => `<span><small>#${i.rank}</small></span><span>${i.climb_id ? `<a href="#" data-climb="${i.climb_id}">${esc(named(i, true))}</a>` : `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(named(i, true))}</a>`}</span><small>${stars(i.stars)}${wentHtml(i)}</small>
         <span>${i.mesh_id && i.status === 'hidden' ? '<span class="status hidden-mesh">hidden</span> ' : ''}${i.mesh_id ? `<button class="sm sec" data-mesh="${i.mesh_id}">View</button>` : `<span class="status ${i.status}">${ITEM_NAMES[i.status] || ''}</span>`}</span>${i.note ? `<span></span><span class="note">${esc(i.note)}</span>` : ''}`;
       const state = c.state || c.status;
@@ -4209,7 +4217,8 @@ async function refreshCampaigns(kept = null){
             tip: [tip, sumUp].filter(Boolean).join(' ') };
       d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="statcol"><span class="status ${st.cls}" title="${esc(st.tip)}">${esc(st.label)}</span>${c.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}${offloadedTag(c.away_bytes, "its climbs' photos and videos were", 'Resuming')}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>
-        ${c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
+        ${c.list_url ? `<div class="meta" title="As the list has them: each climb's own page is read as its turn comes, for where it is and the videos its ascents link to. A crag's climbs are meshed on their own, or together where their photos match. Entered again with &quot;check for climbs added since&quot;, the list is read again, and its climbs put in its order now.">${plural(c.listed?.climbs ?? 0, 'climb')} on climbing-history.org's list</div>`
+          : c.listed ? `<div class="meta" title="As Mountain Project lists them. Whether a lowest area is one boulder is read from its page as its climbs come up.">${plural(c.listed.climbs, 'climb')} on MP: ${plural(c.listed.boulders, 'boulder')}, ${plural(c.listed.groups, 'area')} of several rocks${c.listed.unread ? `, ${plural(c.listed.unread, 'lowest area')} not read yet` : ''}</div>` : ''}
         <div class="meta" style="margin-top:6px"><b>${n.done || 0}</b> meshed · ${n.skipped || 0} skipped · ${n.failed || 0} failed${n.hidden ? ` · <span title="Their mesh was hidden from visitors as a failure. Retry failed leaves them: they're meshed again by Rebuild, by new photos, or when a change to how meshes are made touches them.">${n.hidden} hidden</span>` : ''} · ${left} to go${n.paused ? ` · ${n.paused} paused` : ''}${n.waiting ? ` · ${n.waiting} waiting for volunteers` : ''}${n.harvested ? ` · ${n.harvested} harvested, waiting for their boulder's mesh` : ''}${c.again.queued ? ` (${c.again.queued} harvesting or rebuilding again)` : ''}${c.old_queued ? ` · <span class="lowp" title="Their only meshes were made before the rules for what an area meshes last changed, or are another climb's: looked for new photos and meshed again, only when no area has anything else to take. This never starts or resumes the area's own list.">${plural(c.old_queued, 'old mesh', 'old meshes')} being remade, at low priority</span>` : ''}${c.needs_backup ? ` · <span style="color:var(--warn)" title="Their photos were offloaded to the backup to make room: each is asked for back as its turn comes, and waits for it (the backup sends them within about 5 minutes)">needs data from the backup (${c.needs_backup})</span>` : ''}${c.blocked ? ` · <span style="color:var(--bad)" title="What they need was lost from the backup: nothing of them is made or replaced until the admin page says to mesh them again without it, or leave them as they are">${c.blocked} blocked: data lost from the backup</span>` : ''}${n.beyond ? ` · ${n.beyond} more past the limit` : ''}${c.again.changed ? ` · ${c.again.changed} with new photos to rebuild` : ''}${c.only_retries ? ' · running only what was queued again, then stopping' : ''}</div>
         ${(() => { const fin = (n.done || 0) + (n.skipped || 0) + (n.failed || 0) + (n.hidden || 0), all = fin + left + (n.waiting || 0) + (n.harvested || 0);
           return all ? `${countBar(fin / all)}<small>${fin}/${all} climbs finished (meshed, skipped, failed or hidden)</small>` : ''; })()}
@@ -4404,7 +4413,7 @@ $('#ca-go').onclick = async () => {
   const go = $('#ca-go'); go.disabled = true;
   const failed = [], done = [];
   for (const [i, area] of areas.entries()) {
-    toast(`${areas.length > 1 ? `Area ${i + 1} of ${areas.length}: a` : 'A'}sking Mountain Project for its climbs (can take a minute)…`, 90000);
+    toast(`${areas.length > 1 ? `Area ${i + 1} of ${areas.length}: a` : 'A'}sking ${/climbing-history\.org/i.test(area) ? 'climbing-history.org' : 'Mountain Project'} for its climbs (can take a minute)…`, 90000);
     try {
       const c = await api('/api/campaigns', { method: 'POST', json: { area, order: $('#ca-order').value, without_youtube: $('#ca-noyt').checked,
                                                                     max_meshes: max ? +max : null, count_failures: !!max && $('#ca-countfail').checked,
@@ -5003,7 +5012,7 @@ function meshNameHtml(m){
   if (kind === 'climbs') {
     const c = m.climbs.find(x => !x.shared);
     if (!c?.url) return name;
-    const site = /mountainproject\.com/.test(c.url) ? 'Mountain Project' : /openbeta\.io/.test(c.url) ? 'OpenBeta' : '';
+    const site = /mountainproject\.com/.test(c.url) ? 'Mountain Project' : /openbeta\.io/.test(c.url) ? 'OpenBeta' : /climbing-history\.org/.test(c.url) ? 'climbing-history.org' : '';
     return link(c.url, `${c.name}${site ? `, on ${site}` : ': its page'}`);
   }
   if (!m.boulder_url || kind !== 'groups' && kind !== 'boulders') return name;

@@ -979,6 +979,68 @@ of what a job leaves on disk. A climb that fails keeps it, so that trying again 
 A retried climb is flagged and goes first. An area that wasn't running runs only flagged climbs and then
 stops, as pressing Retry on something you'd stopped shouldn't set off the rest of its list.
 
+## Climbs from climbing-history.org, and its lists of the hardest (`backend/climbs/climbinghistory.py`)
+
+**Why it's a source.** Mountain Project is thin outside the US, and the hardest boulder problems are spread over the
+world. climbing-history.org keeps a page for each, with every ascent and the references for it, which is where the
+footage is: of the 81 pages read from its list of problems 8C+ and harder (Nov 26, 2026), every one linked to YouTube or
+Instagram.
+
+**What its pages link to** (those 81):
+
+| | count |
+|---|---|
+| YouTube videos | 212, a median of 2 a climb; 6 climbs have more than 6 |
+| of them, links to a moment in a longer video (`?t=439`) | 31 |
+| Instagram posts and reels | 315 |
+| climbs with Instagram only | 13 |
+| Vimeo | 4 links: 2 plain videos, 2 films to pay for |
+| climbs with a position of their own | 8; the rest get their crag's |
+| climbs in the US | 28 |
+
+**Instagram isn't fetched.** It shows posts to nobody who isn't signed in, and its terms forbid collecting them. Each
+post is kept as a link with whose ascent it was given for (`raw["instagram"]`), which is what asking the climber for
+the footage would start from.
+
+**Only facts are kept**: name, grade, crag, first ascent, position and links. Its contributors' accounts of climbs
+stay on its pages, which a climb's card links to. Its terms (Sept 2025) allow browsing and ask that automated traffic
+not load its servers unreasonably; robots.txt disallows neither climbs nor lists. A climb is one page, plus one
+request for its position (the endpoint its own map asks), cached 30 days, seconds apart.
+
+**A crag is a group, never a boulder.** Its lowest area is a crag (Lappnor, Chironico), which holds many boulders. So
+it's recorded as a group when the climb is read (`crag_noted()`): its climbs are meshed on their own, or together where
+their photos match, as a Mountain Project area of several rocks' are. That's what a stand start and its sit start need
+(Sleepwalker and Return of the Sleepwalker), without pooling a whole crag.
+
+**A list of the hardest is an area's job.** Everything asked of one already existed for areas: a limit of N meshes
+that raising goes on from, counts of what's been tried, checking for climbs added, harvesting again for new videos.
+So the Areas tab's box takes the list's link, and it runs as an area, with three differences:
+
+* Its order is the list's (`LIST_ORDER`), hardest first, whatever order was chosen: a limit of N is its hardest N.
+* Its rows only name each climb and its crag, so a climb's page is read as its turn comes (`listed_page()`), and what it
+  says is given to the list's row: its crag as its lowest area, its videos.
+* Checked again for climbs added, its climbs are put in the order the list has them now (`rank_as_listed()`). A problem
+  added among its hardest N, or graded up into them, is then meshed; one that dropped out keeps its mesh.
+
+**Looking for new videos reads the page again**, afresh: a hard problem's page gains an ascent, and its video, every
+few months. What's new is added to what the climb had, rather than harvesting it from scratch, as a from-scratch
+harvest frames only the first 6 videos (`video_frames()`), and the newest ascents come last.
+
+**Not done, and why:**
+
+* *A linked moment isn't used yet.* A video's start is kept (`Media.start`), but its frames are still taken evenly
+  over its whole length, and beta still looks at its first 5 minutes. For a send 48 minutes into a stream that's
+  almost all off the rock. Frames from around the moment, and beta from there, are the fix; it changes which photos
+  climbs are meshed from, so it waits to be agreed.
+* *Vimeo.* yt-dlp fetches plain Vimeo videos, but the live server asks volunteers for every video, and they take
+  YouTube ids only. Two usable links in 500 didn't justify a second kind of video id through the cache, beta and the
+  backup.
+* *The same climb on Mountain Project.* 28 of the 81 are in US areas Mountain Project covers. One listed by an area
+  here too is a second climb, with a second mesh. Matching them (by name, near the same position) and giving the
+  Mountain Project climb the page's videos is the alternative.
+* *Titles in Font grades.* A search result counts when its title names the climb and its text places it (its crag), or
+  its title gives its V grade; "Burden of Dreams 9A" alone doesn't. The page's own links matter more here than the search.
+
 ## When a job fails (`backend/diagnostics.py`)
 
 Every tool's run logs its time, peak memory and CPU. A failure says how it ended: its exit code, a crash

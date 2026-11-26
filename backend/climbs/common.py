@@ -81,6 +81,7 @@ class Media:
     width: int | None = None
     height: int | None = None
     source: str | None = None     # adapter name
+    start: float | None = None    # for a video: the moment its link points to, in seconds (a send within a long film)
 
     def to_dict(self):
         return dataclasses.asdict(self)
@@ -123,8 +124,9 @@ class Climb:
     @staticmethod
     def from_dict(d: dict) -> "Climb":
         d = dict(d)
-        d["images"] = [Media(**m) for m in d.get("images", [])]
-        d["videos"] = [Media(**m) for m in d.get("videos", [])]
+        fields = {f.name for f in dataclasses.fields(Media)}     # a record kept by a newer version may have more
+        for key in ("images", "videos"):
+            d[key] = [Media(**{k: v for k, v in m.items() if k in fields}) for m in d.get(key, [])]
         known = {f.name for f in dataclasses.fields(Climb)}
         return Climb(**{k: v for k, v in d.items() if k in known})
 

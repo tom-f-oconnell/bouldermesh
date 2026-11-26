@@ -107,6 +107,7 @@ from climbs import youtube as youtube_mod  # noqa: E402
 from progress import Tracker  # noqa: E402
 from climbs import kaya as kaya_mod  # noqa: E402
 from climbs import mountainproject as mp_mod  # noqa: E402
+from climbs import climbinghistory as ch_mod  # noqa: E402
 from climbs.common import Cancelled, Climb, JobControl, jobctl, use_control  # noqa: E402
 from climbs.common import _shared_control as shared_control  # noqa: E402
 from climbs.common import http as climbs_http  # noqa: E402
@@ -662,9 +663,11 @@ def _km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def is_area_url(url: str) -> bool:
-    """Whether a link is to an area (Mountain Project's /area/, OpenBeta's /area(s)/), not to one climb."""
+    """Whether a link is to an area (Mountain Project's /area/, OpenBeta's /area(s)/) or to a list of climbs
+    (climbing-history.org's hardest), not to one climb."""
     path = url.split("?")[0].split("#")[0]
-    return bool(re.search(r"mountainproject\.com/area/\d", path) or re.search(r"openbeta\.io/areas?/", path))
+    return bool(re.search(r"mountainproject\.com/area/\d", path) or re.search(r"openbeta\.io/areas?/", path)
+                or ch_mod.list_key(url))
 
 
 def upsert_climb(c: Climb) -> str:
@@ -694,7 +697,24 @@ def upsert_climb(c: Climb) -> str:
       cid, c.source, c.source_id, c.url, c.name, c.kind, c.grade, c.lat, c.lng, c.coord_source,
       c.boulder_name, json.dumps(c.area_path), json.dumps(c.to_dict()), time.time(), write=True)
     _doubts["at"] = 0.0
+    if c.source == ch_mod.SOURCE and not c.raw.get("stub"):
+        crag_noted(c, cid)
     return cid
+
+
+def crag_noted(c: Climb, climb_id: str) -> None:
+    """For a climbing-history.org climb read from its page: its crag is noted as holding several boulders (a crag is
+    never one rock), so that its climbs are meshed on their own, or together where their photos match (a stand start
+    and its sit start), as a Mountain Project area of several boulders' are; and the lists it's in, which knew it only
+    from their rows, get what its page said: its record, and its crag as its lowest area."""
+    key = boulder_key(c.area_path)
+    if key and not q("SELECT 1 FROM boulders WHERE key=? AND kind='group'", key, one=True):
+        q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)", key,
+          c.raw.get("crag") or c.area_path[-1], c.area_urls[-1] if c.area_urls else None, "group",
+          "it's a crag on climbing-history.org, which holds many boulders", None, time.time(), write=True)
+    q("UPDATE campaign_items SET data=?, boulder=?, climb_id=COALESCE(climb_id, ?), media=? WHERE source_id=? AND "
+      "campaign_id IN (SELECT id FROM campaigns WHERE area_id LIKE 'ch:%')", json.dumps(c.to_dict()), key, climb_id,
+      len(c.images) + VIDEO_WORTH * len(c.videos), c.source_id, write=True)
 
 
 BOULDER_KM = 1.0   # a climb this far from the others on its boulder is probably misplaced
@@ -916,6 +936,8 @@ def climb_obj(cid: str) -> Climb:
     area = q("SELECT ca.name FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id WHERE ci.climb_id=? "
              "ORDER BY ca.priority, ca.created LIMIT 1", cid, one=True)
     c.search_place = area["name"] if area else None    # its YouTube search names the area (youtube.place())
+    if c.source == ch_mod.SOURCE:       # or its crag: the list of the hardest it's in isn't a place
+        c.search_place = c.raw.get("crag")
     c.boulder_mates = [m["name"] for m in q("SELECT name FROM climbs WHERE area_path=? AND id<>? AND name IS NOT NULL",
                                             json.dumps(c.area_path), cid)] if c.area_path else []
     return c
@@ -5730,6 +5752,15 @@ def new_videos(climb_id: str, pid: str, log) -> list[str]:
     c = climb_obj(climb_id)
     used = {e["url"] for e in provenance.harvested(PROJECTS / pid).values() if e.get("source") == "youtube" and e.get("url")}
     have = {youtube_mod.video_id(u) or u for u in used | {v.url for v in c.videos}}
+    linked: list[str] = []      # videos its climbing-history.org page links to now that it didn't when last read
+    if c.source == ch_mod.SOURCE:
+        try:
+            upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False, fresh=True)[0])
+            c = climb_obj(climb_id)
+            linked = [v.url for v in c.videos if (youtube_mod.video_id(v.url) or v.url) not in have]
+            log(f"its climbing-history.org page links to {plural(len(linked), 'video')} it didn't when last read")
+        except Exception as e:
+            log(f"couldn't read its climbing-history.org page again ({e})")
     yt: dict = {}
     found = youtube_mod.search(c, log, want=search_wanter("harvest", pid), days=1, state=yt)
     if yt.get("checked"):
@@ -5741,7 +5772,7 @@ def new_videos(climb_id: str, pid: str, log) -> list[str]:
             record_videos(climb_id, [{**youtube_mod.metadata(url), "url": url, "found_by": "page"}], log)
         except Exception as e:
             log(f"couldn't read the details of {url}: {e}")
-    return [v.url for v in found if (youtube_mod.video_id(v.url) or v.url) not in have]
+    return linked + [v.url for v in found if (youtube_mod.video_id(v.url) or v.url) not in have]
 
 
 def boulder_projects(climb_id: str, but: str | None = None) -> list[Path]:
@@ -5895,7 +5926,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                 (pdir / "photos").mkdir()
                 offload_mod.drop(q, [f"projects/{pid}/{part}" for part in ("photos", "masks", "rejected")])     # made again
             if stub:
-                tracker.update("page", 0.1, "up to a minute on Mountain Project")
+                tracker.update("page", 0.1, "up to a minute on Mountain Project" if c.source == "mountainproject" else "reading its page")
                 log(f"fetching the problem page for its photos/videos: {c.url}")
                 upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False)[0])
                 c = climb_obj(proj["climb_id"])
@@ -5905,6 +5936,12 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                     c = climb_obj(proj["climb_id"])
                 except Exception as e:
                     log(f"couldn't read the problem page again ({e}); using what was read before")
+            elif again and c.source == ch_mod.SOURCE and not (add and (rejudge or not refresh)):
+                try:    # afresh: its ascents and their videos are added to as it's repeated
+                    upsert_climb(climbs_mod.fetch_climb_url(c.url, include_children=False, fresh=True)[0])
+                    c = climb_obj(proj["climb_id"])
+                except Exception as e:
+                    log(f"couldn't read its climbing-history.org page again ({e}); using what was read before")
             turn = filter_turn(pid) if relevance_filter else None
 
             def anchors() -> list[Path]:    # once those ahead of it in its boulder's order have finished (FilterTurns)
@@ -6295,10 +6332,13 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
                     without_youtube: bool = False, max_meshes: int | None = None, count_failures: bool = False,
                     check_new: bool = False, same_photos_once: bool = True, keep_better: bool = True,
                     mapper_below: int | None = None, mapper_more: int | None = None) -> dict:
-    """List a Mountain Project area's boulder problems, in one request, and queue them for meshing.
+    """List a Mountain Project area's boulder problems, in one request, and queue them for meshing. Or the boulder
+    problems of one of climbing-history.org's lists of the hardest (a request for each 50), as an area of its own: in
+    the list's order, hardest first, whatever order is asked for, so that max_meshes is the hardest N, and raising it
+    goes on down the list; each climb's own page is read as its turn comes (listed_page()).
 
     Args:
-        area: its URL or id.
+        area: its URL or id, or the list's URL.
         order: "popularity" (MP's own ranking, as tick counts are only on each climb's own page),
             "rating" (average stars), or "data" (most photos and videos first).
         csv_text: a Route Finder export to use instead of fetching one.
@@ -6308,7 +6348,8 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         max_meshes: stop once this many meshes are made, of its climbs in its order, a boulder meshed from several of
             them counting once (in_scope()); None to mesh all of it.
         count_failures: with max_meshes, count its climbs and boulders that failed or were skipped toward it too.
-        check_new: for an area listed already, ask Mountain Project for its list again, and add the climbs added since.
+        check_new: for an area listed already, ask Mountain Project (or climbing-history.org) for its list again, and
+            add the climbs added since.
         same_photos_once: don't mesh a boulder again from the photos its current mesh was made from (boulder_unchanged()).
         keep_better: when a rebuild from the photos the mesh before was made from places fewer of them, or has under
             half its faces, that mesh stays the current one (run_reconstruct()).
@@ -6323,12 +6364,26 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         raise ValueError(f"order must be one of {', '.join(CAMPAIGN_ORDERS)}")
     max_meshes = clean_max_meshes(max_meshes)
     mapper = clean_mapper({"mapper_below": mapper_below, "mapper_more": mapper_more})
-    aid = mp_mod.area_id(area or "")
+    hardest = ch_mod.list_key(area or "") if not csv_text else None
+    if ch_mod.CLIMB_RE.search(area or ""):
+        raise ValueError("that's one climb's page: import it in the Climbs tab; this takes a list of the hardest, like "
+                         "https://climbing-history.org/hardest?discipline=boulder&grade=8C%2B")
+    if hardest:
+        order = LIST_ORDER
+    aid = hardest or mp_mod.area_id(area or "")
     if not aid and not csv_text:
-        raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park")
+        raise ValueError("enter a Mountain Project area URL, like https://www.mountainproject.com/area/105720495/joshua-tree-national-park, "
+                         "or a climbing-history.org list of the hardest boulder problems, like "
+                         "https://climbing-history.org/hardest?discipline=boulder&grade=8C%2B")
     old = q("SELECT * FROM campaigns WHERE area_id=? ORDER BY created DESC LIMIT 1", aid, one=True) if aid and not csv_text else None
     if old:
-        added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True)) if check_new else 0
+        added = 0
+        if check_new and hardest:
+            recs = ch_mod.fetch_list(hardest, fresh=True)[1]
+            added = add_new_climbs(old["id"], recs)
+            rank_as_listed(old["id"], recs)
+        elif check_new:
+            added = add_new_climbs(old["id"], mp_mod.export_area_csv(aid, sort="popularity", fresh=True))
         q("UPDATE campaigns SET ord=?, max_meshes=?, count_failures=?, without_youtube=?, same_photos_once=?, keep_better=?, "
           "mapper_below=?, mapper_more=?, priority=? WHERE id=?", order, max_meshes, int(bool(count_failures)), int(bool(without_youtube)),
           int(bool(same_photos_once)), int(bool(keep_better)), mapper["mapper_below"], mapper["mapper_more"], next_priority(),
@@ -6337,15 +6392,21 @@ def create_campaign(area: str, order: str = "popularity", csv_text: str | None =
         if start and old["status"] in ("stopped", "done"):
             q("UPDATE campaigns SET status='running', note=NULL, only_retries=0 WHERE id=?", old["id"], write=True)
         return {**q("SELECT * FROM campaigns WHERE id=?", old["id"], one=True), "again": True, "added": added}
-    recs = mp_mod.parse_area_csv(csv_text) if csv_text else mp_mod.export_area_csv(aid, sort="popularity")
-    if not recs:
-        raise ValueError("Mountain Project lists no boulder problems under that area")
+    listed = None
+    if hardest:
+        listed, recs = ch_mod.fetch_list(hardest)
+        if not recs:
+            raise ValueError("climbing-history.org lists no boulder problems there")
+    else:
+        recs = mp_mod.parse_area_csv(csv_text) if csv_text else mp_mod.export_area_csv(aid, sort="popularity")
+        if not recs:
+            raise ValueError("Mountain Project lists no boulder problems under that area")
     common = os.path.commonprefix([c.area_path for c in recs])
     cid = new_id()
-    note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 else None
+    note = "Mountain Project's export stops at 1000 climbs: these are the most popular 1000" if len(recs) >= 1000 and not hardest else None
     q("INSERT INTO campaigns(id,name,area_id,ord,created,note,status,without_youtube,max_meshes,count_failures,same_photos_once,"
       "keep_better,mapper_below,mapper_more,priority) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", cid,
-      common[-1].strip("* ") if common else f"area {aid}", aid, order, time.time(), note, "running" if start else "stopped",
+      listed or (common[-1].strip("* ") if common else f"area {aid}"), aid, order, time.time(), note, "running" if start else "stopped",
       int(bool(without_youtube)), max_meshes, int(bool(count_failures)), int(bool(same_photos_once)), int(bool(keep_better)),
       mapper["mapper_below"], mapper["mapper_more"], next_priority(), write=True)
     add_new_climbs(cid, recs)
@@ -6371,13 +6432,38 @@ def add_new_climbs(cid: str, recs: list[Climb]) -> int:
     return len(rows)
 
 
+def rank_as_listed(cid: str, recs: list[Climb]) -> None:
+    """Put a list of the hardest's climbs in the order the list has them now, with the grades it gives now: a climb
+    added among the hardest N, or graded up into them, is then within a limit of N (limit_scope()), and one that
+    dropped out of them isn't (what it made stays). Those the list no longer has go after the rest, in the order they had."""
+    now = {c.source_id: (i + 1, c) for i, c in enumerate(recs)}
+    rows = q("SELECT source_id, rank FROM campaign_items WHERE campaign_id=? ORDER BY rank", cid)
+    gone = [r["source_id"] for r in rows if r["source_id"] not in now]
+    with _db_lock, db() as con:
+        con.executemany("UPDATE campaign_items SET rank=?, grade=? WHERE campaign_id=? AND source_id=?",
+                        [(rank, c.grade, cid, sid) for sid, (rank, c) in now.items()])
+        con.executemany("UPDATE campaign_items SET rank=? WHERE campaign_id=? AND source_id=?",
+                        [(len(now) + i + 1, cid, sid) for i, sid in enumerate(gone)])
+
+
+def listed_page(c: Climb) -> None:
+    """Read the page of a climb known only from a climbing-history.org list's row, and keep what it says (upsert_climb(),
+    which gives it to the lists it's in: crag_noted()): where it is, its crag, and the videos its ascents link to. Its
+    grade stays the list's where its page gives none ("Ungraded", for one its first ascensionist didn't grade)."""
+    rec = climbs_mod.fetch_climb_url(c.url, include_children=False)[0]
+    if not rec.grade:
+        rec.grade, rec.grades = c.grade, c.grades
+    upsert_climb(rec)
+
+
 def next_priority() -> float:
     """The priority after every area's: an area entered, or entered again, goes after those there are, so that a list of
     them entered at once is taken in its order, top first (_claim())."""
     return (q("SELECT MAX(priority) p FROM campaigns", one=True)["p"] or 0.0) + 1.0
 
 
-ORDER_WORDS = {"popularity": "most popular", "rating": "highest rated", "data": "most photos and videos"}
+LIST_ORDER = "list"     # the order of an area that's a climbing-history.org list of the hardest: the list's own
+ORDER_WORDS = {"popularity": "most popular", "rating": "highest rated", "data": "most photos and videos", LIST_ORDER: "hardest"}
 
 
 def record_run(camp_id: str) -> None:
@@ -6464,7 +6550,8 @@ def set_campaign_options(camp_id: str, options: dict) -> dict:
 
 
 def _in_order(camp: dict, items: list[dict]) -> list[dict]:
-    """An area's climbs in its order: Mountain Project's popularity (its rank), stars, or photos and videos."""
+    """An area's climbs in its order: Mountain Project's popularity (its rank), stars, or photos and videos; a list of
+    the hardest's own order (its rank too)."""
     if camp["ord"] == "rating":
         return sorted(items, key=lambda i: (-(i["stars"] or 0), i["rank"]))
     if camp["ord"] == "data":
@@ -6689,6 +6776,14 @@ def run_campaign_item(camp: dict, item: dict) -> None:
         set_item(cid, sid, status="running", project_id=pid if resume else None, note=None)
         full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
         c = Climb.from_dict(json.loads(full["data"]))
+        if c.source == ch_mod.SOURCE and c.raw.get("stub"):     # known only from its list's row: its page says where it is
+            try:
+                listed_page(c)
+            except Exception as e:
+                set_item(cid, sid, status="failed", note=f"couldn't read its page: {e}")
+                return
+            full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
+            c = Climb.from_dict(json.loads(full["data"]))
         climb_id = full["climb_id"] or upsert_climb(c)
         have = q(f"SELECT l.mesh_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') "
                  f"NOT LIKE ? AND NOT {OLD_MESH} LIMIT 1", climb_id, SHARED + "%", one=True)    # not one old, or another's
@@ -8683,6 +8778,10 @@ def _harvest_again(row: dict, log) -> dict:
             log("no videos of this climb on YouTube that its photos don't already have frames from")
             return {"status": row["was"], "note": "no new videos found"}
         log(f"{len(new)} new video(s) of this climb: harvesting it again")
+        if (q("SELECT source FROM climbs WHERE id=?", row["climb_id"], one=True) or {}).get("source") == ch_mod.SOURCE:
+            # added to what it had: its page can link to more videos than one harvest frames, the newest ascents' last
+            run_harvest(pid, set(HARVEST_SOURCES), False, again=True, add=True, refresh=True)
+            return _harvested_again(row, pid, before)
     run_harvest(pid, set(HARVEST_SOURCES), False, again=True)
     return _harvested_again(row, pid, before)
 
@@ -10430,7 +10529,9 @@ def campaign_view(camp: dict) -> dict:
     return {**camp, "counts": counts, "again": again, "listed": listed, "old_queued": old_queued, "needs_backup": needs_backup,
             "blocked": blocked, "worked": worked, "current": running[0] if running else None,
             "running": running, "paused": paused, "next": pending[:10], "old_next": old_next[:10], "machine_wait": machine_wait(cid), "made": made, "last_mesh": last_mesh,
-            "idle_why": area_idle_why(cid) if camp["status"] == "running" and not running else None}
+            "idle_why": area_idle_why(cid) if camp["status"] == "running" and not running else None,
+            # for one that's a climbing-history.org list of the hardest, the list's link (area_id is then its id here)
+            "list_url": ch_mod.list_url(camp["area_id"]) if str(camp.get("area_id") or "").startswith("ch:") else None}
 
 
 def active_areas(camps: list[dict]) -> set[str]:
@@ -10574,8 +10675,9 @@ def _campaigns_listed() -> list[dict]:
         v["meshed"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=? AND status='done' AND mesh_id IS NOT NULL",
                         c["id"], one=True)["n"]
         v["climbs"] = q("SELECT COUNT(*) n FROM campaign_items WHERE campaign_id=?", c["id"], one=True)["n"]
-        at = q("SELECT AVG(cl.lat) lat, AVG(cl.lng) lng FROM campaign_items ci JOIN climbs cl ON cl.id=ci.climb_id "
-               "WHERE ci.campaign_id=? AND cl.lat IS NOT NULL AND cl.lng IS NOT NULL", c["id"], one=True)
+        at = None if v.get("list_url") else q(     # a list of the hardest is of climbs the world over: nowhere on the map
+            "SELECT AVG(cl.lat) lat, AVG(cl.lng) lng FROM campaign_items ci JOIN climbs cl ON cl.id=ci.climb_id "
+            "WHERE ci.campaign_id=? AND cl.lat IS NOT NULL AND cl.lng IS NOT NULL", c["id"], one=True)
         v["lat"], v["lng"] = (at["lat"], at["lng"]) if at else (None, None)     # where its climbs are, for the areas map
         v["complete"] = c["status"] == "done" and not c.get("max_meshes") and v["meshed"] > 0
         if c["status"] == "stopped":
@@ -14687,8 +14789,11 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/climbs/import":
                 body = self.read_json()
                 url = (body.get("url") or "").strip()
+                if url and "://" not in url:    # pasted without its scheme
+                    url = "https://" + url
                 if is_area_url(url):    # an area is taken whole by an area's job (create_campaign()), not here
-                    return self.send_json({"error": "that's an area: start a job for it in the Areas tab, which lists its "
+                    what = "a list of climbs" if ch_mod.list_key(url) else "an area"
+                    return self.send_json({"error": f"that's {what}: start a job for it in the Areas tab, which lists its "
                                                     "climbs and meshes them; this box takes one climb's link"}, 400)
                 recs = [c for c in climbs_mod.fetch_climb_url(url, include_children=False) if c.kind != "area"]
                 ids = [upsert_climb(c) for c in recs]
