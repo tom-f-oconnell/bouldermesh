@@ -696,7 +696,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
             <option value="mine">My rating</option></select></label>
           <button class="sm sec" id="m-dir" title="Reverse the order">↓</button>
         </div>
-        <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small><span id="m-clear-wrap"><button class="sm sec" id="m-clear" title="All meshes, every area, and every range back to its ends">Clear the filter</button></span></summary>
+        <details id="m-filter" style="margin-bottom:8px"><summary>Filter <small id="m-filter-note"></small><span id="m-clear-wrap"><button class="sm sec" id="m-clear" title="All meshes, every area, every range back to its ends, and nothing hidden for its rating or lack of beta">Clear the filter</button></span></summary>
           <div class="meta" style="margin-bottom:4px" title="Each placed photo counts once among those taken within 15° of the same direction from the rock, so many frames of one video count about once. Coverage: how much of a full circle round the rock its photos see, from above.">Distinct viewpoints count photos taken from nearly the same spot once; coverage is how far round the rock its photos go. A filter left at its ends leaves out nothing, and meshes without that number stay.</div>
           <div class="row" id="m-kinds" style="margin:4px 0 6px" title="Climbs: made for one climb. Groups: from the photos of more than one, but not every climb on a rock Mountain Project names as one boulder (pools of climbs whose photos match, and boulders' meshes that don't place every climb on them). Boulders: every climb known on a rock Mountain Project names as one boulder, each placed by its own photos. Meshes linked to no climb show only with all three ticked. At least one stays ticked."><span class="meta">Of:</span>
             <label><input type="checkbox" data-kind="boulders"> <span>Boulders</span></label>
@@ -4608,7 +4608,10 @@ $('#m-kinds').querySelectorAll('[data-kind]').forEach(b => b.onchange = () => {
 });
 // in the filter's summary, so seen while it's closed: a click on it (even when greyed) neither opens nor closes it
 $('#m-clear-wrap').onclick = e => e.preventDefault();
-$('#m-clear').onclick = () => { meshView.ranges = {}; meshView.hidden = []; meshView.hideKinds = []; saveMeshView(); renderMeshes(); };
+$('#m-clear').onclick = () => {
+  Object.assign(meshView, { ranges: {}, hidden: [], hideKinds: [], noBad: false, noMineBad: false, onlyBeta: false });
+  saveMeshView(); renderMeshes();
+};
 // ---- rating a mesh, from its 3D view: bad, OK or good, and a comment. Kept in this browser (bm_ratings), and sent to the
 // site each time either changes, which keeps one of each for every browser (an id made here, bm_browser)
 const RATING_NAMES = { 1: 'bad', 2: 'OK', 3: 'good' };
@@ -4790,7 +4793,7 @@ function renderMeshes(filter = true){
   pinnedMesh = shownMesh && meshesById[shownMesh] ? shownMesh : null;
   if (pinnedMesh) { const i = shown.findIndex(m => m.id === pinnedMesh); shown.unshift(i >= 0 ? shown.splice(i, 1)[0] : meshesById[pinnedMesh]); }
   const areas = new Set(all.flatMap(meshAreas));
-  $('#m-clear').disabled = !(meshView.hideKinds.length || meshView.hidden.some(a => areas.has(a))
+  $('#m-clear').disabled = !(meshView.hideKinds.length || meshView.noBad || meshView.noMineBad || meshView.onlyBeta || meshView.hidden.some(a => areas.has(a))
     || Object.values(meshView.ranges).some(r => r && (r[0] != null || r[1] != null)));
   $('#m-filter-note').textContent = narrowed ? `(showing ${shown.length} of ${all.length})` : '';
   // each mesh once, however many climbs link to it; a boulder's own mesh and its climbs' own are each one
