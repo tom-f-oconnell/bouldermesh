@@ -61,6 +61,8 @@
   .bars .name{color:var(--fg)} .bars .fig{color:var(--mute);font-variant-numeric:tabular-nums;text-align:right}
   .bars .track{height:16px;display:flex;align-items:center} .bars .bar{height:16px;background:var(--acc);border-radius:0 4px 4px 0;min-width:2px}
   .bars .row.free .bar{background:transparent;border:1px dashed var(--mute);box-sizing:border-box}
+  .bars .sep{grid-column:1/-1;border-top:1px solid var(--line);margin:2px 0}
+  .bars .row.away .bar{background:var(--mute);opacity:.55} .bars .row.away .name{color:var(--mute)} .bars .row.sub .name{padding-left:14px}
   .bars .row{display:contents} .bars .row:hover .name,.bars .row:hover .fig{color:var(--fg)} .bars .row:hover .bar{filter:brightness(1.15)}
   #msg{position:fixed;bottom:14px;right:14px;background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:420px}
   .fb{border-top:1px solid var(--line);padding:8px 0} .fb .note{margin:0 0 4px} .fbtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
@@ -791,7 +793,12 @@ function render(s){
   shown.sort((a, b) => (a[0] === 'other') - (b[0] === 'other') || b[1] - a[1]);
   // the room left, on the same scale: on its disk, or under the cap if that's nearer
   const capped = u.cap && u.cap - u.total < u.free, free = u.total ? Math.max(0, capped ? u.cap - u.total : u.free) : 0;
-  const top = Math.max(1, free, ...shown.map(([, b]) => b));
+  // what's offloaded to the backup, on the same scale but apart: no longer here, so not in the total
+  const OFF_NAME = { 'rejected photos': 'rejected photos', 'videos': 'fetched videos', 'photos': 'photos and masks',
+                     'features': 'meshes\' features', 'older meshes': 'older meshes\' files' };
+  const awayKinds = Object.entries((s.offload || {}).away || {}).filter(([, x]) => x.bytes > 0).sort((a, b) => b[1].bytes - a[1].bytes);
+  const awayTotal = awayKinds.reduce((t, [, x]) => t + x.bytes, 0);
+  const top = Math.max(1, free, awayTotal, ...shown.map(([, b]) => b));
   const size = b => b >= 2 ** 30 ? gb(b) : `${(b / 2 ** 20).toFixed(0)} MB`;
   $('#room-bars').innerHTML = shown.map(([k, b]) => {
     const pct = 100 * b / u.total, label = pct < 1 ? '<1%' : `${pct.toFixed(0)}%`;
@@ -802,7 +809,12 @@ function render(s){
   }).join('') + (u.total ? `<div class="row free" role="row" title="${esc(capped ? `${gb(free)} left under the cap of ${gb(u.cap)}; ${gb(u.free)} free on the disk` : `${gb(u.free)} free on the disk, of ${gb(u.disk)}`)}">`
       + `<span class="name" role="rowheader">${capped ? 'free under the cap' : 'free on its disk'}</span>`
       + `<span class="track" role="cell"><span class="bar" style="width:${(100 * free / top).toFixed(1)}%"></span></span>`
-      + `<span class="fig" role="cell">${gb(free)}</span></div>` : '');
+      + `<span class="fig" role="cell">${gb(free)}</span></div>` : '')
+    + (u.total && awayTotal ? '<div class="sep" role="presentation"></div>' + [['offloaded to the backup', awayTotal, null], ...awayKinds.map(([k, x]) => [OFF_NAME[k] || k, x.bytes, x.n])]
+      .map(([k, b, n], i) => `<div class="row away${i ? ' sub' : ''}" role="row" title="${esc(`${k}: ${gb(b)}${n ? `, ${n.toLocaleString()} offloaded` : ''}, in the backup and not here (not in the data's total)`)}">`
+        + `<span class="name" role="rowheader">${esc(k)}</span>`
+        + `<span class="track" role="cell"><span class="bar" style="width:${(100 * b / top).toFixed(1)}%"></span></span>`
+        + `<span class="fig" role="cell">${i ? `${(100 * b / awayTotal).toFixed(0)}% · ` : ''}${size(b)}</span></div>`).join('') : '');
   $('#room-body').innerHTML = (u.total === undefined ? (u.cap ? 'Not measured yet.' : 'No cap on this server\'s data, so it isn\'t measured by itself: Measure now does.')
       : `The data takes <b>${gb(u.total)}</b>${u.cap ? ` of its cap of ${gb(u.cap)}` : ''}, measured ${new Date(u.checked * 1000).toLocaleString()}${shown.length ? ':' : '.'}`);
   const cnt = u.counts || {}, num = x => (x || 0).toLocaleString();
