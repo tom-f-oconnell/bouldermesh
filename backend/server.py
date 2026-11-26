@@ -27,6 +27,7 @@ import html
 import hashlib
 import hmac
 import io
+import itertools
 import json
 import math
 import mimetypes
@@ -915,6 +916,8 @@ def climb_obj(cid: str) -> Climb:
     area = q("SELECT ca.name FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id WHERE ci.climb_id=? "
              "ORDER BY ca.priority, ca.created LIMIT 1", cid, one=True)
     c.search_place = area["name"] if area else None    # its YouTube search names the area (youtube.place())
+    c.boulder_mates = [m["name"] for m in q("SELECT name FROM climbs WHERE area_path=? AND id<>? AND name IS NOT NULL",
+                                            json.dumps(c.area_path), cid)] if c.area_path else []
     return c
 
 
@@ -2671,6 +2674,8 @@ def make_lines(mid: str) -> bool:
     drawn on it as they are now, or its beta is still being found (its tracks are still coming), or it has neither
     beta nor a drawn line. Whether it made them."""
     d = MESHES / mid
+    if d.is_dir():
+        beta_mod.settle_goes(d)     # beta found before by_goes(), or by a machine whose beta.py is older
     record = beta_mod.load(d) or {}
     if not d.is_dir() or record.get("status") == "running" or not (record or betalines.load_drawn(d)):
         return False
@@ -5615,6 +5620,26 @@ def beta_timings(now: float | None = None) -> dict:
 CHANNEL_TTL = 30 * 86400    # how long a channel's description is trusted before it's read again
 # how long an area's climb waits for volunteers' YouTube searches and videos before it's meshed without the rest
 VOLUNTEER_WAIT = float(os.environ.get("VOLUNTEER_WAIT_HOURS", "24")) * 3600
+
+
+def unlink_boulder_named_videos() -> int:
+    """At startup: climbs' videos found by searching whose titles name the climb only within its boulder's name, and
+    name another climb on it (youtube.names_only_its_boulder()), as matches() took before it knew: not of it.
+    Returns how many were let go."""
+    n = 0
+    rows = q("SELECT cv.climb_id, cv.url, v.title FROM climb_videos cv JOIN videos v ON v.url=cv.url "
+             "WHERE cv.found_by='search' AND v.title IS NOT NULL ORDER BY cv.climb_id")
+    for cid, these in itertools.groupby(rows, key=lambda r: r["climb_id"]):
+        try:
+            c = climb_obj(cid)
+        except KeyError:
+            continue
+        for r in these:
+            if youtube_mod.names_only_its_boulder(c, r["title"]):
+                q("DELETE FROM climb_videos WHERE climb_id=? AND url=?", cid, r["url"], write=True)
+                print(f"video {r['url']} ({r['title']!r}) isn't of climb {c.name!r}, only of its boulder: let go", flush=True)
+                n += 1
+    return n
 
 
 def record_videos(climb_id: str, videos: list[dict], log) -> None:
@@ -16443,6 +16468,7 @@ def main() -> None:
     threading.Thread(target=shape_existing_meshes, daemon=True).start()
     threading.Thread(target=startup_records, daemon=True, name="inputs-backfill").start()
     threading.Thread(target=backfill_step_runs, daemon=True).start()
+    threading.Thread(target=unlink_boulder_named_videos, daemon=True, name="boulder-named-videos").start()
     carried = carry_sets_existing()
     if carried:
         print(f"{carried} mesh(es) given the sets of beta of the older version they took over from", flush=True)

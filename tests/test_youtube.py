@@ -63,6 +63,15 @@ assert yt.query(bleau) == "Venus V1 Fontainebleau", "not Europe"
 bishop = Climb(source="mountainproject", source_id="4", url="", name="Smoking", grade="V0", search_place="Bishop Area",
                area_path=["California", "Eastern Sierra", "Bishop Area", "Buttermilk Country"])
 assert yt.query(bishop) == "Smoking V0 Bishop"
+# a climb named after its boulder isn't in a video that names it only in the boulder's name, and another climb on it
+zinger = Climb(source="mountainproject", source_id="8", url="", name="Zinger", grade="V2 5+", boulder_name="Zinger Boulder",
+               area_path=["California", "Joshua Tree National Park", "Semi-Precious Bouldering", "Zinger Boulder"],
+               boulder_mates=["Dish Mantel"])
+title = "2020-11-28. USA. California. Joshua Tree. Zinger Boulder. Dish Mantel. V2. Failed attempt."
+assert not yt.matches(zinger, title) and yt.names_only_its_boulder(zinger, title)
+assert yt.matches(zinger, "Zinger Boulder. Zinger. V2 - Joshua Tree"), "named outside its boulder's name too"
+assert yt.matches(zinger, "Zinger Boulder V2 - Joshua Tree"), "no other climb of its boulder named"
+assert yt.matches(Climb(**{**zinger.__dict__, "boulder_mates": []}), title), "with no other climbs known, as before"
 assert yt.video_id("https://www.youtube.com/watch?v=e-mg8jg4fT4") == "e-mg8jg4fT4"
 assert yt.video_id("https://youtu.be/H2EeJEvxpJI") == "H2EeJEvxpJI"
 

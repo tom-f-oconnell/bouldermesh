@@ -175,7 +175,7 @@ def top_holds(P, videos: list[dict], far: float) -> list:
     out = []
     for v in videos:
         past = []
-        for h in v.get("holds") or []:
+        for h in [h for h in v.get("holds") or [] if not h.get("stray")]:
             p = np.asarray(h["p"], float)
             if any(beta.LIMBS[c["limb"]][0] == "hand" for c in h["contacts"]) and (p - P[-1]) @ way > 0 \
                     and np.linalg.norm(p - P[-1]) <= far and _along(p, P, S) >= S[-1] - 1e-9:
@@ -460,7 +460,7 @@ def astray(videos: list[dict], laid: dict[str, dict], far: float) -> dict[str, f
         {climb id: share}, 0 for a line whose videos have no holds.
     """
     import numpy as np
-    holds = {v.get("url"): v.get("holds") or [] for v in videos}
+    holds = {v.get("url"): [h for h in v.get("holds") or [] if not h.get("stray")] for v in videos}
     out = {}
     for cid, one in laid.items():
         P = np.asarray(one["p"], float)
@@ -497,7 +497,7 @@ def holds_by_lines(videos: list[dict], of: dict[str, list[str]], laid: dict[str,
     sure = {cid: one for cid, one in laid.items() if doubt[cid] < ASTRAY}
     out = {}
     for v in videos:
-        u, holds = v.get("url"), v.get("holds") or []
+        u, holds = v.get("url"), [h for h in v.get("holds") or [] if not h.get("stray")]   # stray: beta.by_goes()
         by = [np.asarray(one["p"], float) for cid, one in sure.items() if u in of.get(cid, ()) and (one["agree"] >= 2 or u in one["near"])]
         if not holds or not by:
             continue

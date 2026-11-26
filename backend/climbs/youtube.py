@@ -278,11 +278,25 @@ def name_forms(name: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def names_only_its_boulder(c: Climb, title: str | None) -> bool:
+    """Whether a title names this climb only as part of its boulder's or area's name, and names another climb on the
+    same boulder (c.boulder_mates): "Zinger Boulder. Dish Mantel. V2" is of Dish Mantel, not of Zinger."""
+    t = norm(title)
+    forms = [f for f in name_forms(c.name) if len(f.strip()) >= 3]
+    if any(f in t for m in c.boulder_mates for f in name_forms(m) if len(f.strip()) >= 3):
+        for ctx in sorted(set(context(c) + [norm(c.boulder_name or "")]), key=len, reverse=True):
+            if ctx.strip() and any(f in ctx for f in forms):
+                t = t.replace(ctx, " ")
+        return not any(f in t for f in forms)
+    return False
+
+
 def matches(c: Climb, title: str | None, description: str | None = None) -> bool:
     """Whether a video is of this climb: its title names it (name_forms()), and the title or description places it, or
-    the title gives its grade too and its name is distinctive()."""
+    the title gives its grade too and its name is distinctive(). Not if it names it only within its boulder's name,
+    and names another of its boulder's climbs (names_only_its_boulder())."""
     forms = [f for f in name_forms(c.name) if len(f.strip()) >= 3]
-    if not forms or not any(f in norm(title) for f in forms):
+    if not forms or not any(f in norm(title) for f in forms) or names_only_its_boulder(c, title):
         return False
     text = norm(f"{title} {description or ''}")
     if any(x in text for x in context(c)):

@@ -484,8 +484,10 @@ The *Beta* tab shows a mesh with its holds coloured as the Tension Board app doe
 blue hand holds, magenta foot-only holds and red finish holds (start and hand holds can be used as feet
 too). *Find beta* looks at each video with frames placed in the mesh. It finds the climber's hands and
 feet with a pose model, casts them onto the mesh, and keeps the points where one stayed still for at
-least a second. The first holds the hands used are start holds, the last ones finish holds, and holds
-only feet touched are foot holds. Each video has its own holds, which can be shown or hidden, and a picture
+least a second. A video can show more than one go on the rock: the go where the climber's middle rose most gives
+the roles. Its first hand holds are start holds, and the last ones taken before the climber came back down are finish
+holds, not those of a downclimb or a fall. Holds only feet touched are foot holds. Holds only touched on a go that
+never rose (often someone else at the rock's foot) are set aside, hidden like those off their climb's line. Each video has its own holds, which can be shown or hidden, and a picture
 of its frame with its tracks and holds drawn on it. Where its climber went is drawn as its climb's line
 (below), not as a line for each hand and foot. It looks at a video's first 150 s, and on to 300 s while the climber is still on the rock (it stops once they've
 been off it for 30 s). Expect a few minutes per video on a CPU. Meshes built before Nov 3 didn't keep their cameras' lenses, and those before Nov 1

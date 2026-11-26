@@ -62,6 +62,32 @@ assert all(not close(h["p"], G) for h in got), "standing on the ground isn't a h
 assert beta.holds({}, radius=0.1) == []
 assert [h["role"] for h in beta.holds({"rf": [c(1, 2, E)]}, radius=0.1)] == ["foot"]
 
+# goes: the one whose climber rose most gives the roles, its finish where they came down; one that never rose is stray
+hold = lambda p, *cs: {"p": p, "contacts": [{"limb": l, "t0": t0, "t1": t1} for l, t0, t1 in cs]}  # noqa: E731
+H = [hold([0, 1, 0], ("lh", 1, 3), ("rh", 1, 3)),     # 0: start
+     hold([0, 2, 0], ("lh", 4, 6)),                    # 1: on the way up
+     hold([0, 3, 0], ("lh", 7, 9), ("rh", 7, 9)),     # 2: the top
+     hold([0, 2, 0.1], ("rh", 12, 13)),                # 3: downclimbing: not the finish
+     hold([0, 0.1, 1], ("lh", 40, 50), ("rh", 40, 50))]   # 4: something at the rock's foot, a go later
+centre = [[[t, 0, y, 0] for t, y in [(1, 0), (2, 0), (3, 0.3), (4, 0.6), (5, 1), (6, 1.4), (7, 1.8), (8, 2), (9, 2),
+                                      (10, 1.8), (11, 1.2), (12, 0.8), (13, 0.5), (14, 0.2), (15, 0)]],
+          [[t, 0, 0.05, 1] for t in range(40, 51)]]
+given, stray = beta.by_goes(H, centre)
+assert given[:4] == ["start", "hand", "finish", "hand"] and stray == {4}, (given, stray)
+assert [h.get("off", False) for h in beta.settled(H, centre)] == [False] * 4 + [True]
+assert beta.roles([h["contacts"] for h in H])[3:] == ["hand", "finish"], "by when alone, the last hands finish"
+assert beta.by_goes(H, []) == (beta.roles([h["contacts"] for h in H]), set()), "no centre track: as before"
+flat = [[[t, 0, 0.5, 0] for t in range(1, 16)]]      # a traverse: never rises, so nothing comes down
+assert beta.by_goes(H[:4], flat)[0] == beta.roles([h["contacts"] for h in H[:4]])
+
+with tempfile.TemporaryDirectory() as tmp:     # beta found before: settled once, from what it kept
+    d = pathlib.Path(tmp)
+    beta.save(d, {"status": "done", "videos": [{"url": "u", "holds": [{**h, "id": i, "role": r} for i, (h, r) in enumerate(
+        zip(H, beta.roles([h["contacts"] for h in H])))], "centre": centre}, {"url": "v", "holds": [], "centre": []}, {"url": "w", "holds": []}]})
+    assert beta.settle_goes(d) == 2 and beta.settle_goes(d) == 0
+    v = beta.load(d)["videos"][0]
+    assert [h["role"] for h in v["holds"]][:4] == given[:4] and v["holds"][4].get("stray") and v["goes"] == beta.GOES_VERSION
+
 # hands reach past the wrist along the forearm; feet are their toes, or ankles without them
 kp, sc = np.zeros((26, 2)), np.ones(26)
 kp[7], kp[9] = [100, 100], [100, 200]      # left elbow above the wrist

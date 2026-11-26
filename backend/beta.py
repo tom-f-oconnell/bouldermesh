@@ -9,6 +9,12 @@ first hands' holds are start holds, the last hands' finish holds, other hands' h
 only feet touched foot holds. People's masks only say where people are, not which parts are hands
 and which feet, which is why a pose model is used.
 
+A video can have more than one go on the rock, with time off it between, and what's still at its foot can look
+like a climber too (a spotter, a dog on a jacket). Its holds are split into goes (goes()), and the roles come from
+the go whose climber's centre rose most (by_goes()): the finish holds are the last the hands took up before the
+climber came down (a downclimb, a jump off, a fall), not the last they touched. Holds only touched in goes that
+never rose are marked off ("stray"), as the viewer hides those off their climbs' lines.
+
   beta.json      per video: its holds, each limb's track on the mesh and the climber's centre's (centre), both
                  in pieces with spikes taken out, and how far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
@@ -45,6 +51,10 @@ STILL = 0.03            # a hand or foot moving less than this share of the rock
 HOLD_SECONDS = 1.0      # still for this long, it's on a hold
 HOLD_RADIUS = 0.04      # contacts closer than this share of the rock's size are the same hold
 GROUND = 0.04           # feet this close to the lowest part of the mesh are on the ground
+GO_GAP = 15.0           # seconds with no hand or foot on a hold that part one go on the rock from the next
+DROP = 0.5              # a go's climb ends where its climber's centre comes down this share of how far it rose
+CLIMBED = 0.5           # a go whose climber's centre rose less than this share of the most any go's did isn't climbing
+GOES_VERSION = 1        # by_goes() as it is: beta.json's videos made under an older one are settled again (settle_goes())
 MIN_INLIERS = 25        # feature matches a frame needs with a placed frame to be placed by it
 POSE = {"det": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_m_8xb8-300e_humanart-c2c7a14a.zip",
         "det_input_size": (640, 640),
@@ -417,6 +427,113 @@ def roles(held: list[list[dict]]) -> list[str]:
     return out
 
 
+def goes(held: list[list[dict]]) -> list[list[tuple]]:
+    """A video's holds' contacts split into goes on the rock: where no hand or foot is on a hold for GO_GAP seconds.
+
+    Args:
+        held: each hold's contacts, [{limb, t0, t1}].
+
+    Returns:
+        Each go's contacts, as (t0, t1, limb, hold's index), in time order.
+    """
+    out, end = [], None
+    for x in sorted((c["t0"], c["t1"], c["limb"], i) for i, cs in enumerate(held) for c in cs):
+        if end is None or x[0] - end > GO_GAP:
+            out.append([])
+            end = x[1]
+        out[-1].append(x)
+        end = max(end, x[1])
+    return out
+
+
+def by_goes(holds: list[dict], centre: list) -> tuple[list[str], set[int]]:
+    """Each hold's role, and which are stray, by the go (goes()) whose climber's centre rose most.
+
+    A go's climb ends where its climber came down from its highest point by DROP of how far they'd risen (a downclimb,
+    a jump or fall off), else at its last contact: a traverse keeps level, and goes on. Each hand's first hold in the
+    go that rose most is a start hold, and its finish the last hold it took up before that go's climb ended, unless
+    that's its start (a failed go has none). Holds only touched in goes that rose less than CLIMBED of it are stray
+    (someone or something else at the rock's foot, a try that never left the ground). With no centre track, or one
+    that never rises, as roles().
+
+    Args:
+        holds: [{p, contacts: [{limb, t0, t1}]}].
+        centre: the climber's centre track, in pieces of [t, x, y, z], +Y up.
+
+    Returns:
+        A role for each hold, in order, and the indices of the stray ones.
+    """
+    import numpy as np
+    held = [h["contacts"] for h in holds]
+    C = sorted(p for piece in centre or [] for p in piece)
+    split = goes(held)
+
+    def risen(go):  # how far its centre rose from where it began, and when the go ended
+        last = max(x[1] for x in go)
+        P = [p for p in C if go[0][0] - 1 <= p[0] <= last + 1]
+        if len(P) < 3:
+            return 0.0, last
+        y = [float(np.median([q[2] for q in P[max(0, i - 2):i + 3]])) for i in range(len(P))]
+        top, base = max(y), float(np.median(y[:5]))
+        rise = top - base
+        at = y.index(top)
+        down = next((P[i][0] for i in range(at, len(P)) if y[i] < base + (1 - DROP) * rise), None) if rise > 0 else None
+        return rise, last if down is None else down
+
+    rose = [risen(go) for go in split]
+    best = max(range(len(split)), key=lambda i: rose[i][0], default=None)
+    if best is None or rose[best][0] <= 0:
+        return roles(held), set()
+    starts, finishes = set(), set()
+    for limb in ("lh", "rh"):
+        mine = [x for x in split[best] if x[2] == limb]
+        if mine:
+            starts.add(mine[0][3])
+            before = [x for x in mine if x[0] < rose[best][1]]
+            if before:
+                finishes.add(before[-1][3])
+    finishes -= starts
+    kept = {x[3] for go, (r, _) in zip(split, rose) if r >= CLIMBED * rose[best][0] for x in go}
+    out = []
+    for i, cs in enumerate(held):
+        handed = any(LIMBS[c["limb"]][0] == "hand" for c in cs)
+        out.append("start" if i in starts else "finish" if i in finishes else "hand" if handed else "foot")
+    return out, set(range(len(held))) - kept
+
+
+def settled(holds: list[dict], centre: list) -> list[dict]:
+    """A video's holds with roles by its goes (by_goes()), the stray ones off, as beta.json keeps them."""
+    given, stray = by_goes(holds, centre)
+    out = []
+    for i, h in enumerate(holds):
+        h = {k: v for k, v in h.items() if k not in ("off", "stray")}
+        h["role"] = given[i]
+        if i in stray:
+            h.update(off=True, stray=True)
+        out.append(h)
+    return out
+
+
+def settle_goes(mesh_dir: Path) -> int:
+    """For beta found before GOES_VERSION: each video's holds given roles by its goes again, stray ones off (settled()),
+    from the contacts and centre track kept; nothing is looked at again. Run after redraw_lines(), which gives older
+    records their centre tracks. Returns how many videos were changed."""
+    record = load(mesh_dir)
+    if not record or record.get("status") == "running":
+        return 0
+    n = 0
+    for v in record.get("videos") or []:
+        if v.get("goes") == GOES_VERSION or "centre" not in v:
+            continue
+        if v.get("holds"):
+            v["holds"] = settled(v["holds"], v["centre"])
+        v["goes"] = GOES_VERSION
+        n += 1
+    if n:
+        save(mesh_dir, record)
+    return n
+
+
 # ------------------------------------------------------------------ people in frames
 def limb_points(kp, sc) -> dict:
     """Each hand's and foot's point of contact in a frame, from one person's keypoints, or None."""
@@ -737,13 +854,14 @@ def analyse_video(url: str, placed: dict[str, dict], photos: Path, mesh: Mesh, t
     shutil.rmtree(tmp, ignore_errors=True)
     min_frames = max(2, int(round(HOLD_SECONDS * FPS)))
     found = {limb: contacts(tr, STILL * mesh.size, min_frames) for limb, tr in tracks.items()}
-    result = holds(found, HOLD_RADIUS * mesh.size, mesh.ground, GROUND * mesh.size)
+    centre = centre_track(mesh, placed, sizes, poses, views)
+    result = settled(holds(found, HOLD_RADIUS * mesh.size, mesh.ground, GROUND * mesh.size), centre)
     reference = max(used, key=used.get) if used else None
     return {"frames": looked, "left": left, "with_climber": seen, "placed_frames": sum(used.values()),
             "approximate_lens": any(lens(placed[n], sizes[n])[4] for n in used), "reference": reference, "holds": result,
             "tracks": {limb: in_pieces([[round(t, 2), *(round(float(x), 5) for x in p)] for t, p in tr if p is not None], mesh.size)
                        for limb, tr in tracks.items()},
-            "centre": centre_track(mesh, placed, sizes, poses, views), "poses": poses}
+            "centre": centre, "goes": GOES_VERSION, "poses": poses}
 
 
 def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
@@ -761,7 +879,7 @@ def annotate(photo: Path, cam: dict, result: dict, out: Path) -> None:
     r = max(8, size[0] // 75)     # open rings, as the viewer draws them
     w = max(2, r // 4)
     for h in result["holds"]:
-        uv = project(cam, size, h["p"])
+        uv = None if h.get("off") else project(cam, size, h["p"])
         if uv:
             cv2.circle(im, tuple(map(int, uv)), r, (20, 20, 20), w + 3, cv2.LINE_AA)
             cv2.circle(im, tuple(map(int, uv)), r, COLORS[h["role"]], w, cv2.LINE_AA)

@@ -114,6 +114,7 @@ class Climb:
     fetched_at: float = field(default_factory=time.time)
     raw: dict = field(default_factory=dict)          # adapter-specific leftovers
     search_place: str | None = None   # the climbing area its YouTube search names (youtube.place()), if it is in one
+    boulder_mates: list[str] = field(default_factory=list)   # the names of the other climbs on its boulder (youtube.matches())
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)

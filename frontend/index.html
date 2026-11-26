@@ -5431,7 +5431,7 @@ function renderBetaVids(){
   const groupId = gi => groups[gi][3];
   const hidesRest = gi => { const mine = new Set(groups[gi][2].map(v => v.tag)); return vids.some(v => !mine.has(v.tag)) && vids.every(v => mine.has(v.tag) === b.shown.has(v.tag)); };
   if (betaVidsOpen) el.innerHTML += (vids.length > 1 && !ch ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all from videos</span></label>` : '')
-    + (away && !ch ? `<label class="bv offl" title="Holds found over a reach (about 1.75 m) from their climb's line: where a hand or foot seemed to be while the climber was walking in, off the top or on other rock, or a point that fell past the rock's edge. Hidden unless ticked, then faint."><input type="checkbox" ${b.showOff ? 'checked' : ''}><span class="t">Show ${away} off their climbs' lines</span></label>` : '')
+    + (away && !ch ? `<label class="bv offl" title="Holds found over a reach (about 1.75 m) from their climb's line, or touched only on a go on the rock that never rose (often someone or something else at the rock's foot): where a hand or foot seemed to be while walking in, off the top or on other rock, or a point that fell past the rock's edge. Hidden unless ticked, then faint."><input type="checkbox" ${b.showOff ? 'checked' : ''}><span class="t">Show ${away} set aside</span></label>` : '')
     + groups.map(([climb, gs, gv], gi) => (climb !== null ? `<div class="bvclimb">${esc(climb)}</div>` : '')
       + (climb !== null && gv.length && !ch ? `<div class="bv all climball${b.climbFocus === groupId(gi) ? ' on' : ''}" data-group="${gi}" title="Pick to see this climb's beta alone (the rest faint); again to undo">
           <input type="checkbox" class="showall" ${gv.every(v => b.shown.has(v.tag)) ? 'checked' : ''} aria-label="Show all of its videos' holds"><span class="t">Show all</span>
@@ -5441,7 +5441,7 @@ function renderBetaVids(){
   function vidRow(v){ return [v].map(v =>
     `<div class="bv${!ch && b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}">
       <input type="checkbox" ${(ch ? ch.sets.has('video:' + v.tag) : b.shown.has(v.tag)) ? 'checked' : ''} aria-label="${ch ? 'Capture its holds' : 'Show its holds'}">
-      <span class="who">${esc(vset[v.tag]?.label || '')}</span><span class="t">${esc(v.title || v.url)}</span><small${offLine(v).length ? ` title="and ${offLine(v).length} off its climb's line"` : ''}>${n(onLine(v).length)}</small>
+      <span class="who">${esc(vset[v.tag]?.label || '')}</span><span class="t">${esc(v.title || v.url)}</span><small${offLine(v).length ? ` title="and ${offLine(v).length} set aside"` : ''}>${n(onLine(v).length)}</small>
       ${editor && !ch ? `<button class="sm sec dbg" title="Play the video with the climber the pose model found and the holds it called drawn over it, the view following along">Debug</button>` : ''}
       ${ch ? '' : `<a href="${esc(v.url)}" target="_blank" rel="noopener" title="Open the video">▶</a>`}</div>`).join(''); }
   if (ch) {
@@ -6293,7 +6293,7 @@ function renderBetaPanel(){
     ${betaByClimb(b, [], f?.videos || []).map(([climb, , gv]) => (climb !== null ? `<div class="meta" style="margin-top:6px"><b>${esc(climb)}</b></div>` : '') + gv.map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
         <span class="grow"><b>${esc(videoSets(b).find(x => x.tag === v.tag)?.label || '')}</b> · <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></span></label>
-      <div class="meta">${v.holds ? roleCounts(onLine(v)) : ''}${offLine(v).length ? ` <small>· ${offLine(v).length} more off its climb's line</small>` : ''} ${onLine(v).length ? `<button class="sm sec tocopy${make ? '' : ' w'}" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
+      <div class="meta">${v.holds ? roleCounts(onLine(v)) : ''}${offLine(v).length ? ` <small>· ${offLine(v).length} more set aside</small>` : ''} ${onLine(v).length ? `<button class="sm sec tocopy${make ? '' : ' w'}" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
         ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
       ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
     </div>`).join('')).join('')}
