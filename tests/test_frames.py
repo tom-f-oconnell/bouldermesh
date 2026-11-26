@@ -88,9 +88,97 @@ with tempfile.TemporaryDirectory() as td:
         stats = {}
         got = harvest.extract_frames(video, tmp / "work", 8, logged.append, fps=2, stats=stats)
         assert len(got) == 2 and all(f.exists() for f in got), (got, logged[-3:])
-        assert stats == {"chosen": 8, "repeats": 6}, "the places repeats leave aren't another video's (video_frames())"
+        assert (stats["chosen"], stats["repeats"], stats["way"]) == (8, 6, "stretches"), "the places repeats leave aren't another video's (video_frames())"
         assert sorted(p.name for p in (tmp / "work").glob("f*.jpg")) == sorted(f.name for f in got), "the rest deleted"
+        assert sorted(stats["times"]) == sorted(f.name for f in got) and stats["times"][got[1].name] >= 2.0, stats["times"]
         print("a video's frames OK")
+
+        def film(name: str, parts: list[tuple[Image.Image, float]]) -> pathlib.Path:
+            """A video of stills, each held for its seconds, at 2 frames a second."""
+            d = tmp / name
+            d.mkdir()
+            lines = []
+            for i, (img, secs) in enumerate(parts):
+                img.save(d / f"p{i:04d}.png")
+                lines += [f"file '{d / f'p{i:04d}.png'}'", f"duration {secs}"]
+            lines.append(lines[-2])     # the concat demuxer wants the last file named again
+            (d / "list.txt").write_text("\n".join(lines) + "\n")
+            out = tmp / f"{name}.mp4"
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(d / "list.txt"), "-vf", "fps=2",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", str(out)], check=True, timeout=300)
+            return out
+
+        def round_the_rock(img: Image.Image, k: int) -> Image.Image:
+            """The scene as from further round it: a change of perspective no shift, turn and zoom explains."""
+            a = 0.00012 * k
+            return img.transform(img.size, Image.PERSPECTIVE, (1 + 0.06 * k, 0.02 * k, -30 * k, 0.01 * k, 1 + 0.03 * k, -8 * k, a, a / 2),
+                                 resample=Image.BILINEAR)
+
+        still = frame(rock, blur=0.6, seed=1)
+        # one shot from a tripod: looking for edits changes nothing, frame for frame
+        tripod = film("tripod", [(frame(rock, blur=0.6, seed=i), 2) for i in range(12)])
+        plain, edited, st = (harvest.extract_frames(tripod, tmp / "w1", 6, logged.append, fps=1),
+                             harvest.extract_frames(tripod, tmp / "w2", 6, logged.append, fps=1, stats=stats, edits=True), dict(stats))
+        assert [f.name for f in plain] == [f.name for f in edited] and stats["way"] == "stretches" and stats["shots"] == 1, (plain, edited, stats)
+        print("one shot is done as before OK")
+
+        # an edit: 40 s from a tripod, 10 s going round the rock, 8 s of something else, and 10 s back on the tripod.
+        # Its share goes to the views it has, not to its minutes: most to the 10 s round the rock, one to each tripod
+        parts = ([(still, 40)] + [(frame(round_the_rock(rock, k), blur=0.6, seed=40 + k), 1) for k in range(1, 11)]
+                 + [(frame(other, blur=0.6, seed=60), 8), (still, 10)])
+        edit = film("edit", parts)
+        stats = {}
+        by_time = harvest.extract_frames(edit, tmp / "w3", 8, logged.append, fps=1, stats=stats)
+        t_old = sorted(stats["times"].values())
+        stats = {}
+        by_shot = harvest.extract_frames(edit, tmp / "w4", 8, logged.append, fps=1, stats=stats, edits=True)
+        t_new = sorted(stats["times"].values())
+        going_round = lambda ts: sum(40 <= t < 50 for t in ts)  # noqa: E731
+        assert stats["way"] == "shots" and stats["shots"] == 3 and stats["views"] >= 8, (stats, logged[-3:])
+        assert going_round(t_new) >= 5 > going_round(t_old), (t_old, t_new)
+        assert sum(t < 40 or t >= 58 for t in t_new) == 1 and sum(50 <= t < 58 for t in t_new) == 1, t_new   # the tripod once, though it's cut back to
+        assert stats["chosen"] == 8 and len(by_shot) == 8 - stats["repeats"], stats
+        print(f"an edit's frames go to its views OK (round the rock: {going_round(t_old)} of {len(t_old)} by its minutes, {going_round(t_new)} of {len(t_new)} by its shots)")
+
+        # a fade through black is a cut; a blurred frame within a shot isn't
+        black = Image.new("RGB", (W, H))
+        faded = film("faded", [(still, 4), (black, 2), (frame(other, blur=0.6, seed=61), 4)])
+        work = tmp / "w5"
+        work.mkdir()
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(faded), "-vf", "fps=1", str(work / "f%04d.jpg")], check=True, timeout=120)
+        cut_at = [len(s) for s in harvest.find_shots(sorted(work.glob("f*.jpg")), logged.append)]
+        assert len(cut_at) == 2 and cut_at[0] == 6, (cut_at, "black stays with the shot before it")
+        print("cuts through black OK")
+
+        # a moment linked: only from just before it, for as long as beta looks
+        harvest.MOMENT_SECONDS, real = 20.0, harvest.MOMENT_SECONDS
+        try:
+            linked = film("linked", [(frame(other, blur=0.6, seed=62), 60), (still, 15)]
+                          + [(frame(round_the_rock(rock, k), blur=0.6, seed=70 + k), 1) for k in range(1, 9)] + [(frame(other, blur=0.6, seed=63), 60)])
+            stats = {}
+            got = harvest.extract_frames(linked, tmp / "w6", 6, logged.append, fps=1, stats=stats, start=70.0, edits=True)
+            assert stats["span"] == [60.0, 90.0] and got and all(60 <= t <= 90 for t in stats["times"].values()), stats
+            assert sum(75 <= t < 83 for t in stats["times"].values()) >= 3, stats["times"]
+            stats = {}
+            harvest.extract_frames(linked, tmp / "w7", 6, logged.append, fps=1, stats=stats, start=70.0)      # not asked to: the whole of it
+            assert stats["span"][0] == 0 and stats["way"] == "stretches", stats
+        finally:
+            harvest.MOMENT_SECONDS = real
+        print("a linked moment OK")
+
+        # a long video: looked at whole, through no more than MAX_CANDIDATES frames
+        harvest.LONG_SECONDS, harvest.MAX_CANDIDATES, real = 60.0, 40, (harvest.LONG_SECONDS, harvest.MAX_CANDIDATES)
+        try:
+            long_one = film("long", [(frame(other, blur=0.6, seed=64), 50), (still, 20)]
+                            + [(frame(round_the_rock(rock, k), blur=0.6, seed=80 + k), 4) for k in range(1, 6)] + [(frame(other, blur=0.6, seed=64), 30)])
+            stats = {}
+            got = harvest.extract_frames(long_one, tmp / "w8", 6, logged.append, fps=1, stats=stats, edits=True)
+            assert stats["way"] == "shots" and len(list((tmp / "w8").glob("f*.jpg"))) == len(got) <= 6, stats
+            assert any("through 4" in line and "of its 2 min" in line for line in logged[-4:]), logged[-4:]
+            assert sum(70 <= t < 90 for t in stats["times"].values()) >= 3, stats["times"]
+        finally:
+            harvest.LONG_SECONDS, harvest.MAX_CANDIDATES = real
+        print("a long video OK")
     else:
         print("no ffmpeg: a whole video not tried")
 print("ALL FRAMES TESTS PASSED")

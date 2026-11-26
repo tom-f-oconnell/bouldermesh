@@ -5955,7 +5955,9 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                                               rejudge=add and rejudge)
                 videos = summary.pop("videos", [])
                 record_videos(proj["climb_id"], videos, log)
-                summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license")} for v in videos]
+                summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license", "duration",
+                                                             "way", "shots", "views", "span", "start", "frames_version")}
+                                     for v in videos]
                 if add:     # the harvest before's videos and frames, with what's new
                     was = json.loads(before)
                     had = {v.get("url") for v in summary["videos"]}

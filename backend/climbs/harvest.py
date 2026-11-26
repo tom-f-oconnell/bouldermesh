@@ -215,44 +215,253 @@ def flickr_search(lat: float, lng: float, queries: list[str], log: Log, radius_k
     return out
 
 
+# How a video's frames are chosen, kept with each harvest's videos ("way"), so that meshes made from frames chosen an
+# older way can be told (the admin page's "frames" tier). 1: the sharpest in each of its share's equal stretches of the
+# whole video, then repeats left out. 2 (Nov 26, 2026): that still, for a video of one shot, under LONG_SECONDS, with no
+# moment linked (the same frames as before); otherwise by its shots, from its linked moment, or over a long video's
+# thinner candidates (extract_frames()).
+FRAMES_VERSION = 2
+MOMENT_BEFORE = 10.0        # seconds before a linked moment that frames are taken from (links are often a little late)
+MOMENT_SECONDS = 300.0      # and after it: as long as beta looks at a video (beta.MAX_SECONDS)
+LONG_SECONDS = 900.0        # a video longer than this (the longest a search keeps: youtube.MAX_MINUTES) has its candidate
+MAX_CANDIDATES = 900        # frames spread over it, this many, rather than one a second however long it is
+SHOT_ALIKE = 0.85           # two candidates in a row whose small copies correlate this well are one shot, without matching
+VIEW_ALIKE = 0.9            # and a candidate this like a view's kept frame shows it again (a camera that didn't move)
+SHOT_MATCHES = 15           # else they're one shot if this many of their features match with one geometry (diversity.pair())
+SHOT_LOOKBACK = 8           # a shot showing what one of this many shots before it ended on carries that shot on
+VIEW_LOOKBACK = 2           # within a shot, a frame is held against this many of the views before it
+
+
+def video_seconds(video: Path) -> float | None:
+    """A video's length (ffprobe's), or None if it can't be read."""
+    try:
+        return float(jobctl.run([shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                 "-of", "csv=p=0", str(video)], timeout=60, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True).strip())
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError):
+        return None
+
+
 def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | None = None,
-                   stats: dict | None = None) -> list[Path]:
-    """A video's sharpest frames, less those that repeat one kept (drop_repeats()), as JPEGs in work/ (f0001.jpg...),
-    the rest deleted.
+                   stats: dict | None = None, start: float | None = None, edits: bool = False) -> list[Path]:
+    """A video's frames for meshing, as JPEGs in work/ (f0001.jpg...), the rest deleted: at most keep of them.
+
+    As it always was, unless edits: its sharpest frames, one in each of keep equal stretches of it, less those that
+    repeat one kept (drop_repeats()). With edits (a video found for a climb, which may be cut together from several
+    shots, or an hour long), that's still how a video of one shot is done, if it's no longer than LONG_SECONDS and no
+    moment is linked: the same frames as before.
+
+    Otherwise its share goes to what it shows rather than to its minutes (by_shots()): each shot's distinct views
+    are counted, and the frames spread evenly over them, so that an edit's ten seconds round the rock aren't one frame
+    beside three minutes from a tripod. With a moment linked (start), only MOMENT_BEFORE before it to MOMENT_SECONDS
+    after is looked at; a video longer than LONG_SECONDS is looked at whole, but through MAX_CANDIDATES frames.
 
     Args:
         keep: how many to keep at most.
-        stats: given, filled with how many were chosen before repeats were left out ("chosen") and how many were left
-            out ("repeats"): the places those left free aren't for another video's frames.
+        stats: given, filled with how many places it took ("chosen": those of repeats and views passed over among
+            them, which aren't for another video's frames), how many of those it left empty ("repeats"), each kept
+            frame's time in the video in seconds ("times", by file name), its "shots" and "views" where counted,
+            "way" ("stretches" or "shots") and "span" ([from, to] in seconds, what was looked at).
         fps: frames a second to choose from; by default about twice keep of them over the video's length (ffprobe's),
             from 0.5 to 4 a second, or 1 if its length can't be read.
+        start: the moment its link points to, in seconds, if it does (only used with edits).
+        edits: look for shots, and use start, as above.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("extracting frames needs ffmpeg on PATH")
     if keep <= 0:
         return []
+    secs = video_seconds(video)
     if fps is None:
-        fps = 1.0
-        try:
-            secs = float(jobctl.run([shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                     "-of", "csv=p=0", str(video)], timeout=60, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True).strip())
-            fps = min(4.0, max(0.5, 2 * keep / secs))
-        except (ValueError, ZeroDivisionError, OSError, RuntimeError, subprocess.SubprocessError):
-            pass
+        fps = min(4.0, max(0.5, 2 * keep / secs)) if secs else 1.0
+    moment = bool(edits and start is not None and secs and 0 <= start < secs)
+    t0 = max(0.0, start - MOMENT_BEFORE) if moment else 0.0
+    length = min(MOMENT_BEFORE + MOMENT_SECONDS, secs - t0) if moment else secs
+    long = bool(edits and length and length > LONG_SECONDS)
+    if long and length * fps > MAX_CANDIDATES:
+        fps = MAX_CANDIDATES / length
     work.mkdir(parents=True, exist_ok=True)
-    jobctl.run([ffmpeg, "-loglevel", "error", "-threads", "2", "-i", str(video), "-vf", f"fps={fps:g}", "-q:v", "2",
-                str(work / "f%04d.jpg")], timeout=900)
+    jobctl.run([ffmpeg, "-loglevel", "error", "-threads", "2", *(["-ss", f"{t0:.2f}", "-t", f"{length:.2f}"] if moment else []),
+                "-i", str(video), "-vf", f"fps={fps:g}", "-q:v", "2", str(work / "f%04d.jpg")], timeout=900)
     frames = sorted(work.glob("f*.jpg"))
+    times = {f.name: round(t0 + i / fps, 2) for i, f in enumerate(frames)}
     sharpness: dict[Path, float] = {}
-    sharpest = _sharpest(frames, keep, log, sharpness)
-    chosen = drop_repeats(sharpest, sharpness, log)
+    shots = find_shots(frames, log) if edits else None
+    if shots is None or (len(shots) <= 1 and not moment and not long):       # as before FRAMES_VERSION 2, frame for frame
+        sharpest = _sharpest(frames, keep, log, sharpness)
+        chosen = drop_repeats(sharpest, sharpness, log)
+        took, way, views = len(sharpest), "stretches", None
+    else:
+        picked, views = by_shots(shots, keep, log, sharpness)
+        chosen = drop_repeats(picked, sharpness, log)       # the same view come back to after other shots
+        took, way = min(keep, len(frames)), "shots"
+        log(f"frames: {len(shots)} shot(s) with {views} distinct view(s)"
+            + (f", from {t0:.0f} s to {t0 + length:.0f} s (its link points to {start:.0f} s)" if moment else "")
+            + (f", through {len(frames)} frames of its {length / 60:.0f} min" if long else "") + f": {len(chosen)} kept")
     if stats is not None:
-        stats.update(chosen=len(sharpest), repeats=len(sharpest) - len(chosen))
+        stats.update(chosen=took, repeats=took - len(chosen), times={f.name: times[f.name] for f in chosen}, way=way,
+                     shots=len(shots) if shots is not None else None, views=views,
+                     span=[round(t0, 2), round(t0 + length, 2)] if length else None)
     for f in set(frames) - set(chosen):
         f.unlink()
     return chosen
+
+
+def _small(f: Path):
+    """A frame as 64 x 36 grey levels, with mean 0 and deviation 1 (None if it can't be read, or is flat: black, a
+    plain card): what two frames are compared by before anything dearer."""
+    import numpy as np
+    from PIL import Image
+    try:
+        with Image.open(f) as im:
+            im.draft("L", (128, 72))
+            a = np.asarray(im.convert("L").resize((64, 36), Image.BILINEAR), dtype=np.float32)
+    except Exception:  # noqa: BLE001
+        return None
+    sd = float(a.std())
+    return (a - a.mean()) / sd if sd > 1.0 else None
+
+
+def _alike(a, b) -> float:
+    """How well two frames' small copies (_small()) correlate, -1 to 1; 0 where either is missing."""
+    return float((a * b).mean()) if a is not None and b is not None else 0.0
+
+
+class _Features:
+    """Frames' ORB features (diversity.orb_features()), worked out when first asked for; available is False without OpenCV."""
+
+    def __init__(self):
+        try:
+            import cv2
+            self.bf, self.available = cv2.BFMatcher(cv2.NORM_HAMMING), True
+        except ImportError:
+            self.bf, self.available = None, False
+        self._of: dict[Path, object] = {}
+
+    def of(self, f: Path):
+        from . import diversity
+        if f not in self._of:
+            self._of[f] = (diversity.orb_features([f]) or [None])[0]
+        return self._of[f]
+
+    def pair(self, a: Path, b: Path) -> tuple[int, bool] | None:
+        """diversity.pair() of two frames, or None if either has too few features to say."""
+        from . import diversity
+        fa, fb = self.of(a), self.of(b)
+        return diversity.pair(fa, fb, self.bf) if fa is not None and fb is not None else None
+
+
+def find_shots(frames: list[Path], log: Log) -> list[list[Path]]:
+    """A video's candidate frames (in time order) split into its shots. A frame starts a new shot where it's cut to:
+    its small copy doesn't correlate with the frame before's (SHOT_ALIKE), nor do their features match with one
+    geometry (SHOT_MATCHES, which a camera moving fast within one shot still gives). A frame that can't be judged
+    (black, blurred to nothing) stays with the shot before it, and the next is held against the last that could be,
+    so that a fade through black is a cut. A shot that comes back to a view an earlier one ended on (SHOT_LOOKBACK
+    shots back: an edit going between two tripods) carries that one on, so that its view is counted once. Without
+    OpenCV, the small copies decide alone."""
+    if not frames:
+        return []
+    small = {f: _small(f) for f in frames}
+    feats = _Features()
+    shots, last = [[frames[0]]], frames[0] if small[frames[0]] is not None else None
+    for f in frames[1:]:
+        if small[f] is None:
+            shots[-1].append(f)
+            continue
+        cut = False
+        if last is not None and _alike(small[last], small[f]) < SHOT_ALIKE:
+            got = feats.pair(last, f) if feats.available else (0, False)
+            cut = got is not None and got[0] < SHOT_MATCHES
+        if cut:
+            shots.append([])
+        shots[-1].append(f)
+        last = f
+    merged: list[list[Path]] = []
+    came_from = None        # the shot the one before this went into, which this was cut away from
+    for shot in shots:
+        first = next((f for f in shot if small[f] is not None), None)
+        back = None
+        if first is not None:
+            for earlier in reversed(merged[-SHOT_LOOKBACK:]):
+                end = next((f for f in reversed(earlier) if small[f] is not None), None)
+                if earlier is not came_from and end is not None and _alike(small[end], small[first]) >= VIEW_ALIKE:
+                    back = earlier
+                    break
+        if back is not None:
+            back.extend(shot)
+        else:
+            merged.append(list(shot))
+        came_from = back if back is not None else merged[-1]
+    return merged
+
+
+def shot_views(shot: list[Path], sharpness: dict[Path, float], feats: _Features | None = None) -> list[Path]:
+    """A shot's distinct views, each as its sharpest frame, in time order: a frame shows a view again if its small copy
+    is like that view's kept frame (VIEW_ALIKE), or it's the same shot by diversity.pair() (no parallax: a camera that
+    only turned or zoomed), looking back over the shot's last VIEW_LOOKBACK views."""
+    feats = feats or _Features()
+
+    def sharp(f: Path) -> float:
+        if f not in sharpness:
+            try:
+                sharpness[f] = _sharpness(f)
+            except Exception:  # noqa: BLE001
+                sharpness[f] = 0.0
+        return sharpness[f]
+    views: list[list] = []      # [its kept frame, that frame's small copy]
+    for f in shot:
+        small, same = _small(f), None
+        for v in reversed(views[-VIEW_LOOKBACK:]):
+            if _alike(small, v[1]) >= VIEW_ALIKE:
+                same = v
+                break
+        if same is None and feats.available:
+            for v in reversed(views[-VIEW_LOOKBACK:]):
+                got = feats.pair(f, v[0])
+                if got is not None and got[1]:
+                    same = v
+                    break
+        if same is None:
+            views.append([f, small])
+        elif sharp(f) > sharp(same[0]):
+            same[0], same[1] = f, small
+    return [v[0] for v in views]
+
+
+def by_shots(shots: list[list[Path]], keep: int, log: Log, sharpness: dict[Path, float]) -> tuple[list[Path], int]:
+    """keep frames of a video spread over what it shows: each shot's distinct views (shot_views()) get places in
+    proportion to how many they are, every shot at least one while there are places (the shots with most views first
+    when there aren't), and each of a shot's places takes the sharpest of an equal stretch of its views. With no more
+    views than places, every view is kept, and the rest of the places stay empty.
+
+    Returns:
+        (the frames kept, in time order; how many distinct views the video has).
+    """
+    feats = _Features()
+    views = [shot_views(s, sharpness, feats) for s in shots if s]
+    total = sum(len(v) for v in views)
+    if total <= keep:
+        return sorted(f for v in views for f in v), total
+    order = sorted(range(len(views)), key=lambda i: (-len(views[i]), i))
+    quota = [0] * len(views)
+    for i in order[:keep]:
+        quota[i] = 1
+    left = keep - sum(quota)
+    if left > 0:
+        spare = [len(v) - n for v, n in zip(views, quota)]
+        want = [left * sp / max(1, sum(spare)) for sp in spare]
+        for i in range(len(views)):
+            quota[i] += int(want[i])
+        for i in sorted(range(len(views)), key=lambda i: (-(want[i] - int(want[i])), i))[:keep - sum(quota)]:
+            quota[i] += 1
+    out = []
+    for v, n in zip(views, quota):
+        n = min(n, len(v))
+        for k in range(n):
+            stretch = v[int(k * len(v) / n):int((k + 1) * len(v) / n)] or [v[-1]]
+            out.append(max(stretch, key=lambda f: sharpness.get(f, 0.0)))
+    return sorted(out), total
 
 
 # A video's frame that shows what a frame kept before it does is left out (Tom, Nov 15: the job gets smaller, and the
@@ -350,14 +559,19 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
             if progress:
                 progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
             stats: dict = {}
-            frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats)   # a video that failed leaves its share
+            frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats,   # a video that failed leaves its share
+                                    start=getattr(v, "start", None), edits=True)
             used += stats.get("chosen", len(frames))
+            times = {}
             for j, f in enumerate(frames):
                 dst = out_dir / f"yt_{tag}_{j:03d}.jpg"
                 shutil.move(str(f), dst)
                 saved.append(dst)
-            if infos is not None and v.url in infos:
-                infos[v.url]["frames"] = len(frames)
+                times[dst.name] = (stats.get("times") or {}).get(f.name)
+            if infos is not None:
+                infos.setdefault(v.url, {}).update(frames=len(frames), times=times, way=stats.get("way"), shots=stats.get("shots"),
+                                                   views=stats.get("views"), span=stats.get("span"), start=getattr(v, "start", None),
+                                                   frames_version=FRAMES_VERSION)
             log(f"youtube: kept {len(frames)} frame(s) from {v.url}")
         except youtube.Refused as e:
             refused = e
@@ -704,6 +918,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             v = by_tag[f.name.split("_")[1]]
             info = infos.get(v.url) or {}
             manifest.append({"file": f.name, "url": v.url, "page": v.url, "kind": "video-frame", "source": "youtube",
+                             "t": (info.get("times") or {}).get(f.name),     # seconds into its video (None before FRAMES_VERSION 2)
                              "found_by": "search" if v.source == "youtube-search" else "page",
                              "title": info.get("title") or v.title, "credit": info.get("uploader") or v.credit,
                              "license": info.get("license") or "frame from linked beta video; licence not recorded"})
@@ -752,7 +967,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     return {"images": len([p for p in photos_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")]),
             "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
             "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
-                        "uploader": v.credit, "frames": 0, **infos.get(v.url, {})} for v in videos],
+                        "uploader": v.credit, "frames": 0,
+                        **{k: x for k, x in infos.get(v.url, {}).items() if k != "times"}} for v in videos],
             "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked,
             "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")}),
             **({"youtube_method": youtube.SEARCH_METHOD} if yt["checked"] and yt.get("words") else {})}
