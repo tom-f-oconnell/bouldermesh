@@ -91,6 +91,19 @@ two = bl.climb_line([bl.runs([track([[0.5, 0.5, 0], [0.5, 1.5, 0]], each=10)], S
 assert abs(two["points"][:, 0].mean() - 3) < 0.1 and (two["videos"], two["agree"]) == (2, 1), two
 assert bl.climb_line([], [bl.runs(walked, SIZE)], SIZE) is None and bl.climb_line([[]], [], SIZE) is None
 
+# one video: a long way along the ground by the start, then the climb, shorter, with a gap between. The climb is the
+# line, as it's where the video's holds are; without holds to go by, it's the run that ends up furthest
+ground = [track([[0.3, 0.3, 0], [3.3, 0.35, 0]], each=14), track([[3.3, 1.2, 0], [3.3, 3.0, 0]], t0=40, each=10)]
+up = [{"p": [3.3, y, 0]} for y in (1.2, 1.8, 2.4, 3.0)]
+by_holds = bl.lines([{"url": "g", "centre": ground, "holds": up + [{"p": [0.3, 0.3, 0], "stray": True}]}], {"G": ["g"]}, SIZE, 0.5)["G"]["points"]
+assert np.abs(by_holds[:, 0] - 3.3).max() < 0.1 and np.ptp(by_holds[:, 1]) > 1.5, "the climb, not the walk along the ground"
+no_holds = bl.lines([{"url": "g", "centre": ground}], {"G": ["g"]}, SIZE, 0.5)["G"]["points"]
+assert np.ptp(no_holds[:, 0]) > 2.5, "no holds: the run that ends up furthest, as before"
+rs = bl.runs(ground, SIZE)
+assert [bl.held(r, [h["p"] for h in up], 0.5) for r in rs] == [False, True] and bl.held(rs[0], [], 0.5)
+none_held = bl.climb_line([rs], [], SIZE, [[False, False]])
+assert none_held is not None and np.ptp(none_held["points"][:, 0]) > 2.5, "no run its holds are along: still the furthest"
+
 # past where videos agree, one's run is kept while it carries on the same way (seen for longer: on up the climb)
 longer = bl.climb_line([bl.runs([track([[1, 0.5, 0], [1, 3.6, 0]], each=16)], SIZE), bl.runs([track([[1, 0.5, 0], [1, 2.0, 0]], each=10)], SIZE)], [], SIZE)
 assert longer["points"][:, 1].max() > 3.3, "the top only one video shows is kept"

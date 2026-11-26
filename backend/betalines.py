@@ -14,7 +14,9 @@ mostly agree where it goes, though, and a climb's line is where they do:
      for longest is what the line starts as. Past the first and last points another video comes near, it's kept only
      while it carries on the way it was going: the rest is one video's wander. A climb with one video, or whose videos
      never agree, gets its run that ends up furthest away. A video that agrees with nothing isn't used, which is most of
-     what's off: whole videos (another climb, frames matched to the wrong side of the rock)
+     what's off: whole videos (another climb, frames matched to the wrong side of the rock). A run that its own video's
+     holds aren't along (held(): a third of them or more beyond a reach of it) comes after every run that they are:
+     it's the climber on the ground by the start, or walking off, which can be further than the climb is long
   3. each of the line's points is moved to the middle of where the videos near it went, so that no one video's wobble
      shows, and the line is smoothed along its length
   4. it's carried on to the last holds its videos' hands reach past its end (to_the_top()): the climber's middle stops
@@ -52,7 +54,7 @@ from pathlib import Path
 FILE = "lines.json"
 DRAWN_FILE = "lines_drawn.json"
 DRAWN_MOST = 200        # points a line drawn by hand may have
-VERSION = 4             # raised when lines would come out differently, so that they're made again
+VERSION = 5             # raised when lines would come out differently, so that they're made again
 STEP = 0.02             # between a line's points, as a share of the rock's size (as every length here)
 SMOOTH_SECONDS = 1.0    # a track is smoothed over about this long either side
 CHAIN_SECONDS = 4.0     # pieces of a track this close in time,
@@ -281,13 +283,26 @@ def _smooth_along(P, width: float):
     return _smoothed(_lengths(P), P, width)
 
 
-def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
+def held(run, holds: list, far: float) -> bool:
+    """Whether a run is where its own video's holds are: fewer than ASTRAY of them are further than `far` (reach())
+    from it, as astray() asks of a finished line. True for a video with no holds, which says nothing either way.
+
+    Args:
+        run: its points, n x 3; holds: the video's holds' points, without the stray ones.
+    """
+    import numpy as np
+    return not len(holds) or float(np.mean([_from_line(p, run) > far for p in holds])) < ASTRAY
+
+
+def climb_line(own: list[list], others: list[list], size: float, sure: list[list[bool]] | None = None) -> dict | None:
     """Where a climb goes, from its videos' runs.
 
     Args:
         own: each of the climb's own videos' runs (runs()): those of videos of no other climb on the mesh.
         others: the same for its videos that are also of other climbs there: they can agree with a line, not start one.
         size: the rock's size.
+        sure: for each of own's videos, whether each of its runs is where the video's holds are (held()). A run that
+            isn't is only the line if none is. All are, if not given.
 
     Returns:
         {points: n x 3, videos, agree, near}, or None with no run to go by: videos is how many had a run, agree how
@@ -296,6 +311,7 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
     """
     import numpy as np
     given = [k for k, v in enumerate(list(own) + list(others)) if v]     # where each video with a run was in those given
+    sure = [list(ok) for v, ok in zip(own, sure) if v] if sure is not None else [[True] * len(v) for v in own if v]
     own = [v for v in own if v]
     others = [v for v in others if v]
     if not own:
@@ -305,16 +321,16 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
     best = None     # (score, video, run, which of its points other videos come near)
     for i, video in enumerate(own):
         rest = [c for j, c in enumerate(clouds) if j != i]
-        for run in video:
+        for run, ok in zip(video, sure[i]):
             seen = np.zeros(len(run), int)
             for c in rest:
                 seen += _near(run, c, R)
-            score = (int((seen > 0).sum()), int(seen.sum()), _went(run))
+            score = (ok, int((seen > 0).sum()), int(seen.sum()), _went(run))
             if best is None or score > best[0]:
                 best = (score, i, run, seen > 0)
     _, i, line, agreed = best
     if not agreed.any() and len(clouds) > 1:    # no two of its videos agree: the one that ends up furthest
-        _, i, line = max(((_went(run), j, run) for j, v in enumerate(own) for run in v), key=lambda x: x[0])
+        _, i, line = max((((ok, _went(run)), j, run) for j, v in enumerate(own) for run, ok in zip(v, sure[j])), key=lambda x: x[0])
         agreed = np.zeros(len(line), bool)
     if agreed.mean() >= AGREE:
         whole, on = line, np.flatnonzero(agreed)
@@ -345,13 +361,14 @@ def climb_line(own: list[list], others: list[list], size: float) -> dict | None:
     return {"points": line, "videos": len(clouds), "agree": len(near), "near": [given[j] for j in near]}
 
 
-def lines(videos: list[dict], of: dict[str, list[str]], size: float) -> dict[str, dict]:
+def lines(videos: list[dict], of: dict[str, list[str]], size: float, far: float | None = None) -> dict[str, dict]:
     """A line for each of a mesh's climbs that its videos give one.
 
     Args:
-        videos: beta.json's, each with its url and centre track.
+        videos: beta.json's, each with its url, centre track and holds.
         of: each climb's videos' urls, by its id: every climb on the mesh.
         size: the rock's size.
+        far: reach(), for telling the runs their own videos' holds are along (held()); the mesh's size's, if not given.
 
     Returns:
         {climb id: {points, videos, agree, near}}, as climb_line() gives them, near being the urls of the videos the
@@ -362,11 +379,14 @@ def lines(videos: list[dict], of: dict[str, list[str]], size: float) -> dict[str
         for u in urls:
             climbs_of.setdefault(u, set()).add(cid)
     ran = {v["url"]: runs(v.get("centre") or [], size) for v in videos if v.get("url") in climbs_of}
+    far = reach(size) if far is None else far
+    holds = {v["url"]: [h["p"] for h in v.get("holds") or [] if not h.get("stray")] for v in videos if v.get("url") in ran}
+    sure = {u: [held(run, holds[u], far) for run in ran[u]] for u in ran}
     out = {}
     for cid, urls in of.items():
         mine = [u for u in dict.fromkeys(urls) if ran.get(u)]
         own, others = [u for u in mine if len(climbs_of[u]) == 1], [u for u in mine if len(climbs_of[u]) > 1]
-        one = climb_line([ran[u] for u in own], [ran[u] for u in others], size)
+        one = climb_line([ran[u] for u in own], [ran[u] for u in others], size, [sure[u] for u in own])
         if one:
             out[cid] = {**one, "near": [(own + others)[k] for k in one["near"]]}
     return out
@@ -825,7 +845,7 @@ def make(mesh_dir: Path, of: dict[str, list[str]], record: dict | None = None, m
         if shown is not None:
             videos = [{**v, "centre": on_rock(v["centre"], surface)} for v in videos]
         far = reach(size, metres_per_unit)
-        found = {cid: one for cid, one in lines(videos, of, size).items() if cid not in drawn}
+        found = {cid: one for cid, one in lines(videos, of, size, far).items() if cid not in drawn}
         by_url = {v.get("url"): v for v in record.get("videos") or []}
         for one in found.values():      # each carried on to its videos' last holds
             one["points"] = to_the_top(one["points"], [by_url[u] for u in one["near"] if u in by_url], far, STEP * size)

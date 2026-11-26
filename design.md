@@ -1434,7 +1434,15 @@ line is smoothed over 4% of the rock's size along its length. Smoothing fits a s
 the points near each one rather than averaging them, as an average pulls a path's ends in: by 8% of
 the rock's size, on a test track crossing an eighth of the rock a second.
 
-A climb with one video gets its run that ends up furthest away, as does one whose videos never agree. A
+A climb with one video gets its run that ends up furthest away, as does one whose videos never agree.
+That run was sometimes the climber on the ground by the start, which can be further than the climb is long.
+So a run that its own video's holds aren't along (a third or more of them beyond a reach of it, the test a
+finished line is given) comes after every run that they are, whatever else is said for it. Over the 423
+lines of 254 meshes on Nov 26, 2026, that changed 16 and removed none: lines failing that test went from 39
+to 25, and of the 7 lying mostly on the ground, 5 moved onto the rock. Two masks of what's ground were tried
+first and did worse: one by shape (surface facing up, in patches joined from the mesh's foot) fixed those
+lines but marked ledges, and cut or removed good lines; one by texture (SegFormer's ADE20K classes on the
+placed photos, voted onto the faces) called gravel and slabs under a boulder rock, and fixed 2 of the 7. A
 video of two climbs on the mesh can agree with a line but not start one: a climb with only such videos
 has none.
 
