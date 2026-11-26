@@ -6034,8 +6034,8 @@ const LINE_MAP = (() => {       // across a line: a dark edge either side, so it
 })();
 // A line's colour. To an editor, one made from videos says how far it's in doubt (astray: the share of its videos'
 // holds beyond a reach of it): LINE_COLOR up to half of what fails (fails: the server's limit, where it stops judging
-// holds by the line), from there towards LINE_WARN as it nears that, and LINE_FAIL at it or past it. null for a line
-// not in doubt.
+// holds by the line), from there towards LINE_WARN as it nears that, and LINE_FAIL at it or past it (the server
+// leaves those out for anyone else: mesh_lines()). null for a line not in doubt.
 const LINE_WARN = '#ff9a2e', LINE_FAIL = '#ff3b30';
 function lineDoubt(line, fails){
   if (!editor || line.drawn || !(fails > 0) || !(line.astray > fails / 2)) return null;
@@ -6127,7 +6127,7 @@ function showLinesButton(){
   b.hidden = !(st?.lines?.length && st.climbs > 1 && st.mid === shownMesh) || !!thumbMode;
   b.setAttribute('aria-pressed', String(linesOn));
   b.title = linesOn ? "Each climb's line, where the climbers in its videos went: press to hide them. A name picks its line out, and Open climb then goes to it."
-      + (editor ? " A red line is in doubt: a third or more of its videos' holds are beyond a reach of it. Towards orange, it's nearly so." : '')
+      + (editor ? " A red line is in doubt: a third or more of its videos' holds are beyond a reach of it, and visitors don't see it. Towards orange, it's nearly so." : '')
     : "Show each climb's line: where the climbers in its videos went";
   const d = $('#vldraw');
   d.hidden = !(editor && st?.of?.length && st.mid === shownMesh) || !!thumbMode;

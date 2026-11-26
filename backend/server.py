@@ -2715,13 +2715,14 @@ def beta_shown(mid: str, record: dict | None) -> dict | None:
     return record
 
 
-def mesh_lines(mid: str) -> dict:
-    """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree, drawn}], of,
-    climbs, pending}, in the order of its climbs' names; of is every climb the mesh is of ([{climb, name, grade,
-    drawn: the points of its line drawn by hand, if it has one}], for drawing one), and climbs how many, and astray_fails the share of a line's videos' holds off it (its astray) at which
-    it's in doubt (betalines.ASTRAY), which the viewer colours lines by for editors. pending:
-    those kept aren't of its beta, its climbs' videos and the lines drawn on it as they are now (or none are kept
-    yet), so they're being made again: asked for again in a few seconds, they're the new ones."""
+def mesh_lines(mid: str, editor: bool = True) -> dict:
+    """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree, astray, drawn}],
+    of, climbs, pending, astray_fails}, in the order of its climbs' names; of is every climb the mesh is of ([{climb,
+    name, grade, drawn: the points of its line drawn by hand, if it has one}], for drawing one), and climbs how many.
+    astray_fails is the share of a line's videos' holds off it (its astray) at which it's in doubt (betalines.ASTRAY):
+    editors see such lines in red, and to anyone else (not editor) they aren't given at all. pending: those kept aren't
+    of its beta, its climbs' videos and the lines drawn on it as they are now (or none are kept yet), so they're being
+    made again: asked for again in a few seconds, they're the new ones."""
     d = MESHES / mid
     record, drawn = _beta_record(d), betalines.load_drawn(d)
     of = lines_of(mid, record)
@@ -2734,7 +2735,8 @@ def mesh_lines(mid: str) -> dict:
     if pending:
         want_lines(mid)
     kept = had.get("lines") or {}
-    return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **kept[cid]} for cid in of if cid in kept and cid in rows],
+    shown = {cid: one for cid, one in kept.items() if editor or one.get("drawn") or (one.get("astray") or 0) < betalines.ASTRAY}
+    return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **shown[cid]} for cid in of if cid in shown and cid in rows],
             "of": every, "climbs": len(of), "pending": pending, "astray_fails": betalines.ASTRAY}
 
 
@@ -14085,7 +14087,7 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # where each of its climbs goes, from its videos' climbers (betalines.py)
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
-                return self.send_json(mesh_lines(m[1]))
+                return self.send_json(mesh_lines(m[1], not READ_ONLY and (not EDIT_TOKEN or self.is_editor())))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta", p)
             if m:   # what each video's climber did, and the holds marked by hand
                 if not (MESHES / m[1]).is_dir():

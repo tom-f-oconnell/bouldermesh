@@ -128,6 +128,13 @@ try:
     assert [i for i, h in seen.items() if h.get("off")] == [0, 3] and (seen[1]["role"], seen[2]["role"]) == ("start", "start")
     assert next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")["astray"] == round(2 / 7, 3)
     assert server.mesh_lines("aa11")["astray_fails"] == betalines.ASTRAY, "what the viewer colours an editor's lines by"
+    kept = betalines.load(d)
+    doubted = json.loads(json.dumps(kept)); doubted["lines"]["ca"]["astray"] = betalines.ASTRAY
+    (d / betalines.FILE).write_text(json.dumps(doubted))
+    assert "ca" in {x["climb"] for x in server.mesh_lines("aa11")["lines"]}, "an editor sees a line in doubt"
+    assert "ca" not in {x["climb"] for x in server.mesh_lines("aa11", editor=False)["lines"]}, "a visitor doesn't"
+    assert len(server.mesh_lines("aa11", editor=False)["lines"]) == len(kept["lines"]) - 1, "the rest they do"
+    (d / betalines.FILE).write_text(json.dumps(kept))
     (d / "scale.json").unlink()
     assert server.make_lines("aa11")
 
