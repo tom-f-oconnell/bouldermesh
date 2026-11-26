@@ -824,6 +824,43 @@ def twin_videos_queued(c: Climb, mp: str) -> int:
     return n
 
 
+def twin_boulder(c: Climb, log) -> str | None:
+    """For a climbing-history.org climb a list's job has come to, that's a Mountain Project climb here too: have that
+    climb's boulder meshed the way an area's job would, from every problem on its Mountain Project page, each with its
+    page's photos and what YouTube has of it, and this climb's videos among them (climb_obj()). Only where it's clear
+    which boulder that is: Mountain Project's lowest area of it says it's one rock. Left to the area where one that's
+    running will mesh it, and where its mesh would only be made again from the same photos. Its Mountain Project page
+    is read first if it's only on an area's list yet (a minute there). Returns what was queued, said in the log too."""
+    row = q("SELECT mp FROM same_climbs WHERE ch=?", c.source_id, one=True)
+    if not row:
+        return None
+    mp = q("SELECT id, data FROM climbs WHERE source='mountainproject' AND source_id=?", row["mp"], one=True)
+    if not mp or (json.loads(mp["data"] or "{}").get("raw") or {}).get("stub"):
+        item = q("SELECT url FROM campaign_items WHERE source_id=? AND url LIKE ? LIMIT 1", row["mp"], MP_HOST + "%", one=True)
+        if not item:
+            return None
+        log(f"reading its Mountain Project page, {item['url']}: it's the same climb, on an area's list here")
+        mp = {"id": upsert_climb(climbs_mod.fetch_climb_url(item["url"], include_children=False)[0])}
+    climb = climb_row(mp["id"])
+    boulder = boulder_of(climb["area_path"]) if climb else None
+    if not boulder or boulder_read(climb) != "boulder":
+        log(f"on Mountain Project as {climb['name'] if climb else row['mp']}, whose lowest area there isn't clearly one boulder: "
+            "that climb is given this one's videos, and nothing more")
+        return None
+    running = [a for a in boulder_area_work(boulder) if a["status"] in ("running", "stopping")]
+    if running:
+        log(f"on Mountain Project it's on {boulder_name(boulder)}, which the area {running[0]['name']} will mesh, with this climb's videos")
+        return None
+    if boulder_done(boulder):
+        return None
+    got, status = mesh_boulder(boulder, wait=True, why=f"{c.name} is on a climbing-history.org list")
+    if status != 202:
+        return None
+    said = f"{boulder_name(boulder)}, its boulder on Mountain Project, queued to be meshed from every problem on it, with this climb's videos"
+    log(said)
+    return said
+
+
 def twins_of(climb: dict) -> list[dict]:
     """For a climb's card: the same climb from the other site, [{id (its climb here, if it's been read), name, url,
     source, how}]."""
@@ -7070,6 +7107,13 @@ def run_campaign_item(camp: dict, item: dict) -> None:
                 return
             full = q("SELECT data,climb_id,boulder FROM campaign_items WHERE campaign_id=? AND source_id=?", cid, sid, one=True)
             c = Climb.from_dict(json.loads(full["data"]))
+        if c.source == ch_mod.SOURCE:       # on Mountain Project too, here: its boulder there meshed the usual way as well
+            try:
+                twin_boulder(c, print)
+            except Cancelled:
+                raise
+            except Exception as e:  # noqa: BLE001 - its own mesh is made either way
+                print(f"error: the Mountain Project boulder of {c.name}: {type(e).__name__}: {e}", flush=True)
         climb_id = full["climb_id"] or upsert_climb(c)
         have = q(f"SELECT l.mesh_id FROM mesh_links l JOIN meshes m ON m.id=l.mesh_id WHERE l.climb_id=? AND COALESCE(l.note,'') "
                  f"NOT LIKE ? AND NOT {OLD_MESH} LIMIT 1", climb_id, SHARED + "%", one=True)    # not one old, or another's
@@ -16804,9 +16848,10 @@ def ask_draft(climber: str, climbs: list[dict]) -> str:
 
 
 def asks_listed() -> list[dict]:
-    """The climbers whose ascents climbing-history.org's pages give Instagram posts for, each with those climbs (those
-    with no YouTube video at all first), where asking them has got to, the climbs that have come up since they were
-    asked, and a draft of the message: those still to ask first, those with most climbs that have no other video first."""
+    """The climbers whose ascents climbing-history.org's pages give Instagram posts for and no YouTube video of their
+    own (an ascent that has one needs no asking), each with those climbs (those with no YouTube video at all first),
+    where asking them has got to, the climbs that have come up since they were asked, and a draft of the message: those
+    still to ask first, those with most climbs that have no other video first."""
     by: dict[str, dict] = {}
     for r in q("SELECT id, name, grade, url, data FROM climbs WHERE source=?", ch_mod.SOURCE):
         d = json.loads(r["data"] or "{}")
@@ -16825,7 +16870,9 @@ def asks_listed() -> list[dict]:
     kept = {r["climber"]: r for r in q("SELECT * FROM asks")}
     out = []
     for who, a in by.items():
-        climbs = sorted(a["climbs"].values(), key=lambda c: (c["videos"] > 0, c["theirs"] > 0, c["name"]))
+        climbs = sorted((c for c in a["climbs"].values() if not c["theirs"]), key=lambda c: (c["videos"] > 0, c["name"]))
+        if not climbs:
+            continue
         st = kept.get(who) or {}
         covered = set(json.loads(st.get("climbs") or "[]"))
         status = st.get("status") or ASK_STATES[0]

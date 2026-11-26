@@ -1026,20 +1026,75 @@ So the Areas tab's box takes the list's link, and it runs as an area, with three
 few months. What's new is added to what the climb had, rather than harvesting it from scratch, as a from-scratch
 harvest frames only the first 6 videos (`video_frames()`), and the newest ascents come last.
 
+**A title's Font grade counts, for these climbs.** A search result is of a climb when its title names it and its text
+places it, or its title gives its grade and the name is unusual. The grade was only ever the V grade, so "Burden of
+Dreams 9A" didn't count. For climbing-history.org climbs the Font grade counts too, their country places a video, and
+outside the US the search itself names the Font grade. Mountain Project's climbs are matched as before, so none of
+their searches change. The search still earns its request: 13 of the 81 pages link to no YouTube video at all, and a
+page cites the ascents that made news, not every repeat filmed.
+
+**The same climb on Mountain Project** (`same_climbs`, `twin_find()`). 28 of the 81 are in US areas Mountain Project
+covers. One listed here from both is told by its name (a sit start said either way) within 10 km, or in an area named
+as its crag: a crag's position can be a canyon's length from the boulder, and a name that close is the same climb.
+They stay two climbs for now, but:
+
+* the Mountain Project climb is given the videos the page links to, after its own (`climb_obj()`);
+* its areas' climbs that have been through are queued, after everything else, to add them and mesh again, their
+  boulder with them (`twin_videos_queued()`, as what a newer YouTube search finds is);
+* when a list's job comes to the climb, its Mountain Project boulder is meshed the usual way too, from every problem
+  on its page, where that page says it's one rock and no running area will (`twin_boulder()`).
+
+It only works among what's here. Mountain Project has no search by name, so a climb in an area never listed here has
+no twin until that area is listed, or its Mountain Project link is imported.
+
+**Footage to ask for** (`asks_listed()`, the admin page). The pages link to more Instagram posts than YouTube videos.
+The admin page lists the climbers who posted them, the climbs with no other video first, with a message drafted for
+each. Nothing is sent from the server: the drafts are to be changed and sent by hand. One message a climber, covering
+all their climbs, and where each ask got to is kept, with the climbs found since, so nobody is asked twice.
+
 **Not done, and why:**
 
-* *A linked moment isn't used yet.* A video's start is kept (`Media.start`), but its frames are still taken evenly
-  over its whole length, and beta still looks at its first 5 minutes. For a send 48 minutes into a stream that's
-  almost all off the rock. Frames from around the moment, and beta from there, are the fix; it changes which photos
-  climbs are meshed from, so it waits to be agreed.
-* *Vimeo.* yt-dlp fetches plain Vimeo videos, but the live server asks volunteers for every video, and they take
-  YouTube ids only. Two usable links in 500 didn't justify a second kind of video id through the cache, beta and the
-  backup.
-* *The same climb on Mountain Project.* 28 of the 81 are in US areas Mountain Project covers. One listed by an area
-  here too is a second climb, with a second mesh. Matching them (by name, near the same position) and giving the
-  Mountain Project climb the page's videos is the alternative.
-* *Titles in Font grades.* A search result counts when its title names the climb and its text places it (its crag), or
-  its title gives its V grade; "Burden of Dreams 9A" alone doesn't. The page's own links matter more here than the search.
+* *Vimeo.* Two usable links in 500. Volunteers take YouTube ids only, and the cache, beta, the backup and volunteers'
+  checks all key videos by them. yt-dlp here (2026.03.17) couldn't read either video without its impersonation extra
+  ("Failed to fetch macos OAuth token"), which volunteers' scripts would have to install too.
+* *Finding a climb on Mountain Project when its area isn't listed here.* It needs a search by name there, or reading
+  every boulder's page near a crag's position, at a minute a page.
+* *One climb, not two.* Twins are kept apart, each with its meshes, until merging them is asked for.
+
+## Frames from videos cut together, long, or linked at a moment (`harvest.extract_frames()`)
+
+A video's share of frames (150 over up to 6 videos) went to the sharpest frame in each equal stretch of its whole
+length. That suits a send filmed from a tripod, which most Mountain Project videos are. It fails three kinds that
+climbing-history.org's links are full of:
+
+| the video | what went wrong | now |
+|---|---|---|
+| an edit of several shots | ten seconds going round the rock got one frame beside three minutes from a tripod, whose frames were then dropped as repeats | its share goes to its distinct views |
+| linked at a moment (`?t=2900`) | frames from the whole stream, nearly all off the rock; beta looked at its first 5 minutes | frames from 10 s before the moment to 300 s after; beta from where its placed frames are |
+| over 15 minutes | a frame every second of it was written, then thinned | 900 candidate frames over it, then by its views |
+| too big at 1080p (most over ~40 min) | not fetched at all: "larger than max-filesize" | fetched at the best size that fits in 500 MB |
+
+**Shots** (`find_shots()`). Two candidate frames in a row are one shot if small copies of them (64 x 36) correlate at
+0.85, or else if 15 of their features match with one geometry, which a camera moving fast within a shot still gives.
+A frame that can't be judged (black) stays with the shot before, and the next is held against the last that could
+be, so a fade through black is a cut. A shot that returns to a view an earlier one ended on (an edit going between
+two tripods) carries that one on.
+
+**Views** (`shot_views()`, `by_shots()`). Within a shot, a frame shows a view again if it's like the view's kept
+frame, or the same shot by `diversity.pair()` (no parallax). Places go to shots in proportion to their distinct
+views, every shot at least one, and each place takes the sharpest of an equal stretch of the shot's views. A video
+with fewer views than places keeps them all, and the rest of its places stay empty, as repeats' did (Nov 15).
+
+**One shot is framed exactly as before.** A video of one shot, no moment linked, 15 minutes or less, goes the old
+way, frame for frame, so most meshes wouldn't change if remade. Which would is told without remaking (the admin
+page's *frames* tier): a video over 15 minutes by its length, kept already; cuts by a look at small copies of a frame
+a second (`frames_check()`, a few seconds a video, started from the admin page). Their climbs are then harvested
+again and rebuilt at low priority (`queue_reframes()`). Uploaded videos are still taken the old way.
+
+**What isn't tested.** The thresholds (0.85, 0.9, 15 matches, 10 s and 300 s round a moment) were set on made-up
+videos in `tests/test_frames.py`: no real video could be had while this was built. The comparison planned on Nov 9
+(frames by time against frames by the camera's movement, on 6 to 8 real climbs, three seeds each) is still the check
+that matters, and can now run on the server's cached videos.
 
 ## When a job fails (`backend/diagnostics.py`)
 

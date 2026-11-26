@@ -5645,7 +5645,7 @@ function renderBetaDebug(){
       <label title="The holds called, where the frame looked at shows them, ringed thicker while held"><input type="checkbox" class="hl" checked> holds</label></div>
     <div class="row"><span class="say" aria-live="polite"></span></div>
     <canvas class="tl" title="Click or drag to go to a time"></canvas>
-    <div class="meta">${plural(d.frames || 0, 'frame')} looked at, ${d.fps} a second over the first ${d.max_seconds} s: the climber found in
+    <div class="meta">${plural(d.frames || 0, 'frame')} looked at, ${d.fps} a second over ${d.begin ? `${d.max_seconds} s from ${Math.round(d.begin)} s in (where its frames placed in the mesh are)` : `the first ${d.max_seconds} s`}: the climber found in
       ${d.with_climber ?? d.poses.length}, and matched to a placed frame in ${matched}. Top row:
       <span style="color:var(--ok)">matched</span>, <span style="color:var(--warn)">climber found, not matched</span>,
       <span style="color:var(--bad)">no climber</span>. Below it each limb's holds, by role.${d.approximate_lens ? ' Its placed frames\' lenses were approximate.' : ''}</div>`;
@@ -5744,7 +5744,8 @@ function debugTick(){
 function debugSay(at, held){
   const d = dbg.data, t = dbg.t, el = $('#vbetadbg .say');
   if (!el || (dbg.video?.error)) return;
-  const what = t > d.max_seconds ? `past the first ${d.max_seconds} s, which weren't looked at`
+  const what = t < (d.begin || 0) ? `before ${Math.round(d.begin)} s, where it was looked at from`
+    : t > (d.begin || 0) + d.max_seconds ? `past the ${d.max_seconds} s that were looked at`
     : !at.near ? 'no climber found in the frame looked at'
     : at.near.ref ? `frame at ${at.near.t.toFixed(2)} s matched placed photo ${at.near.ref}`
     : `frame at ${at.near.t.toFixed(2)} s: the climber was found, but the frame matched no placed photo, so nothing was cast onto the rock`;
@@ -5811,9 +5812,11 @@ function debugTimeline(){
     x.fillStyle = ROLES[hold.role]?.color || '#888';
     x.fillRect(X(ct.t0 - half), 2 + k * rowH, Math.max(2, X(ct.t1 + half) - X(ct.t0 - half)), rowH - 3);
   }
-  if (D > d.max_seconds) {     // past what was looked at
-    x.fillStyle = col('--line'); x.fillRect(X(d.max_seconds), 2, X(D) - X(d.max_seconds), rows.length * rowH - 3);
-    x.fillStyle = col('--mute'); x.fillText('not looked at', X(d.max_seconds) + 3, 2 + 2 * rowH + 9);
+  const lookedTo = (d.begin || 0) + d.max_seconds;
+  if (d.begin) { x.fillStyle = col('--line'); x.fillRect(X(0), 2, X(d.begin) - X(0), rows.length * rowH - 3); }    // before where it was looked at from
+  if (D > lookedTo) {     // past what was looked at
+    x.fillStyle = col('--line'); x.fillRect(X(lookedTo), 2, X(D) - X(lookedTo), rows.length * rowH - 3);
+    x.fillStyle = col('--mute'); x.fillText('not looked at', X(lookedTo) + 3, 2 + 2 * rowH + 9);
   }
   const axis = 2 + rows.length * rowH + 2, step = D > 120 ? 30 : D > 40 ? 10 : 5;
   x.fillStyle = col('--mute'); x.strokeStyle = col('--line'); x.lineWidth = 1;

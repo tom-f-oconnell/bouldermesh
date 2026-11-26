@@ -369,6 +369,19 @@ assert server.twin_noted(rots)["mp"] == "501"
 it = server.q("SELECT status, redo, old_rerun, note, was FROM campaign_items WHERE campaign_id=? AND source_id='501'", red_rocks["id"], one=True)
 assert (it["status"], it["redo"], it["old_rerun"], it["was"]) == ("pending", "more+rebuild", 2, "done") and "1 video" in it["note"], it
 assert server.q("SELECT redo FROM campaign_items WHERE campaign_id=? AND source_id='502'", red_rocks["id"], one=True)["redo"] is None
+# a list's job that comes to it has its Mountain Project boulder meshed the usual way too, where that's clearly one rock
+leaf = server.boulder_of(json.dumps(["Nevada", "Red Rocks", "Black Velvet Canyon", "Wet Dream Boulder"]))
+queued, said = [], []
+real_mesh_boulder, server.mesh_boulder = server.mesh_boulder, lambda b, wait=False, why=None: queued.append((b, wait, why)) or ({"queued": True}, 202)
+real_read, server.boulder_read = server.boulder_read, lambda climb: server.leaf_kind(server.boulder_of(climb["area_path"]))
+try:
+    assert server.twin_boulder(rots, said.append) is None and not queued and "isn't clearly one boulder" in said[-1], said
+    server.q("INSERT OR REPLACE INTO boulders(key, name, url, kind, why, routes, checked) VALUES(?,?,?,?,?,?,?)", leaf, "Wet Dream Boulder",
+             None, "boulder", "its name", 2, 0, write=True)
+    assert "Wet Dream Boulder" in server.twin_boulder(rots, said.append) and queued == [(leaf, True, "Return of the Sleepwalker is on a climbing-history.org list")], queued
+    assert server.twin_boulder(burden, said.append) is None and len(queued) == 1, "no Mountain Project climb here is it"
+finally:
+    server.mesh_boulder, server.boulder_read = real_mesh_boulder, real_read
 # a climb imported before Mountain Project's area is listed is found when it is
 karoshi = server.upsert_climb(ch.fetch(f"{BASE}/climb/5000/karoshi")[0])
 assert not server.q("SELECT 1 FROM same_climbs WHERE ch='ch5000'")
@@ -377,29 +390,35 @@ assert server.q("SELECT mp FROM same_climbs WHERE ch='ch5000'", one=True)["mp"] 
 print("the same climb on Mountain Project OK")
 
 # --- footage to ask for: one draft a climber, where asking got to kept, climbs found since shown --------------------
+assert server.admin_asks({})["asks"] == [], "every ascent with an Instagram post here has a YouTube video of its own"
+web[f"{BASE}/climb/2000/honey-badger"] = page(2000, "Honey Badger", "8C+", "Badger Cove", 55, ["United Kingdom", "England"], ascent(
+    7, "Will Bosi", "2021-11-01", "First ascent.", link("https://www.instagram.com/p/HONEYBADGER1/") + link("https://www.instagram.com/p/HONEYBADGER2/")))
+web[f"{BASE}/climb/2001/shared-rock"] = page(2001, "Shared Rock", "8C+", "Badger Cove", 55, ["United Kingdom", "England"], ascent(
+    8, "Someone Else", "2020-01-01", "First ascent.", link("https://youtu.be/SHAREDrock1")) + ascent(
+    9, "Ana Example", "2022-02-02", "Second ascent.", link("https://www.instagram.com/reel/ANAANAANA/")))
+for path in ("2000/honey-badger", "2001/shared-rock"):
+    server.upsert_climb(ch.fetch(f"{BASE}/climb/{path}")[0])
 asks = server.admin_asks({})["asks"]
-assert [(a["climber"], len(a["climbs"]), a["only"], a["status"]) for a in asks] == [
-    ("Nalle Hukkataival", 1, 0, "to ask"), ("Will Bosi", 1, 0, "to ask")], asks
-will = asks[1]
-assert will["draft"].startswith("Hi Will,") and "https://www.instagram.com/reel/CrB1L4ctXrR/" in will["draft"] and "Burden of Dreams (9A), Lappnor" in will["draft"]
-assert will["climbs"][0]["theirs"] == 1 and will["climbs"][0]["eight_a"].startswith("https://www.8a.nu/") and will["climber_url"] == f"{BASE}/climber/1/x"
-assert "(and 1 other post)" in asks[0]["draft"], asks[0]["draft"]
+assert [(a["climber"], [c["name"] for c in a["climbs"]], a["only"], a["status"]) for a in asks] == [
+    ("Will Bosi", ["Honey Badger"], 1, "to ask"), ("Ana Example", ["Shared Rock"], 0, "to ask")], asks     # not his Burden of Dreams
+will = asks[0]
+assert will["draft"].startswith("Hi Will,") and "- Honey Badger (8C+), Badger Cove: https://www.instagram.com/p/HONEYBADGER1/ (and 1 other post)" in will["draft"]
+assert will["climbs"][0]["eight_a"].startswith("https://www.8a.nu/") and will["climber_url"] == f"{BASE}/climber/1/x", will
 try:
     server.admin_ask_set({"climber": "Will Bosi", "status": "spammed"})
     raise AssertionError("not a state")
 except ValueError as e:
     assert "status must be" in str(e), e
 server.admin_ask_set({"climber": "Will Bosi", "status": "asked", "note": "Instagram DM, Nov 26"})
-web[f"{BASE}/climb/2000/honey-badger"] = page(2000, "Honey Badger", "8C+", "Badger Cove", 55, ["United Kingdom", "England"], ascent(
-    7, "Will Bosi", "2021-11-01", "First ascent.", link("https://www.instagram.com/p/HONEYBADGER1/")))
-server.upsert_climb(ch.fetch(f"{BASE}/climb/2000/honey-badger")[0])
+web[f"{BASE}/climb/2002/second-badger"] = page(2002, "Second Badger", "8C+", "Badger Cove", 55, ["United Kingdom", "England"], ascent(
+    7, "Will Bosi", "2022-11-01", "First ascent.", link("https://www.instagram.com/p/SECONDBADGER/")))
+server.upsert_climb(ch.fetch(f"{BASE}/climb/2002/second-badger")[0])
 asks = server.admin_asks({})["asks"]
-assert [(a["climber"], a["status"]) for a in asks] == [("Nalle Hukkataival", "to ask"), ("Will Bosi", "asked")], "those still to ask first"
+assert [(a["climber"], a["status"]) for a in asks] == [("Ana Example", "to ask"), ("Will Bosi", "asked")], "those still to ask first"
 will = asks[1]
-assert will["since"] == ["Honey Badger"] and will["only"] == 1 and will["note"] == "Instagram DM, Nov 26", will
-assert [c["name"] for c in will["climbs"]] == ["Honey Badger", "Burden of Dreams"], "the climb with no other video first"
+assert will["since"] == ["Second Badger"] and will["only"] == 2 and will["note"] == "Instagram DM, Nov 26", will
 server.admin_ask_set({"climber": "Will Bosi", "status": "asked", "note": "Instagram DM, Nov 26"})     # saved again: what it covered stands
-assert server.admin_asks({})["asks"][1]["since"] == ["Honey Badger"]
+assert server.admin_asks({})["asks"][1]["since"] == ["Second Badger"]
 print("footage to ask for OK")
 
 ch.http.get_text, ch.http.get_json = real_get_text, real_get_json

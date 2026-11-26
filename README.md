@@ -66,7 +66,15 @@ first ascent, and position (its own where the site has one, else its crag's). It
 ascents' references. Instagram posts are only listed, never fetched. A list of its hardest boulder problems
 (`climbing-history.org/hardest?discipline=boulder&grade=8C%2B`) goes in the Areas tab's *Start a job* box, like an
 area: with *First N meshes*, its hardest N, and its card says how far that's got. Its terms allow browsing and ask only
-that automated traffic not load its servers, so pages are cached and requests seconds apart. `design.md` has the rest.
+that automated traffic not load its servers, so pages are cached and requests seconds apart. A climb that's also on
+Mountain Project here is linked to it by name and position: the Mountain Project climb is given the page's videos, and
+its boulder is meshed the usual way too. The admin page's *Footage to ask for* lists the climbers whose footage is only
+on Instagram, with a message drafted for each, to send yourself. `design.md` has the rest.
+
+Videos' frames: a video of one shot gives the sharpest frame of each equal stretch of it. One cut together from several
+shots, over 15 minutes, or linked at a moment (`?t=2900`) gives its frames to the distinct views it has, from that moment
+where there is one. The admin page's *frames* tier counts the meshes that would come out different (*Look for cuts*
+finds them, *Remake by shots* remakes them).
 
 ### CLI
 
@@ -1720,6 +1728,7 @@ gets every optional check; the tests also pass without them.
     python3 tests/test_forget_videos.py # offline: deleting kept videos by hand, on the server and the backup
     python3 tests/test_archive_restore.py # offline: videos volunteers are asked for, sent back from the backup's archive instead
     python3 tests/test_tiers.py       # offline: what made each mesh, what's out of date by tier, remaking a tier
+    python3 tests/test_frames.py      # offline: a video's frames on made-up videos: repeats, one shot, an edit's shots, a linked moment, a long video
     python3 tests/test_kept.py        # offline: a mesh made again from its cameras as they were, what they made carried over
     python3 tests/test_textmask.py    # offline: text masked for texturing (the detector itself only if cached, or MODELS=1)
     python3 tests/test_orientation.py # offline: iPhone gravity readings, and comparing them with a model's down
