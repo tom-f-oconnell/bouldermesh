@@ -12557,7 +12557,9 @@ def admin_machine_diagnostics(body: dict) -> dict:
 
 
 # ----------------------------------------------------------------- errors in visitors' browsers
-DEBUG = DATA / "debug"      # what the owner's phone sends for debugging (POST /api/debug/files): <kind>/<session>/<file>
+# what the owner's phone sends for debugging (POST /api/debug/files): <kind>/<session>/<file>. The public server keeps it
+# on its system disk, outside DATA_DIR (docker-compose.public.yml), with OTHER_DISK_FLOOR kept free there
+DEBUG = Path(os.environ.get("DEBUG_DIR") or DATA / "debug")
 DEBUG_FILE_MAX = 30 * 2**20
 CLIENT_ERRORS = DATA / "client-errors.jsonl"   # one report a line; the one before it, client-errors.jsonl.1, once it's full
 CLIENT_ERRORS_BYTES = 2 * 2**20                # how big the file gets before that
@@ -13192,7 +13194,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def debug_file(self) -> None:
         """POST /api/debug/files?kind=<what>&session=<its folder>&name=<file>: a file the owner's phone kept for debugging
-        (the apps' live hold finding: each frame's JPEG and JSON), to DEBUG/<kind>/<session>/<name>, replacing one there."""
+        (the apps' live hold finding: each frame's JPEG and JSON; line-up tests; captures' timing traces), to
+        DEBUG/<kind>/<session>/<name>, replacing one there."""
         if not self.is_editor():
             return self.send_json({"error": "only the site's owner sends debug files"}, 403)
         qs = parse_qs(urlparse(self.path).query)
@@ -13204,6 +13207,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"a file of up to {DEBUG_FILE_MAX // 2**20} MB"}, 413)
         d = DEBUG / parts[0] / parts[1]
         d.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(d).free - n < OTHER_DISK_FLOOR:
+            return self.send_json({"error": f"under {OTHER_DISK_FLOOR / 2**30:g} GB would be left free where debug files are kept"}, 507)
         tmp = d / (parts[2] + ".partial")
         tmp.write_bytes(self.rfile.read(n))
         tmp.replace(d / parts[2])

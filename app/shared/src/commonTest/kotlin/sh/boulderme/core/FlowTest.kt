@@ -57,6 +57,8 @@ class FlowTest {
 
     @Test fun fromTheSmallModelToPhotos() {
         val flow = CaptureFlow(CaptureSession(TestWorld.plan(), TestWorld.guide(), "f1", "test", "a phone", 0.0))
+        var clock = 0.0
+        flow.trace = Trace { clock++ }      // the owner's: a second each line
         assertEquals(Phase.LEVEL, flow.phase)
         flow.skipLevel()
         assertEquals(Phase.GHOST, flow.phase)
@@ -154,6 +156,15 @@ class FlowTest {
             assertTrue(k in kinds, "$k: $kinds")
         assertTrue(lines.any { "\"kept\":false" in it && "soft" in it }, "a photo not kept, and why")
         assertTrue(kinds.count { it == "phase" } < 10 && lines.size < 80, "a line a change, not a line a frame: ${lines.size}")
+        // and the owner's trace: each phase with how long the last took, how it was lined up, each target and photo
+        flow.frame(close, true, 0.0, 0.004, t + 7.0, 90)     // the next target, once skipped
+        val traced = flow.trace!!.text().trim().lines()
+        val tk = traced.map { Regex("\"e\":\"(\\w+)\"").find(it)!!.groupValues[1] }
+        for (k in listOf("phase", "tap_model", "tap_rock", "aligned", "align_restart", "fit_confirmed", "target", "target_end", "shoot", "shot"))
+            assertTrue(k in tk, "$k: $tk")
+        assertTrue(traced.any { "\"e\":\"phase\"" in it && "\"to\":\"CAPTURE\"" in it && "\"from_s\":" in it }, traced.joinToString("\n"))
+        assertTrue(traced.count { "\"e\":\"aligned\"" in it && "\"how\":\"taps\"" in it } == 2, "once, and again after Start again")
+        assertTrue(traced.any { "\"e\":\"target_end\"" in it && "\"shots\":2" in it && "\"kept\":1" in it }, "a target's photos, kept or not: " + traced.filter { "target" in it })
     }
 
     @Test fun anUnsteadyDirectionIsFacedAgain() {

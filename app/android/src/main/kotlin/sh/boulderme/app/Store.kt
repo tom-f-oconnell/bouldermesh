@@ -62,6 +62,12 @@ class Store(context: Context) {
     var owner: Boolean      // the phone's token is the site owner's (an account of that role, or the site's own): Settings' debug tools
         get() = prefs.getBoolean("owner", false)
         set(v) = prefs.edit().putBoolean("owner", v).apply()
+    var traceOn: Boolean    // the owner's: each capture keeps a trace of how long its parts took (Trace), in debugDir("capture", <its id>)
+        get() = prefs.getBoolean("trace_on", true)
+        set(v) = prefs.edit().putBoolean("trace_on", v).apply()
+    var traceSend: Boolean  // and DebugSender sends those once a capture is over, by itself
+        get() = prefs.getBoolean("trace_send", true)
+        set(v) = prefs.edit().putBoolean("trace_send", v).apply()
     var credit: String      // who photos are credited to, under the licence they're sent with
         get() = prefs.getString("credit", "") ?: ""
         set(v) = prefs.edit().putString("credit", v.trim()).apply()
@@ -194,6 +200,10 @@ class Store(context: Context) {
     val lineups = File(root, "lineup")
     fun keepLineupTest(id: String) { lineups.mkdirs(); File(captures, id).renameTo(File(lineups, id)) }
     fun lineupTests(): List<File> = (lineups.listFiles { f -> f.isDirectory } ?: emptyArray()).sortedByDescending { it.lastModified() }
+
+    /** The owner's debug files of one kind (a capture's trace: "capture"), each session's in a folder of its own: files/debug/<kind>/<session>/. */
+    fun debugDir(kind: String, session: String) = File(File(File(root, "debug"), kind), session)
+    fun debugSessions(kind: String): List<File> = (File(File(root, "debug"), kind).listFiles { f -> f.isDirectory } ?: emptyArray()).sortedByDescending { it.lastModified() }
 
     /** What a capture holds, grouped by what each part was for (CaptureContents), with its record if it can be read. */
     fun contents(id: String): Pair<List<ContentGroup>, CaptureRecord?> {

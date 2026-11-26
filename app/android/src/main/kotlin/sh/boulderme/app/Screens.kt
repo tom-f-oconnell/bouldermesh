@@ -774,4 +774,34 @@ private fun DebugTools(a: MainActivity, go: (Screen) -> Unit) {
         OutlinedButton(onClick = { go(Screen.HoldLab) }) { Text("Hold finding in a photo…") }
         OutlinedButton(onClick = { go(Screen.HoldLive) }) { Text("Live") }
     }
+    TraceSettings(a)
+}
+
+/**
+ * The owner's capture traces (Trace): on or off, sent by themselves after a capture or not, and the latest kept here,
+ * each with whether it's been sent and a button to send it now.
+ */
+@Composable
+private fun TraceSettings(a: MainActivity) {
+    var on by remember { mutableStateOf(a.store.traceOn) }
+    var send by remember { mutableStateOf(a.store.traceSend) }
+    TextButton(onClick = { on = !on; a.store.traceOn = on }) { Text(if (on) "Timing traces of captures: on" else "Timing traces of captures: off") }
+    TextButton(enabled = on, onClick = { send = !send; a.store.traceSend = send }) {
+        Text(if (send) "Sent by themselves after each capture: on" else "Sent by themselves after each capture: off")
+    }
+    Text("How long each part of a capture takes (lining up by the phone and the server, each hold close up, finding a gym climb's holds), " +
+        "kept in memory while it runs and written when it ends, then sent to the server's debug/capture/. Changes to these apply from the next capture.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val traces = remember { a.store.debugSessions("capture") }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    for (d in traces.take(10)) Row(verticalAlignment = Alignment.CenterVertically) {
+        val name = remember(d) { runCatching { Store.json.parseToJsonElement(File(d, "info.json").readText()).let { it as kotlinx.serialization.json.JsonObject }["name"]
+            ?.let { (it as kotlinx.serialization.json.JsonPrimitive).content } }.getOrNull() ?: d.name }
+        var said by remember(d) { mutableStateOf(if (DebugSender.allSent(d)) "Sent" else null) }
+        Text(name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 2)
+        TextButton(enabled = said == null || said == "Failed", onClick = {
+            said = "Sending…"
+            scope.launch { said = withContext(Dispatchers.IO) { if (DebugSender.send(a.store, a.api, d, "capture", always = true)) "Sent" else "Failed" } }
+        }) { Text(said ?: "Send") }
+    }
 }

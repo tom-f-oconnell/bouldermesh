@@ -186,11 +186,15 @@ got, code = la.answer("m3", body, "x", packs, lim, place)
 assert code == 200 and [(a["id"], a["how"]) for a in got["located"]] == [(1, "phone"), (2, "more")], got
 assert np.allclose(got["located"][0]["c"], C) and got["located"][0]["inliers"] == 80 and isinstance(got["ms"], int)
 assert calls == [{}] * 3 + [la.MORE_OPTS] * 2, calls
+took = got["took"]      # how long each part took, for the owner's traces
+assert [(f["id"], f["placed"], f.get("more")) for f in took["frames"]] == [(1, True, None), (2, False, True), (3, False, False)], took
+assert all(isinstance(f["ms"], int) for f in took["frames"]) and isinstance(took["pack_ms"], int) and isinstance(took["read_ms"], int), took
 assert not lim.busy, "its turn ended"
 assert la.answer("m3", {"frames": []}, "x", packs, lim, place)[1] == 400
 la.BUDGET_S = 0.0       # no time left: not tried the heavier way
 got, _ = la.answer("m3", body, "x", packs, lim, place)
 assert [a["how"] for a in got["located"]] == ["phone"], got
+assert [f.get("more") for f in got["took"]["frames"]] == [None, "no time left", "no time left"], got["took"]
 la.BUDGET_S = 6.0
 print("answer OK")
 

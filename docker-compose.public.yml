@@ -22,6 +22,7 @@ services:
       VIDEO_CACHE_GB: "${VIDEO_CACHE_GB:-10}"
       CAMPAIGN_MIN_FREE_GB: "${CAMPAIGN_MIN_FREE_GB:-10}"   # areas stop with less disk left than this (50 elsewhere)
       OTHER_DISK_FLOOR_GB: "${OTHER_DISK_FLOOR_GB:-15}"     # part of data/ mounted from another disk (data/cache, from the system disk): areas and volunteers wait under this much free there
+      DEBUG_DIR: /debug                     # the owner's phone's debug files (POST /api/debug/files): ./debug, on the system disk, not the Volume
       DATA_CAP_GB: "${DATA_CAP_GB:-60}"     # over this much data, volunteers and areas wait for room (none elsewhere); the admin page changes it
       SITE_SOURCES: "${SITE_SOURCES:-link}"  # photos and frames not clearly free to copy are linked to, not served (all | link | permitted)
       # native libraries' thread pools (OpenMP, OpenBLAS, MKL, and CLIP's torch) one thread each, on a 2-core server where
@@ -33,6 +34,7 @@ services:
                                             # both, and its choices last across deploy/ship.sh
     volumes:
       - ./deploy:/app/deploy:ro             # a folder, not the file, so that a git pull is seen without recreating the container
+      - ./debug:/debug                      # made by deploy.sh as the user it runs as: Docker would make it root's, which the app can't write
     user: "${BM_USER:-1000:1000}"
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]

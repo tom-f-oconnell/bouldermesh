@@ -48,6 +48,8 @@ import sh.boulderme.core.Plan
 import sh.boulderme.core.Quality
 import sh.boulderme.core.Quat
 import sh.boulderme.core.ShotIn
+import sh.boulderme.core.TimedLocator
+import sh.boulderme.core.Trace
 import sh.boulderme.core.Vec3
 import java.io.File
 import java.io.FileOutputStream
@@ -84,12 +86,20 @@ class ArController(
         if (reopen != null) flow.reopen(Reopen.record(File(dir, "capture.json").readText()) ?: error("the record of $reopen can't be read"),
             File(dir, "points.bin").takeIf { it.exists() }?.readBytes(), File(dir, "capture-log.jsonl").takeIf { it.exists() }?.readText() ?: "")
     }
+    // the owner's timing trace (Trace), unless Settings has it off: held in memory, written as the capture pauses or ends
+    private val trace: Trace? = if (store.owner && store.traceOn) Trace() else null
+    private val traceDir = trace?.let { store.debugDir("capture", id) }
+    init {
+        flow.trace = trace
+        trace?.add("start", "id" to id, "name" to name, "mesh" to plan?.mesh, "gym" to gym, "locate_test" to locateTest, "reopen" to reopen,
+            "locators" to locators.map { it.first }, "device" to "${Build.MANUFACTURER} ${Build.MODEL}", "android" to Build.VERSION.SDK_INT, "app" to BuildInfo.APP)
+    }
     init { flow.canLocate = plan != null && locators.isNotEmpty(); if (locateTest) { flow.locateTest = true; flow.skipLevel() } }
     private val locating = locators.map { Executors.newSingleThreadExecutor() }      // one thread each, and a frame only to one that's free
     private val locBusy = locators.map { java.util.concurrent.atomic.AtomicBoolean(false) }
     private val lock = Any()        // round every use of the flow: frames are drawn on one thread, photos judged on another
     private val gymOn = flow.isGym
-    private val holdFinder: HoldFinder? = if (gymOn) HoldFinder.load(activity) else null      // B, where the APK has the model
+    private val holdFinder: HoldFinder? = if (gymOn) { val t0 = System.nanoTime(); HoldFinder.load(activity).also { trace?.add("model_load", "ms" to ms(t0), "found" to (it != null)) } } else null      // B, where the APK has the model
     init { flow.gymModel = holdFinder != null }
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -140,6 +150,7 @@ class ArController(
                         "image" to "${cfg.imageSize.width}x${cfg.imageSize.height}", "texture" to "${cfg.textureSize.width}x${cfg.textureSize.height}",
                         "fps" to "${cfg.fpsRange.lower}-${cfg.fpsRange.upper}", "depth_sensor" to cfg.depthSensorUsage.name,
                         "depth" to s.isDepthModeSupported(Config.DepthMode.AUTOMATIC), "configs" to s.getSupportedCameraConfigs(CameraConfigFilter(s)).size)
+                    flow.trace("camera", "image" to "${cfg.imageSize.width}x${cfg.imageSize.height}", "fps" to "${cfg.fpsRange.lower}-${cfg.fpsRange.upper}")
                 }
                 sensorOrientation = runCatching {
                     (activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager).getCameraCharacteristics(s.cameraConfig.cameraId).get(CameraCharacteristics.SENSOR_ORIENTATION)
@@ -147,6 +158,7 @@ class ArController(
                 session = s
             }
             session?.resume()
+            synchronized(lock) { flow.trace("resume") }
             return null
         } catch (e: Exception) {
             synchronized(lock) { flow.event("start_failed", "what" to e.javaClass.simpleName, "message" to e.message) }
@@ -159,7 +171,25 @@ class ArController(
         }
     }
 
-    fun pause() { session?.pause() }
+    fun pause() {
+        session?.pause()
+        if (trace != null) { synchronized(lock) { flow.trace("pause") }; runCatching { worker.execute { writeTrace() } } }
+    }
+
+    /** Writes the owner's trace to its debug folder (Store.debugDir), for DebugSender to send once the capture's over. */
+    private fun writeTrace() {
+        val d = traceDir ?: return
+        val text = synchronized(lock) { trace?.text() } ?: return
+        runCatching {
+            d.mkdirs()
+            File(d, "info.json").writeText(kotlinx.serialization.json.buildJsonObject {
+                put("name", kotlinx.serialization.json.JsonPrimitive(name)); put("mesh", kotlinx.serialization.json.JsonPrimitive(plan?.mesh))
+                put("gym", kotlinx.serialization.json.JsonPrimitive(gymOn))
+            }.toString())
+            File(d, Trace.FILE + ".partial").writeText(text)
+            File(d, Trace.FILE + ".partial").renameTo(File(d, Trace.FILE))
+        }
+    }
     /** Lets the camera go. Closing ARCore's session takes seconds, so it's done after the photos still being saved, off the main thread. */
     fun close() {
         val s = session
@@ -222,7 +252,7 @@ class ArController(
     }
 
     /** Ends the capture. Returns how many photos were kept. */
-    fun finish(): Int = save(last = true)
+    fun finish(): Int = save(last = true).also { synchronized(lock) { flow.trace("end", "photos" to it) }; writeTrace() }
 
     // ---- drawing, on the GL thread -----------------------------------------------------------------------------------
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -271,7 +301,8 @@ class ArController(
             if (tap != null && tracking) { val (from, along) = ray(tap[0], tap[1]); flow.tap(from, along, if (gymOn) ({ picture(frame, pose) }) else null) { hit(frame, tap) } }
             while (true) { val g = gestures.poll() ?: break; if (tracking) g() }
             // the slow half of tightening the fit holds no lock: frames go on being drawn meanwhile
-            flow.refineDue(now)?.let { work -> worker.execute { val found = flow.tighter(work); synchronized(lock) { flow.tightened(work, found) } } }
+            flow.refineDue(now)?.let { work -> worker.execute { val t0 = System.nanoTime(); val found = flow.tighter(work)
+                synchronized(lock) { flow.trace("refine", "ms" to ms(t0), "points" to work.points.size, "found" to (found != null), "matched" to found?.matched, "rms_m" to found?.rmsM); flow.tightened(work, found) } } }
             flow.frame(pose, tracking, gyro, exposure, now, uprightDeg(), accel, sensorOrientation)
         }
         out.levels?.let { guideRenderer?.setLevels(it) }
@@ -346,6 +377,7 @@ class ArController(
 
     // ---- a photo -----------------------------------------------------------------------------------------------------
     private fun takeStill(frame: Frame, pose: CameraPose, exposure: Double, gyro: Double, now: Double) {
+        val g0 = System.nanoTime()
         val image: Image = try { frame.acquireCameraImage() } catch (e: Exception) {
             synchronized(lock) { flow.noShot(if (e is NotYetAvailableException) null else "The camera gave no picture: ${e.message}") }
             return
@@ -359,28 +391,44 @@ class ArController(
         val focus = meta?.let { m -> runCatching { m.getFloat(ImageMetadata.LENS_FOCUS_DISTANCE).toDouble() }.getOrNull() }?.takeIf { it > 0 }?.let { 1 / it }
         val upright = uprightDeg()
         val unix = System.currentTimeMillis() / 1000.0
+        val grabMs = ms(g0)     // on the drawing thread: a frame held up this long
+        val queued = System.nanoTime()
         worker.execute {
             try {
+                val took = if (trace != null) LinkedHashMap<String, Any?>() else null
+                var at = System.nanoTime()
+                took?.set("grab_ms", grabMs); took?.set("queue_ms", (at - queued) / 1e6)
+                fun step(name: String) { if (took != null) { val n = System.nanoTime(); took[name] = (n - at) / 1e6; at = n } }
                 val stats = Quality.imageStats(nv21, w, h, w)       // NV21 starts with its brightness, a byte a pixel
+                step("stats_ms")
                 // stored upright (the sensor reads its picture out on its side), with the camera and its lens as that picture has them
                 val turn = Axes.uprightTurn(Axes.downInImage(pose), upright)
                 val stored = pose.turned(turn)
                 val features = runCatching { Features.of(nv21, w, h, w, turn) }.getOrNull()     // for a warning if it won't match the photos near it
+                step("features_ms")
                 // a gym climb's: its patches of one colour (A), and those within the holds the model finds (B), to find the climb's holds in
                 val pic = if (gymOn) runCatching { Picture.ofYuv(nv21, w, nv21, w * h, w, w, h, vFirst = true, turn = turn) }.getOrNull() else null
+                if (gymOn) step("picture_ms")
                 val blobs = pic?.let { runCatching { Blobs.find(it) }.getOrNull() }
+                if (gymOn) { step("colour_ms"); took?.set("colour_found", blobs != null) }
                 val modelBlobs = pic?.let { p -> holdFinder?.let { HoldModel.blobs(p, it) } }
+                if (gymOn && holdFinder != null) { step("model_ms"); took?.set("model_found", modelBlobs != null) }
                 val out = synchronized(lock) { flow.shot(ShotIn(stored, sample, stats, shutter, iso, focus, true, arSession, now, unix, sensorOrientation, gyro, turn,
                     features = features, blobs = blobs, modelBlobs = modelBlobs)) }
+                step("judge_ms")
                 if (out.kept) {
                     if (dingKept) sounds.ding()
                     val file = File(File(dir, "photos"), out.record.name)
                     val pixels = turnNv21(nv21, w, h, turn)
                     val (sw, sh) = if (turn == 90 || turn == 270) h to w else w to h
                     FileOutputStream(file).use { YuvImage(pixels, ImageFormat.NV21, sw, sh, null).compressToJpeg(Rect(0, 0, sw, sh), 93, it) }
+                    step("jpeg_ms")
                     writeExif(file, out.userComment, sample, stored.lens, unix)
+                    step("exif_ms")
                     save()
+                    step("save_ms")
                 }
+                if (took != null) synchronized(lock) { flow.trace("photo", "name" to out.record.name, "kept" to out.kept, "size" to "${w}x$h", "total_ms" to ms(g0), *took.toList().toTypedArray()) }
             } catch (e: Exception) {
                 synchronized(lock) { flow.say("A photo couldn't be saved: ${e.message}") }
             }
@@ -426,6 +474,7 @@ class ArController(
 
     /** Hands the frame the tracking has now to each Locator that isn't busy with another (CaptureFlow.locateFrame()). */
     private fun locateGrab(frame: Frame, pose: CameraPose) {
+        val g0 = System.nanoTime()
         val image: Image = try { frame.acquireCameraImage() } catch (e: Exception) {
             synchronized(lock) { flow.noGrab(e.javaClass.simpleName) }
             return
@@ -436,14 +485,21 @@ class ArController(
             ByteArray(w * h).also { out -> for (r in 0 until h) { buf.position(r * stride); buf.get(out, r * w, w) } }
         } finally { image.close() }
         val (small, sw, sh) = PhoneLocate.shrink(grey, w, h)
-        val f = synchronized(lock) { flow.locateFrame(small, sw, sh, pose) }
+        val f = synchronized(lock) { flow.locateFrame(small, sw, sh, pose).also { flow.trace("locate_grab", "id" to it.id, "grab_ms" to ms(g0), "size" to "${sw}x$sh") } }
         val p = plan ?: return
         for ((i, named) in locators.withIndex()) {
-            if (!locBusy[i].compareAndSet(false, true)) continue
+            if (!locBusy[i].compareAndSet(false, true)) { if (trace != null) synchronized(lock) { flow.trace("locate_busy", "by" to named.first, "id" to f.id) }; continue }
+            val queued = System.nanoTime()
             locating[i].execute {
+                val began = System.nanoTime()
                 Locate.start(named.second, p, listOf(f)) { found ->
+                    val took = (named.second as? TimedLocator)?.took?.takeIf { trace != null }
                     locBusy[i].set(false)
-                    synchronized(lock) { flow.located(found, named.first) }
+                    synchronized(lock) {
+                        flow.trace("locate", "by" to named.first, "id" to f.id, "wait_ms" to (began - queued) / 1e6, "ms" to ms(began), "placed" to found.size,
+                            "inliers" to found.map { it.inliers }, "rms_px" to found.map { it.rmsPx }, "took" to took)
+                        flow.located(found, named.first)
+                    }
                 }
             }
         }
@@ -508,6 +564,9 @@ class ArController(
         }
         exif.saveAttributes()
     }
+
+    /** Milliseconds since a System.nanoTime(). */
+    private fun ms(from: Long): Double = (System.nanoTime() - from) / 1e6
 
     companion object {
         const val SCENERY_QUALITY = 85     // JPEG quality of the scenery's frames: a backdrop, not the rock

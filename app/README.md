@@ -105,10 +105,16 @@ in Terms.kt), from the next start (or at once when signing in). The phone's own 
 - **The site owner's debug tools** (Android; at the top of *Settings* when the phone is signed in as the owner):
   *Line up: phone only* / *Server only* on a kept mesh lines up by itself, that way alone, with no turn on the spot and
   no taps (it keeps trying); *Leave* keeps the test apart from captures, listed there with *Upload for debugging*
-  (to the server's data/debug/lineup/), and *Hold finding* shows each finder's patches
+  (to the server's debug/lineup/: on the public server, `~/bouldermesh/debug` on its system disk), and *Hold finding* shows each finder's patches
   (colour, A; the model, B) in a photo taken then or one of a capture's, or *Live* over the camera, with the colour's
   tolerance, the model's margin (and mask, in a photo); a tap starts again from that hold. Live keeps each tap's frame
   (and *Keep frame*'s) with what was found in it, in the app's files under `holdlive/`, listed as photos to look at again.
+  *Timing traces of captures* (on unless turned off there) keeps, for each capture, how long each part took and how it
+  came out (`Trace`): each phase, lining up by the phone and by the server (each step's ms, the server's own part, and
+  which placed the frame), each target asked for (a hold close up, with its photos kept and not), each photo's work and
+  a gym climb's holds found in it. It's held in memory while the capture runs, written when it pauses or ends, and sent
+  by itself afterwards (never during one) to the server's debug/capture/<capture id>/, unless *Sent by themselves* is
+  off; the latest are listed there with *Send*.
 
 - **What counts as done** comes with each mesh from the server (`need` in its plan): a hold seen at 0.5 mm of rock a
   pixel from 4 directions at least 15° apart, other rock on a climb at 1.5 mm from 3, and each edge where the mesh

@@ -195,6 +195,7 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var inFlight = false
     private var autoShot = false            // the photo in flight was taken by itself, not by Take
     private var shotAt = -1e9
+    private var shootAt = -1.0              // the trace's clock, as the photo in flight was asked for
     private var lastTick = -1e9
     private var lastShotT = -1e9
     private var rejected = 0
@@ -219,6 +220,14 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
     private var ui = CaptureUi(phase = phase, guided = plan != null)
     /** How the capture went, as it went (EventLog): sent with it. */
     val log = EventLog()
+    /** The owner's timing trace (Trace), when Settings has it on: null otherwise, and for everyone else. */
+    var trace: Trace? = null
+    private var phaseAt = 0.0               // the trace's clock: when the phase, and the target asked for, began
+    private var target: String? = null      // the target asked for (Hint.targetId), as the trace has it
+    private var targetAt = 0.0
+    private var targetShots = 0; private var targetKept = 0
+    private var alignFrom = -1.0            // when lining up began (GHOST first), on the trace's clock
+    private var aligned = false
     private var now = 0.0                   // the last frame's time: what the screen's own actions are logged at
     private var said: Phase? = null         // what the log last had of the phase, the tracking, the hint and the words on the screen
     private var saidTracking: Boolean? = null
@@ -235,6 +244,18 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
 
     /** Something the app itself wants in the log (how its camera was set up, an error it caught): what, and what else of it. */
     fun event(e: String, vararg fields: Pair<String, Any?>) = log.add(now, e, *fields)
+
+    /** A line of the owner's trace, if it's on (Trace). */
+    fun trace(e: String, vararg fields: Pair<String, Any?>) { trace?.add(e, *fields) }
+
+    /** How the mesh came to be lined up, once: by taps, or by the locator that placed frames first, and how long it took from the first look. */
+    private fun traceAligned(how: String, vararg more: Pair<String, Any?>) {
+        val tr = trace ?: return
+        if (aligned) return
+        aligned = true
+        tr.add("aligned", "how" to how, "after_s" to if (alignFrom >= 0) tr.now() - alignFrom else null, "frames_grabbed" to locFrames.size,
+            "frames_answered" to locTried, "taps" to session.taps.size, *more)
+    }
 
     /** The log as it stands, a JSON line each. */
     fun logText(): String = earlierLog + log.text()
@@ -476,11 +497,12 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         val a = onGhostPlane(g, from, was) ?: return; val b = onGhostPlane(g, from, now) ?: return
         ghost = g.copy(shift = g.shift + (b - a))
     }
-    fun confirmFit() { if (phase == Phase.CONFIRM) { event("fit_confirmed", "taps" to session.taps.size, "refined_rms_m" to session.refined?.rmsM); phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
+    fun confirmFit() { if (phase == Phase.CONFIRM) { trace("fit_confirmed", "taps" to session.taps.size); event("fit_confirmed", "taps" to session.taps.size, "refined_rms_m" to session.refined?.rmsM); phase = Phase.CAPTURE; levelsDirty = true; note = "" } }
     fun restartAlign() {
         if (plan == null) return
         event("align_restart", "phase" to phase.name); session.clearTaps(); tapMarks.clear(); modelMarks.clear(); meshTap = null; ghost = null; phase = Phase.GHOST; note = ""
         locFrames.clear(); locFound.clear(); locTried = 0; lastLocGrab = -1e9
+        trace("align_restart"); aligned = false; alignFrom = trace?.now() ?: -1.0
     }
 
     /**
@@ -506,8 +528,11 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         val r = Locate.fromLocated(locFound, locFrames, known?.metresPerUnit, known?.scaleSd)
         event("located", "by" to by, "placed" to found.size, "inliers" to found.map { it.inliers }, "rms_px" to found.map { kotlin.math.round(it.rmsPx * 10) / 10 },
             "fit" to (r.fit != null), "frames" to r.frames, "turn_spread_deg" to r.turnSpreadDeg, "centre_off_m" to r.centreOffM, "scale_from" to r.scaleFrom, "why" to r.why)
+        trace("located", "by" to by, "placed" to found.size, "fit" to (r.fit != null), "frames" to r.frames, "why" to r.why.ifEmpty { null },
+            "phase" to phase.name, "in_use" to (r.fit != null && (phase == Phase.GHOST || phase == Phase.ROCK)))
         val fit = r.fit ?: return
         if (phase != Phase.GHOST && phase != Phase.ROCK) return
+        traceAligned("located", "by" to by, "frames" to r.frames, "scale_from" to r.scaleFrom)
         session.located(fit)
         tapMarks.clear(); modelMarks.clear(); meshTap = null
         phase = Phase.CONFIRM; levelsDirty = true
@@ -562,7 +587,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val inv = g.inverse()
                 val o = inv.apply(from); val d = inv.dir(along).unit()
                 val t = mesh.raycast(o, d)
-                if (t == null) { event("tap_model", "hit" to false); note = "That tap missed the model."; return }
+                if (t == null) { event("tap_model", "hit" to false); trace("tap_model", "hit" to false); note = "That tap missed the model."; return }
+                trace("tap_model", "hit" to true)
                 event("tap_model", "hit" to true)
                 val spot = o + d * t
                 meshTap = spot
@@ -578,6 +604,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 event("tap_rock", "hit" to true, "pairs" to session.taps.size, "fit" to (fit != null), "scale" to fit?.scale, "tilt_deg" to fit?.tiltDeg,
                     "scale_vs_server" to session.scaleAgainstServer())
                 note = ""
+                trace("tap_rock", "pairs" to session.taps.size, "fit" to (fit != null))
+                if (fit != null) traceAligned("taps")
                 phase = if (fit != null) { tapMarks.clear(); modelMarks.clear(); levelsDirty = true; Phase.CONFIRM } else {
                     if (session.taps.size >= 2) note = "Those are too nearly one above the other to tell which way it's turned."
                     Phase.GHOST
@@ -587,8 +615,11 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 val world = hit()
                 if (world == null) note = "The phone hasn't made out the rock there yet: move a little and tap again."
                 else if (gym != null) {
+                    val t0 = kotlin.time.TimeSource.Monotonic.markNow()
                     val pic = picture?.invoke()
+                    val pictureMs = Trace.ms(t0); val t1 = kotlin.time.TimeSource.Monotonic.markNow()
                     val got = pic?.let { (p, pose) -> pixel(pose, from, along)?.let { (u, v) -> gym.pick(p, pose, u, v, world, block, add = false) } }
+                    trace("gym_pick", "found" to (got != null), "picture" to (pic != null), "picture_ms" to pictureMs, "pick_ms" to Trace.ms(t1), "holds" to gym.holds.size)
                     event("gym_pick", "found" to (got != null), "picture" to (pic != null), "name" to gym.colour?.name, "lab" to got?.let { listOf(it.l, it.a, it.b) }, "holds" to gym.holds.size)
                     if (got == null) { note = if (pic == null) "The camera's picture couldn't be read: tap again." else "No colour to go by there: tap right on a hold of the climb."; return }
                     session.startOrbit(world)
@@ -601,16 +632,19 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 else { session.startOrbit(world); phase = Phase.CAPTURE; note = ""; levelsDirty = true }
             }
             Phase.CAPTURE -> if (gym != null && gymTap == "add") {
+                val t0 = kotlin.time.TimeSource.Monotonic.markNow()
                 val pic = picture?.invoke()
                 val world = hit()
+                val pictureMs = Trace.ms(t0); val t1 = kotlin.time.TimeSource.Monotonic.markNow()
                 val got = pic?.let { (p, pose) -> pixel(pose, from, along)?.let { (u, v) -> gym.pick(p, pose, u, v, world, block, add = true) } }
+                trace("gym_add", "found" to (got != null), "hit" to (world != null), "picture_hit_ms" to pictureMs, "pick_ms" to Trace.ms(t1), "holds" to gym.holds.size)
                 event("gym_add", "found" to (got != null), "hit" to (world != null), "lab" to got?.let { listOf(it.l, it.a, it.b) }, "holds" to gym.holds.size)
                 if (got == null) { note = if (pic == null) "The camera's picture couldn't be read: tap again." else "No colour to go by there: tap right on a hold."; return }
                 gymTap = null; session.syncGym(); levelsDirty = true
                 note = "Added. ${gym.holds.size} ${gym.colour?.name} hold${if (gym.holds.size == 1) "" else "s"} found so far"
             } else if (gym != null && gymTap == "drop") {
                 val id = gym.drop(from, along)
-                event("gym_drop", "id" to id, "holds" to gym.holds.size)
+                event("gym_drop", "id" to id, "holds" to gym.holds.size); trace("gym_drop", "id" to id, "holds" to gym.holds.size)
                 if (id == null) { note = "No hold found near there: tap on one of the rings."; return }
                 gymTap = null; session.syncGym(); levelsDirty = true
                 note = "Left out: it isn't asked for, nor sent as one of the climb's"
@@ -739,12 +773,27 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         if (t - spanFrom >= SPAN_S) {
             event("frames", "fps" to spanFrames / (t - spanFrom), "gap_max_s" to spanGap, "untracked" to spanLost, "exposure_s" to exposureS, "gyro" to gyroRadS,
                 "ar_pts" to trackedNow, "cloud" to cloud.size)
+            trace("frames", "fps" to spanFrames / (t - spanFrom), "gap_max_s" to spanGap, "untracked" to spanLost, "phase" to phase.name)
             spanFrom = t; spanFrames = 0; spanGap = 0.0; spanLost = 0
         }
         val out = frameAt(pose, tracking, gyroRadS, exposureS, t, uprightDeg, accel, sensorOrientation, stillLens)
-        if (tracking != saidTracking) { event("tracking", "on" to tracking); saidTracking = tracking }
-        if (phase != said) { event("phase", "to" to phase.name); said = phase }
+        if (tracking != saidTracking) { event("tracking", "on" to tracking); trace("tracking", "on" to tracking, "phase" to phase.name); saidTracking = tracking }
         val h = lastHint
+        if (phase != said) {
+            event("phase", "to" to phase.name)
+            trace?.let { tr -> val at = tr.now(); tr.add("phase", "to" to phase.name, "from" to said?.name, "from_s" to if (said != null) at - phaseAt else null); phaseAt = at
+                if ((phase == Phase.GHOST || phase == Phase.ROCK) && alignFrom < 0) alignFrom = at }
+            said = phase
+        }
+        trace?.let { tr ->      // each thing asked for in turn (a hold close up, a side of the rock), and how long it took
+            val key = if (phase == Phase.CAPTURE || phase == Phase.SCENERY) h?.let { it.targetId } ?: target else null
+            if (key != target) {
+                val at = tr.now()
+                target?.let { id -> tr.add("target_end", "target" to id, "s" to at - targetAt, "shots" to targetShots, "kept" to targetKept) }
+                key?.let { id -> tr.add("target", "target" to id, "kind" to h?.kind?.name, "done" to out.ui.done, "total" to out.ui.total, "holds" to out.ui.holds, "holds_done" to out.ui.holdsDone) }
+                target = key; targetAt = at; targetShots = 0; targetKept = 0
+            }
+        }
         if ((phase == Phase.CAPTURE || phase == Phase.SCENERY) && h != null) {
             val key = h.kind to h.targetId
             if (key != saidHint) { event("hint", "kind" to h.kind.name, "target" to h.targetId, "text" to h.text, "move_m" to h.moveM.takeIf { it != 0.0 },
@@ -889,7 +938,8 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
                 if (wantShot && !steady && t - wantAt!! > WAIT_S) { wantShot = false; event("shutter_lapsed", "blur_px" to out.blurPx); note = "Not taken: the phone didn't hold still. Brace it, or move more slowly, and press Take again." }
                 val pressed = wantShot && steady
                 val shoot = (if (cardNext) pressed else out.shoot || pressed) && !inFlight
-                if (shoot) { inFlight = true; autoShot = !pressed; shotAt = t; wantShot = false; cardShot = cardNext; event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
+                if (shoot) { inFlight = true; autoShot = !pressed; shotAt = t; wantShot = false; cardShot = cardNext; shootAt = trace?.now() ?: -1.0
+                    trace("shoot", "auto" to out.shoot, "pressed" to pressed, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS, "target" to target); event("shoot", "auto" to out.shoot, "still" to out.still, "card" to cardNext, "blur_px" to out.blurPx, "steady_s" to out.steadyS) }
                 else if (wantShot && !steady) ui = ui.copy(text = "Hold still: the photo is taken as soon as the phone is steady")
                 ui = ui.copy(waiting = wantShot, note = note, ring = session.ringNow, flash = t - shotAt < FLASH_S)
                 // ticks while a photo from here would add nothing, quiet for a moment round each photo, so its ding is heard alone
@@ -907,18 +957,26 @@ class CaptureFlow(val session: CaptureSession, val set: String? = null, anonFrom
         lastShotT = s.t
         // the points found of what it shows, all told, one to each 5 cm: how much of it the tracking could make out
         val cells = cloud.values.count { p -> s.pose.project(p)?.let { it.depth in 0.1..12.0 && it.u in 0.0..s.pose.lens.w.toDouble() && it.v in 0.0..s.pose.lens.h.toDouble() } == true }
+        val judged = kotlin.time.TimeSource.Monotonic.markNow()
         val out = session.shot(s.copy(arSession = spell(s.arSession), card = s.card || cardShot, arPoints = s.arPoints ?: trackedNow, arCells = cells))
         event("shot", "name" to out.record.name, "kept" to out.kept, "why" to out.why.joinToString("; ").ifEmpty { null }, "helped" to out.helped.size,
             "notes" to out.record.notes.joinToString("; ").ifEmpty { null }, "sharp" to s.stats?.sharp, "exposure_s" to s.exposureS, "iso" to s.iso, "focus_m" to s.focusM,
             "corners" to out.record.blob.feat?.n, "tried" to out.record.blob.feat?.tried, "best_links" to out.record.blob.feat?.best, "ar_pts" to out.record.blob.feat?.arPts,
             "ar_cells" to out.record.blob.feat?.arCells)
+        targetShots++; if (out.kept) targetKept++
+        trace("shot", "name" to out.record.name, "kept" to out.kept, "why" to out.why.joinToString("; ").ifEmpty { null }, "target" to target,
+            "judge_ms" to Trace.ms(judged), "since_asked_s" to if (shootAt >= 0) (trace?.now() ?: 0.0) - shootAt else null)
         if (cardShot && out.kept) { cardNext = false; levelsDirty = true }
         var newHolds = 0
         if (gym != null && out.kept && !s.card && !cardShot && s.blobs != null) {
             val was = gym.holds.size
             val uncheckedWas = gym.unchecked.size
+            val t0 = kotlin.time.TimeSource.Monotonic.markNow()
             gym.addPhoto(out.record.name, s.pose, block, s.blobs, s.modelBlobs, cloud.values)
             session.syncGym(); levelsDirty = true
+            trace("gym_photo", "name" to out.record.name, "add_ms" to Trace.ms(t0), "colour_blobs" to s.blobs.size, "model_blobs" to s.modelBlobs?.size,
+                "matched" to gym.colour?.let { c -> s.blobs.count { c.matches(it) } }, "model_matched" to gym.colour?.let { c -> s.modelBlobs?.count { c.matches(it) } },
+                "finder" to gym.finder, "holds" to gym.holds.size, "new" to gym.holds.size - was, "unchecked" to gym.unchecked.size)
             event("gym_photo", "name" to out.record.name, "colour_blobs" to s.blobs.size, "model_blobs" to s.modelBlobs?.size,
                 "matched" to gym.colour?.let { c -> s.blobs.count { c.matches(it) } }, "model_matched" to gym.colour?.let { c -> s.modelBlobs?.count { c.matches(it) } },
                 "holds" to gym.holds.size, "new" to gym.holds.size - was, "unchecked" to gym.unchecked.size)

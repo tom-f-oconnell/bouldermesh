@@ -55,6 +55,12 @@ object ServerLocate {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** What the server says its part took (for the owner's Trace): its ms all told, and each frame's (its answer's took). */
+    fun took(answer: String): Map<String, Any?> {
+        val o = runCatching { json.parseToJsonElement(answer) as? kotlinx.serialization.json.JsonObject }.getOrNull() ?: return emptyMap()
+        return mapOf("server_ms" to o["ms"], "server" to o["took"])
+    }
+
     /** The request's body, for frames as sized() made them and their JPEGs (in the same order). */
     @OptIn(ExperimentalEncodingApi::class)
     fun request(frames: List<Sized>, jpegs: List<ByteArray>): String = json.encodeToString(RequestJson.serializer(), RequestJson(

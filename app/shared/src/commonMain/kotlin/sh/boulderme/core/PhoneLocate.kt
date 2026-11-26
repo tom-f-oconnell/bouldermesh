@@ -37,11 +37,25 @@ class LocatePack(val xyz: FloatArray, val point: IntArray, val photo: IntArray, 
 }
 
 /** Places frames on the phone, against a mesh's pack: each on its own, one after another (a second or more each). */
-class PhoneLocator(private val pack: LocatePack) : Locator {
-    override suspend fun locate(plan: Plan, frames: List<LocateFrame>): List<Located> = frames.mapNotNull { f ->
-        val lens = f.world.lens.scaledTo(f.w, f.h)
-        PhoneLocate.place(pack, f.grey, f.w, f.h, lens)?.let { Located(f.id, it.pose(lens), it.inliers, it.rmsPx, "phone") }
+class PhoneLocator(private val pack: LocatePack) : Locator, TimedLocator {
+    override var took: Map<String, Any?> = emptyMap()
+        private set
+
+    override suspend fun locate(plan: Plan, frames: List<LocateFrame>): List<Located> {
+        val steps = ArrayList<Map<String, Any?>>()
+        val out = frames.mapNotNull { f ->
+            val lens = f.world.lens.scaledTo(f.w, f.h)
+            val step = HashMap<String, Any?>().also { it["id"] = f.id; steps.add(it) }
+            PhoneLocate.place(pack, f.grey, f.w, f.h, lens, steps = step)?.let { Located(f.id, it.pose(lens), it.inliers, it.rmsPx, "phone") }
+        }
+        took = mapOf("frames" to steps)
+        return out
     }
+}
+
+/** A Locator that says what its last locate() took, step by step (for the owner's Trace): read once it has answered. */
+interface TimedLocator {
+    val took: Map<String, Any?>
 }
 
 object PhoneLocate {
@@ -64,17 +78,24 @@ object PhoneLocate {
      * @param lens the picture's (its size w by h; OpenCV's pixels, the first pixel's centre at 0).
      * @return null if fewer than Locate.MIN_INLIERS matches agree on a place.
      */
-    fun place(pack: LocatePack, grey: ByteArray, w: Int, h: Int, lens: Lens, random: Random = Random(1)): Placed? {
+    fun place(pack: LocatePack, grey: ByteArray, w: Int, h: Int, lens: Lens, random: Random = Random(1), steps: MutableMap<String, Any?>? = null): Placed? {
+        var at = kotlin.time.TimeSource.Monotonic.markNow()
+        fun step(name: String) { if (steps != null) { steps[name] = Trace.ms(at); at = kotlin.time.TimeSource.Monotonic.markNow() } }
         val (g, gw, gh) = shrink(grey, w, h)
         val k = w / gw
+        step("shrink_ms")
         val f = Sift.of(g, gw, gh, max = FEATURES)
+        step("sift_ms"); steps?.put("features", f.size)
         // back to the picture's pixels: a halved pixel's centre is between the four it came from
         val xs = DoubleArray(f.size) { f.xs[it] * k + (k - 1) / 2.0 }; val ys = DoubleArray(f.size) { f.ys[it] * k + (k - 1) / 2.0 }
         val m = match(pack, f)
-        if (m.size < Locate.MIN_INLIERS) return null
+        step("match_ms"); steps?.put("matched", m.size)
+        if (m.size < Locate.MIN_INLIERS) { steps?.put("why", "too few matches"); return null }
         val img = m.map { (q, _) -> xs[q] to ys[q] }
         val obj = m.map { (_, p) -> Vec3(pack.xyz[3 * p].toDouble(), pack.xyz[3 * p + 1].toDouble(), pack.xyz[3 * p + 2].toDouble()) }
-        return ransac(obj, img, lens, random)?.let { it.copy(matched = m.size) }
+        val placed = ransac(obj, img, lens, random)?.let { it.copy(matched = m.size) }
+        step("ransac_ms"); steps?.put("inliers", placed?.inliers); if (placed == null) steps?.put("why", "no place agreed")
+        return placed
     }
 
     /**

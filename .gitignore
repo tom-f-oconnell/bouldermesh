@@ -1,4 +1,5 @@
 /data
+/debug
 __pycache__/
 venv/
 .env

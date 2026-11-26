@@ -100,6 +100,7 @@ class MainActivity : ComponentActivity() {
         // the account's name (if paired before the app filled it in itself) and whether its role draws in the top half only
         if (store.token.isNotEmpty() && !tryingOut && store.online()) Thread {
             api.accountName()?.let { if (store.credit.isBlank()) store.credit = it }
+            DebugSender.soon(store, api)        // the owner's capture traces not yet sent
         }.start()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {

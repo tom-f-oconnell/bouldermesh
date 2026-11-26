@@ -168,7 +168,7 @@ elif [ "$check" -ne 0 ]; then
     fi
 fi
 
-on_server 'git pull --ff-only && sudo systemctl restart bouldermesh' || exit 1
+on_server 'git pull --ff-only && mkdir -p debug && sudo systemctl restart bouldermesh' || exit 1     # debug/: docker-compose.public.yml's
 for _ in $(seq 30); do      # up to a minute for it to answer again
     live=$(on_server "curl -s http://127.0.0.1:\${PORT:-8470}/api/status" 2>/dev/null | python3 -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2>/dev/null || true)
     [ -n "$live" ] && break

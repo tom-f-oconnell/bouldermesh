@@ -200,8 +200,9 @@ fun CaptureScreen(a: MainActivity, what: Screen.Capture, go: (Screen) -> Unit) {
                 else -> {}
             }
         }
+        DebugSender.capturing = true        // the owner's traces wait until it's over (DebugSender)
         a.lifecycle.addObserver(watch)      // which brings it up to the activity's state: resumed, so it starts now
-        onDispose { a.lifecycle.removeObserver(watch); view.onPause(); controller.pause(); controller.close() }
+        onDispose { a.lifecycle.removeObserver(watch); view.onPause(); controller.pause(); controller.close(); DebugSender.capturing = false; DebugSender.soon(a.store, a.api) }
     }
     BackHandler { leaving = true }
 

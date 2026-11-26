@@ -888,7 +888,8 @@ the images are built (hal's own copy of the site was stopped on Nov 10, 2026: a 
 
 which builds and ships the images (`deploy/build.sh && deploy/ship.sh bouldermesh bouldermesh:public`), asks the server
 what a restart would cost (`cli.py deploy-check`), and then pulls and restarts it there (`git pull --ff-only && sudo
-systemctl restart bouldermesh`), and ends by saying which version the server then runs. Before building, it checks
+systemctl restart bouldermesh`, after making `debug/`, where the owner's phone's debug files go, on the system disk
+rather than the Volume), and ends by saying which version the server then runs. Before building, it checks
 that `ssh bouldermesh` works without asking for anything; if not, it adds the key `~/.ssh/config` gives for that host to
 the ssh agent, asking for its passphrase then rather than after the build (and without a terminal, stops there). Run it
 in tmux: a closed connection ends it. hal's worker needs no restart: `deploy/bouldermesh-worker.service` runs a downloaded

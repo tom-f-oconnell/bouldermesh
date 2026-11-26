@@ -7,7 +7,8 @@ frame's camera was, in the mesh's coordinates. The phone pairs that with where i
               about 1280 pixels, each with its lens for that picture
     answer    {located: [{id, c: [x, y, z], q: [w, x, y, z], inliers, rms_px, how}], ms}: those placed, each camera's
               centre and its turn from camera to mesh in image axes (x right, y down, z forward), i.e. the inverse of
-              COLMAP's q, t; how: "phone" (as a phone's place() would) or "more" (the server's heavier try)
+              COLMAP's q, t; how: "phone" (as a phone's place() would) or "more" (the server's heavier try); took:
+              how long its parts took, for the owner's traces ({pack_ms, read_ms, frames: [{id, ms, placed, more_ms?, more?}]})
 
 A frame the pack can't place is tried again with more of its features and more RANSAC tries (MORE_OPTS), while
 there's time left (BUDGET_S): on 99 photos of 12 meshes left out of their packs, that placed 71 where the phone's
@@ -286,20 +287,25 @@ def locate(frames: list[dict], pack, place: Callable, budget_s: float | None = N
     """Place each frame against a pack, and those it can't again the heavier way (MORE_OPTS) while there's time. The
     answer (see above), but for its ms."""
     t0, budget_s = time.monotonic(), BUDGET_S if budget_s is None else budget_s
-    located, missed = [], []
+    located, missed, took = [], [], {}
     for f in frames:
+        t = time.monotonic()
         pose = place(pack, f["grey"], f["lens"])
+        took[f["id"]] = {"id": f["id"], "ms": round((time.monotonic() - t) * 1000), "placed": pose is not None}
         if pose is None:
             missed.append(f)
         else:
             located.append({"id": f["id"], **pose_answer(pose), "how": PHONE})
     for f in missed:
         if time.monotonic() - t0 >= budget_s:
-            break
+            took[f["id"]]["more"] = "no time left"
+            continue
+        t = time.monotonic()
         pose = place(pack, f["grey"], f["lens"], **MORE_OPTS)
+        took[f["id"]].update(more_ms=round((time.monotonic() - t) * 1000), more=pose is not None)
         if pose is not None:
             located.append({"id": f["id"], **pose_answer(pose), "how": "more"})
-    return {"located": located}
+    return {"located": located, "took": {"frames": list(took.values())}}
 
 
 def answer(mid: str, body, who: str, packs: Packs, limits: Limits, place: Callable) -> tuple[dict, int]:
@@ -308,7 +314,9 @@ def answer(mid: str, body, who: str, packs: Packs, limits: Limits, place: Callab
     t0 = time.monotonic()
     try:
         frames = frames_of(body)
+        t = time.monotonic()
         pack = packs.get(mid, PHONE)
+        pack_ms = round((time.monotonic() - t) * 1000)
         if pack is None:
             raise Refused(503, "this mesh's pack is being made: try again soon", retry_s=packs.retry_s(mid, PHONE))
         limits.begin(who)
@@ -318,6 +326,7 @@ def answer(mid: str, body, who: str, packs: Packs, limits: Limits, place: Callab
             limits.end(who)
     except Refused as e:
         return e.answer(), e.code
+    got["took"].update(pack_ms=pack_ms, read_ms=round((t - t0) * 1000))
     return {**got, "ms": round((time.monotonic() - t0) * 1000)}, 200
 
 
