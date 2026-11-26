@@ -2673,6 +2673,21 @@ finally:
     server.beta_mod.videos = real_videos
 server.offload_step()
 assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "and unmarked once under it"
+# under the cap, with the data's own disk short of room: what's on that disk goes, not videos mounted from another one
+real_room = server.OWN_DISK_ROOM
+try:
+    server._usage["disks"] = {"cache": {"free": 100 * 2**30, "disk": 200 * 2**30}}
+    assert server.on_own_disk(f"projects/{'d1' * 6}/photos") and not server.on_own_disk("cache/videos/v1aaaaaaaaa.mp4")
+    server.OWN_DISK_ROOM = server._usage["free"] + 2**40
+    server.offload_step()
+    marked = {r["path"] for r in server.q("SELECT path FROM offloads WHERE done IS NULL")}
+    assert marked == {f"projects/{'d1' * 6}/photos", f"projects/{'d1' * 6}/masks"}, marked
+    server.OWN_DISK_ROOM = 0
+    server.offload_step()
+    assert not server.q("SELECT 1 FROM offloads WHERE done IS NULL"), "unmarked once the disk has room"
+finally:
+    server.OWN_DISK_ROOM = real_room
+    server.measure_usage()
 server.settings().update({"storage.cap_gb": 0, "storage.offload_percent": 70.0})
 print("offloading OK")
 

@@ -779,7 +779,7 @@ function render(s){
       + (sum(off.away) ? `Offloaded to it: <b>${amount(sum(off.away))}</b> (${kinds(off.away)}). ` : 'Nothing is offloaded to it. ')
       + (sum(off.marked) ? `Marked to go once a manifest from it shows it holds them: ${amount(sum(off.marked))} (${kinds(off.marked)})${off.confirmed ? `, ${off.confirmed} shown so` : ''}. ` : '')
       + (off.wanted ? `<span class="warn">${off.wanted} asked back by jobs that need them, which its next run sends.</span> ` : '')
-      + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, the features kept by meshes made 2 weeks ago (for adding photos to them), then older meshes\' files; and the web cache\'s month-old pages.';
+      + 'It goes: photos the filter rejected (after 3 days), videos once their climbs are meshed and beta found, photos of climbs meshed 2 weeks ago or skipped a month ago, the features kept by meshes made 3 days ago (for adding photos to them), then the files of older meshes replaced 3 days ago; and the web cache\'s month-old pages. With the data\'s own disk short of room, what\'s on it goes first, under the cap too.';
   $('#room-warn-note').innerHTML = u.warn_at === undefined ? 'With a cap, and notifications on (below), your phone is told when the room left under it is less than this, and when it\'s reached.'
     : `Told when less than <b>${amount(u.warn_at)}</b> is left${u.warn_climbs ? `, about ${worth(u.warn_climbs)} at their average (a climb's data and a mesh)` : ''}; `
       + `${amount(Math.max(0, u.left))} is left now${u.climbs ? `, about ${worth(Math.max(0, u.climbs))}` : ''}. Needs notifications on (below).`;

@@ -7388,10 +7388,13 @@ def check_room() -> None:
 # deleted, oldest first in each kind, in this order, down to that %: photos the filter rejected (after REJECTED_DAYS);
 # fetched videos, once every climb they're of has been meshed (or skipped, or failed) and beta has been found in it, in each of
 # its meshes; the photos and people masks of climbs and boulders meshed MESHED_DAYS ago, or skipped SKIPPED_DAYS ago,
-# none of whose boulder's climbs are still to be harvested or meshed; the features meshes made MESHED_DAYS ago keep for
-# adding photos to them; and the big files of older versions of meshes replaced MESHED_DAYS ago. The web cache's pages
-# older than CACHE_DAYS go too, without the backup (it keeps none).
+# none of whose boulder's climbs are still to be harvested or meshed; the features meshes made KEPT_DAYS ago keep for
+# adding photos to them; and the big files of older versions of meshes replaced KEPT_DAYS ago (the backup's archive keeps
+# those for good anyway). The web cache's pages older than CACHE_DAYS go too, without the backup (it keeps none). With the
+# data's own disk under OWN_DISK_ROOM free, what's on that disk goes first, as videos (on another disk, data/cache, on the
+# public server) free nothing there.
 REJECTED_DAYS, MESHED_DAYS, SKIPPED_DAYS, CACHE_DAYS = 3, 14, 30, 30
+KEPT_DAYS = 3       # Nov 26, 2026: 14 (MESHED_DAYS) left 36 GB of features and older meshes waiting after a week of remakes
 MESH_FILE_MIN = 2**20     # an older mesh's files this big or bigger (its mesh and textures, not its small records)
 OFFLOAD_KINDS = ("rejected photos", "videos", "photos", "features", "older meshes")
 
@@ -7621,12 +7624,12 @@ def offload_candidates() -> list[tuple[str, str, str]]:
                     out.append((f"projects/{p['id']}/{part}", "photos", p["id"]))
     # the features meshes keep for adding photos to them (reconstruction.FEATURES_FILE), of meshes made a while ago:
     # asked back when photos are added
-    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND created < ? ORDER BY created", now - MESHED_DAYS * 86400):
+    for m in q("SELECT id FROM meshes WHERE replaced_by IS NULL AND created < ? ORDER BY created", now - KEPT_DAYS * 86400):
         if (MESHES / m["id"] / reconstruction.FEATURES_FILE).is_file():
             out.append((f"meshes/{m['id']}/{reconstruction.FEATURES_FILE}", "features", m["id"]))
     # older versions of meshes, replaced a while ago: their big files
     for m in q("SELECT m.id FROM meshes m JOIN meshes n ON n.id=m.replaced_by WHERE n.created < ? ORDER BY m.created",
-               now - MESHED_DAYS * 86400):
+               now - KEPT_DAYS * 86400):
         d = MESHES / m["id"]
         for f in sorted(d.iterdir()) if d.is_dir() else []:
             if f.is_file() and f.suffix != ".json" and f.stat().st_size >= MESH_FILE_MIN and offload_mod.PATH.fullmatch(f"meshes/{m['id']}/{f.name}"):
@@ -7738,11 +7741,22 @@ def want_ahead(log=None) -> list[str]:
     return asked
 
 
+# where offloading is on (a cap and its %), it goes on under the cap too while the data's own disk has less than this
+# free: twice what areas need to go on (CAMPAIGN_MIN_FREE)
+OWN_DISK_ROOM = DISK_WARN_TIMES * CAMPAIGN_MIN_FREE
+
+
+def on_own_disk(path: str) -> bool:
+    """Whether a path under the data folder is on its own disk, not on another one mounted within it (other_disks())."""
+    return not any(path == m or path.startswith(m + "/") for m in (_usage.get("disks") or {}))
+
+
 def offload_step() -> dict:
     """What making room does after each measuring: put back what the backup sent back; and above storage.offload_percent
-    of the cap, or with fetched videos past VIDEO_CACHE_GB, delete what was marked before the backup's last good copy
-    began and is still to go, the web cache's old pages (for the cap only), and mark more to go, down to that % (and
-    videos first, down to VIDEO_CACHE_GB). Videos are never dropped otherwise (youtube.TRIM). Returns what it did."""
+    of the cap, with fetched videos past VIDEO_CACHE_GB, or with the data's own disk under OWN_DISK_ROOM free, delete
+    what was marked before the backup's last good copy began and is still to go, the web cache's old pages (for the cap
+    only), and mark more to go, down to that % (what's on the data's own disk first, up to OWN_DISK_ROOM; then videos,
+    down to VIDEO_CACHE_GB). Videos are never dropped otherwise (youtube.TRIM). Returns what it did."""
     did = {"back": take_restores()}
     try:
         did["ahead"] = want_ahead()
@@ -7762,7 +7776,8 @@ def offload_step() -> dict:
             offload_mod.drop(q, [r["path"]])
     over = max(0.0, _usage["total"] - cap * pct / 100)
     videos_over = max(0.0, videos_size() - youtube_mod.CACHE_BYTES)
-    need = over + videos_over
+    disk_over = max(0.0, OWN_DISK_ROOM - _usage.get("free", OWN_DISK_ROOM))
+    need = over + videos_over + disk_over
     if need <= 0:
         offload_mod.drop(q, [r["path"] for r in marked])
         offload_mod.write_lists(DATA, q)
@@ -7776,6 +7791,15 @@ def offload_step() -> dict:
     did["freed"] = offload_mod.finish(DATA, q, lambda row: row["path"] in eligible, log_server, need)
     did["cache"] = prune_web_cache(over - did["freed"]) if over > did["freed"] else 0
     have = {r["path"] for r in q("SELECT path FROM offloads")}
+    # with the data's own disk short of room, what's on it first (not what's mounted from another disk), in its order
+    left = disk_over - did["freed"] - sum(r["bytes"] or 0 for r in q("SELECT path, bytes FROM offloads WHERE done IS NULL")
+                                          if on_own_disk(r["path"]))
+    for path, kind, ref in eligible.values():
+        if left <= 0:
+            break
+        if path not in have and on_own_disk(path):
+            left -= offload_mod.mark(DATA, q, path, kind, ref)
+            have.add(path)
     # past VIDEO_CACHE_GB, the videos nothing needs (those used longest ago first); then, past the cap, anything in its order
     left = videos_over - sum(r["bytes"] or 0 for r in q("SELECT bytes FROM offloads WHERE done IS NULL AND path LIKE 'cache/videos/%'"))
     for path, kind, ref in eligible.values():
