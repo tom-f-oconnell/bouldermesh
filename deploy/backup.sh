@@ -26,7 +26,8 @@
 #                     fetched videos, the visitors' logs, and data/snapshots/, the databases as the server copied them
 #                     safely within the last hour (the filter's cache, relevance.sqlite, too); and what the server
 #                     offloaded; and its web cache (the photos it downloaded, kept for good, and searches and pages),
-#                     so that the sites needn't be asked again. Not its live databases, models, or work folders.
+#                     so that the sites needn't be asked again; and debug/, the owner's phone's debug files (capture
+#                     traces, line-up tests, live hold finding). Not its live databases, models, or work folders.
 #   db/<date>/        that night's database snapshots, kept KEEP_DB_DAYS (365)
 #   archive/          kept for good, in the server's layout: what the server deleted or replaced that can't easily be had
 #                     again (fetched videos, projects' photos, masks and rejected photos, meshes deleted, and the big files
@@ -163,7 +164,7 @@ if rsync -a -e "$ssh" "${from}data/offload.list" "$tmp/offload.list" 2>/dev/null
     done > "$tmp/protect" || true
 fi
 # first match wins: what's kept, what's left out (with copies of meshes and textures the server makes again by itself),
-# then data/ and .env, then nothing else of the checkout
+# then data/, debug/ (the owner's phone's debug files, on the public server's system disk) and .env, then nothing else of the checkout
 cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - /data/**.sqlite
 - /data/**.sqlite-*
@@ -182,6 +183,7 @@ cat "$tmp/protect" - > "$tmp/filter" <<'RULES'
 - *.tmp
 + /.env
 + /data/***
++ /debug/***
 - *
 RULES
 # data/ there first, before anything here is deleted to match: a copy of the wrong folder would move all of current/ aside

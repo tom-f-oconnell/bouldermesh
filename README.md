@@ -1004,8 +1004,9 @@ night into `BACKUP_DIR`. It runs either on the server, into a Hetzner Storage Bo
 2026), or on another machine (hal, before then), which pulls it over SSH with nothing connecting to that machine. Its
 layout:
 
-- `current/`: the server's `data/` and `.env` as they are now, but not its caches of web pages and models, uploads in
-  progress or work folders. The `.env` holds the editing token and the key saved credentials are encrypted with, so the
+- `current/`: the server's `data/`, `debug/` (the owner's phone's debug files) and `.env` as they are now, its web
+  cache and fetched videos included (`data/cache`, on the system disk, is copied through its mount), but not its models
+  and terrain tiles, uploads in progress or work folders. The `.env` holds the editing token and the key saved credentials are encrypted with, so the
   folder is readable only by you.
 - `db/<date>/`: that night's databases, kept a year (`KEEP_DB_DAYS`). The server copies them every hour into
   `data/snapshots/` with SQLite's backup API (`SNAPSHOT_MINUTES`), as copying a database in use isn't safe.

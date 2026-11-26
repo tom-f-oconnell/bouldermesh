@@ -52,6 +52,8 @@ try:
         (data / rel).parent.mkdir(parents=True, exist_ok=True)
         (data / rel).write_bytes(body)
     (checkout / ".env").write_text("EDIT_TOKEN=secret\n")
+    (checkout / "debug" / "capture" / "abc").mkdir(parents=True)      # the owner's phone's debug files, beside data/
+    (checkout / "debug" / "capture" / "abc" / "trace.jsonl").write_text("{}\n")
     (checkout / "backend").mkdir()
     (checkout / "backend" / "server.py").write_text("code")
     dest = TMP / "backups"
@@ -60,7 +62,7 @@ try:
     r = run()
     assert r.returncode == 0, r.stdout + r.stderr
     got = {str(p.relative_to(dest / "current")) for p in (dest / "current").rglob("*") if p.is_file()}
-    assert got == {".env", "data/meshes/m1/mesh.glb", "data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg",
+    assert got == {".env", "debug/capture/abc/trace.jsonl", "data/meshes/m1/mesh.glb", "data/meshes/m2/mesh.glb", "data/projects/aaaaaaaaaaaa/photos/p.jpg",
                    "data/projects/aaaaaaaaaaaa/rejected/r.jpg", "data/projects/aaaaaaaaaaaa/sources.json", "data/cache/videos/vvvvvvvvvvv.mp4",
                    "data/cache/http/page", "data/cache/http-kept/ab/photo", "data/mesh-views.jsonl", "data/compute/server_id", "data/snapshots/bouldermesh.sqlite.backup", "data/snapshots/volunteers.sqlite.backup",
                    "data/snapshots/machines.sqlite.backup"}, sorted(got)
