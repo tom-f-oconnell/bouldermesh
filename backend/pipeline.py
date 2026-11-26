@@ -143,11 +143,14 @@ def colmap_has_cuda() -> bool:
         return False
 
 
-@functools.cache
 def colmap_build(colmap: str | None = None) -> str | None:
     """Which COLMAP this is (or the one named, e.g. COLMAP4), as the first lines of its help say (version, commit,
     CUDA), for what a mesh keeps."""
-    colmap = colmap or COLMAP
+    return _colmap_build(colmap or COLMAP)     # COLMAP as it is now: use_colmap() changes it
+
+
+@functools.cache
+def _colmap_build(colmap: str | None) -> str | None:
     if not colmap:
         return None
     try:

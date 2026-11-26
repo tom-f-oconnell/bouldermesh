@@ -46,6 +46,20 @@ try:
     assert ran[1] == ["colmap4", "feature_extractor", "--FeatureExtraction.use_gpu", "1"], ran
     print("3.9.1's options OK")
 
+    # ---- what a mesh keeps names the COLMAP in use, not the first one asked about
+    builds = {}
+    pipeline._colmap_build.cache_clear()
+    real_run = pipeline.subprocess.run
+    pipeline.subprocess.run = lambda cmd, **k: type("R", (), {"stdout": f"COLMAP {cmd[0]}", "stderr": ""})()
+    try:
+        for v in ("3.9.1", "4.2.1"):
+            with pipeline.use_colmap(v):
+                builds[v] = pipeline.colmap_build()
+    finally:
+        pipeline.subprocess.run = real_run
+        pipeline._colmap_build.cache_clear()
+    assert builds == {"3.9.1": "COLMAP colmap391", "4.2.1": "COLMAP colmap4"}, builds
+
     # ---- a machine's job: both made from the same photos, a summary of each
     job = pathlib.Path(tmp) / "job"
     (job / "photos").mkdir(parents=True)
