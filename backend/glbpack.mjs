@@ -11,6 +11,7 @@
 //   preview.glb          if <preview faces> isn't 0 and the source has at least <make a preview from> faces: simplified to
 //                        about <preview faces>,
 //   preview.faces.bin    and for each of its faces a source face it shares a corner with, so in the same piece
+// (the preview's record has "error": the most any of its primitives was moved, as a share of that one's size)
 // and prints what it made as JSON. It decodes what it wrote and checks it against the source before it says so.
 import fs from 'node:fs';
 import { MeshoptEncoder as E } from './vendor/meshoptimizer/meshopt_encoder.mjs';
@@ -246,15 +247,18 @@ async function main() {
   write('full', full);
   if (previewFaces > 0 && offset >= previewFrom) {
     const share = previewFaces / offset;
+    let worst = 0;
     const preview = pack(src, prim => {
       const target = Math.max(3, Math.floor(prim.faces.length * share / 3) * 3);
-      const [faces] = S.simplify(prim.faces, prim.attributes.POSITION.values, 3, target, PREVIEW_ERROR, []);
+      const [faces, error] = S.simplify(prim.faces, prim.attributes.POSITION.values, 3, target, PREVIEW_ERROR, []);
+      worst = Math.max(worst, error);
       const corner = new Uint32Array(prim.vertices);      // for each vertex, a face it's a corner of
       for (let i = 0; i < prim.faces.length; i++) corner[prim.faces[i]] = Math.floor(i / 3);
       return { faces, origin: Uint32Array.from({ length: faces.length / 3 }, (_, j) => corner[faces[3 * j]]) };
     }, 'preview');
     check(preview.glb, preview.checks, false);
     write('preview', preview);
+    made.preview.error = worst;
   }
   made.source_faces = offset;
   made.seconds = Math.round((performance.now() - started) / 100) / 10;

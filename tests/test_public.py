@@ -18,6 +18,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,24 @@ def raw_request(port: int, text: bytes) -> bytes:
 
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+def _glb(positions: list[float], indices: list[int]) -> bytes:
+    """A GLB of one indexed mesh, with no material."""
+    pos, idx = struct.pack(f"<{len(positions)}f", *positions), struct.pack(f"<{len(indices)}I", *indices)
+    n = len(positions) // 3
+    j = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+         "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}], "buffers": [{"byteLength": len(pos) + len(idx)}],
+         "bufferViews": [{"buffer": 0, "byteLength": len(pos)}, {"buffer": 0, "byteOffset": len(pos), "byteLength": len(idx)}],
+         "accessors": [{"bufferView": 0, "componentType": 5126, "count": n, "type": "VEC3",
+                        "min": [min(positions[k::3]) for k in range(3)], "max": [max(positions[k::3]) for k in range(3)]},
+                       {"bufferView": 1, "componentType": 5125, "count": len(indices), "type": "SCALAR"}]}
+    js = json.dumps(j).encode()
+    js += b" " * (-len(js) % 4)
+    body = pos + idx
+    return (struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(body)) + struct.pack("<II", len(js), 0x4E4F534A) + js
+            + struct.pack("<II", len(body), 0x004E4942) + body)
+
+
+TRIANGLE_GLB = _glb([0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 1, 2])
 PLY = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n"
 
 
@@ -219,8 +238,8 @@ def with_token(tmp: Path) -> None:
         ab = tmp / "data" / "abtests" / "20261123-112337-cf58448c395a"
         (ab / "out" / "3.9.1").mkdir(parents=True)
         (ab / "out" / "3.9.1" / "mesh.glb").write_bytes(b"glTF-ish")
-        assert req(B, "GET", f"/api/abtests/{ab.name}")[0] == 403 and req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb")[0] == 403
-        assert req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb", headers=AUTH)[2] == b"glTF-ish"
+        assert req(B, "GET", f"/api/abtests/{ab.name}")[0] == 403 and req(B, "GET", f"/api/compare/ab-{ab.name}-3.9.1")[0] == 403
+        assert req(B, "GET", f"/api/abtests/{ab.name}", headers=AUTH)[2]["made"] == ["3.9.1"]
 
         # changes: refused without the token, before the body is read; with it, as before; never from another site's page
         st, h, e = req(B, "POST", "/api/projects", {"name": "x"})
@@ -593,14 +612,23 @@ def links_site(tmp: Path) -> None:
         assert st == 200 and b"<title>Two meshes compared" in page and b'name="robots" content="noindex"' in page, page[:800]
         ab = tmp / "data" / "abtests" / "20261123-112337-cf58448c395a"
         (ab / "out" / "3.9.1").mkdir(parents=True)
-        (ab / "out" / "3.9.1" / "mesh.glb").write_bytes(b"glTF-ish")
+        (ab / "out" / "3.9.1" / "mesh.glb").write_bytes(TRIANGLE_GLB)
         (ab / "request.json").write_text(json.dumps({"project": "cf58448c395a", "why": "x", "order": ["3.9.1", "4.2.1"]}))
         st, _, t = req(B, "GET", f"/api/abtests/{ab.name}", headers=AUTH)
         assert st == 200 and t["made"] == ["3.9.1"] and t["name"] == "cf58448c395a", t
-        st, h, glb = req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb", headers=AUTH)
-        assert st == 200 and glb == b"glTF-ish" and h["Cache-Control"] == "private, no-store", (st, h)
-        assert req(B, "GET", f"/api/abtests/{ab.name}/4.2.1/mesh.glb", headers=AUTH)[0] == 404
-        assert req(B, "GET", "/api/abtests/..%2F..%2Fmeshes/3.9.1/mesh.glb", headers=AUTH)[0] == 404
+        # each simplified by the server first (here, a triangle: packed as it is), asked again until it's made
+        key = f"ab-{ab.name}-3.9.1"
+        for _ in range(100):
+            st, _, got = req(B, "GET", f"/api/compare/{key}", headers=AUTH)
+            if got.get("state") != "making":
+                break
+            time.sleep(0.2)
+        assert st == 200 and got["state"] == "ready" and got["faces"] == got["source_faces"] == 1 and got["error"] == 0, got
+        st, h, glb = req(B, "GET", f"/api/compare/{key}.glb", headers=AUTH)
+        assert st == 200 and glb[:4] == b"glTF" and h["Cache-Control"] == "private, max-age=3600", (st, h)
+        assert (tmp / "data" / "cache" / "compare" / f"{key}.glb").is_file()
+        for bad in (f"ab-{ab.name}-4.2.1", "ab-..%2F..%2Fmeshes-3.9.1", mids[1]):    # no such run; no such test; a PLY
+            assert req(B, "GET", f"/api/compare/{bad}", headers=AUTH)[0] == 404, bad
 
         # a boulder's meshes to pick from: most of its climbs first, and its climbs no mesh places
         b = req(B, "GET", "/api/links/b/mandala-boulder")[2]

@@ -13798,16 +13798,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.is_editor():
                     return self.send_json({"error": "only editors label meshes"}, 403)
                 return self.send_json(labels_view())
-            m = re.fullmatch(r"/api/abtests/([^/]+)(?:/(\d+\.\d+\.\d+)/mesh\.glb)?", p)
-            if m:   # an A/B test, and each run's mesh, for an editor's page comparing them
+            m = re.fullmatch(r"/api/abtests/([^/]+)", p)
+            if m:   # an A/B test, for an editor's page comparing its runs (/api/compare/ has their meshes)
                 if READ_ONLY or (EDIT_TOKEN and not self.is_editor()):   # as /api/status says who's an editor
                     return self.send_json({"error": "only editors see A/B tests"}, 403)
                 info = abtest_info(m[1])
-                if not info or (m[2] and m[2] not in info["made"]):
-                    return self.send_json({"error": "no such A/B test or run"}, 404)
+                return self.send_json(info) if info else self.send_json({"error": "no such A/B test"}, 404)
+            m = re.fullmatch(r"/api/compare/([^/]+?)(\.glb)?", p)
+            if m:   # a mesh, or an A/B test's run, simplified for the page comparing two: made first if need be
+                if READ_ONLY or (EDIT_TOKEN and not self.is_editor()):
+                    return self.send_json({"error": "only editors compare meshes"}, 403)
+                got = compare_shape(m[1])
+                if got["state"] == "missing":
+                    return self.send_json({"error": "no such mesh here"}, 404)
                 if m[2]:
-                    return self.send_file(ABTESTS / m[1] / "out" / m[2] / "mesh.glb", cache="private, no-store")
-                return self.send_json(info)
+                    return self.send_file(got["file"], cache="private, max-age=3600") if got["state"] == "ready" \
+                        else self.send_json({"error": "not made yet"}, 404)
+                return self.send_json({k: v for k, v in got.items() if k != "file"}, 500 if got["state"] == "failed" else 200)
             m = re.fullmatch(r"/static/(app\.[0-9a-f]{16}\.(?:js|css))", p)
             if m:
                 return self.send_asset(m[1])
@@ -16261,6 +16268,64 @@ def abtest_info(test: str) -> dict | None:
     row = q("SELECT name FROM projects WHERE id=?", got.get("project"), one=True) if got.get("project") else None
     return got | {"name": row["name"] if row else got.get("project"),
                   "made": sorted(v.name for v in (d / "out").iterdir() if (v / "mesh.glb").is_file()) if (d / "out").is_dir() else []}
+
+
+COMPARE_FACES = 500_000     # about how many faces each of two meshes compared has (compare_shape())
+COMPARE_DIR = DATA / "cache" / "compare"
+_compare_lock = threading.Lock()
+_compare_making: dict = {}      # key: the error making it, or None while it's being made
+
+
+def compare_source(key: str) -> Path | None:
+    """The GLB a key on the page comparing two meshes names: a mesh's id, or an A/B test's run, ab-<test>-<version>."""
+    ab = re.fullmatch(r"ab-(\d{8}-\d{6}-[0-9a-f]+)-(\d+\.\d+\.\d+)", key)
+    if ab:
+        f = ABTESTS / ab[1] / "out" / ab[2] / "mesh.glb"
+        return f if (ABTESTS / ab[1]).is_dir() and f.is_file() else None
+    if not re.fullmatch(r"[0-9a-f]{6,32}", key):
+        return None
+    row = q("SELECT filename FROM meshes WHERE id=?", key, one=True)
+    f = MESHES / key / row["filename"] if row and row["filename"] else None
+    return f if f and f.suffix.lower() == ".glb" and f.is_file() else None
+
+
+def compare_shape(key: str) -> dict:
+    """A copy of a mesh simplified to about COMPARE_FACES (glbpack.simplified()), for the page comparing two (each whole
+    took the viewer about a gigabyte on Caveman's, and minutes to measure): {"state": "ready", "file", "faces",
+    "source_faces", "error"}, else {"state": "making"} with it begun in the background, one at a time, or "failed" /
+    "missing". Kept in the cache, made again if its mesh changes."""
+    src = compare_source(key)
+    if src is None:
+        return {"state": "missing"}
+    dst, rec_file = COMPARE_DIR / f"{key}.glb", COMPARE_DIR / f"{key}.json"
+    rec, made_from = _read_json(rec_file), glbpack.stamp(src)
+    if rec and rec.get("source") == made_from and rec.get("target") == COMPARE_FACES and dst.is_file():
+        return {"state": "ready", "file": dst, **{k: rec.get(k) for k in ("faces", "source_faces", "error", "bytes")}}
+    with _compare_lock:
+        if key in _compare_making:
+            err = _compare_making[key]
+            if err is None:
+                return {"state": "making"}
+            _compare_making.pop(key)
+            return {"state": "failed", "error": err}
+        _compare_making[key] = None
+
+    def make():
+        try:
+            with _compare_one:
+                COMPARE_DIR.mkdir(parents=True, exist_ok=True)
+                got = glbpack.simplified(src, dst, COMPARE_FACES)
+                rec_file.write_text(json.dumps({"source": made_from, "target": COMPARE_FACES, **got}))
+            with _compare_lock:
+                _compare_making.pop(key, None)
+        except Exception as e:  # noqa: BLE001 - told to the page that asked
+            with _compare_lock:
+                _compare_making[key] = f"{type(e).__name__}: {e}"
+    threading.Thread(target=make, daemon=True, name="compare-shape").start()
+    return {"state": "making"}
+
+
+_compare_one = threading.Lock()     # one simplified at a time: each takes ~30 s and ~0.8 GB on a 3M-face mesh
 
 
 def admin_abtest(body: dict) -> dict:

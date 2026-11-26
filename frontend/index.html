@@ -6572,7 +6572,7 @@ function renderLocal(){
   el.querySelector('.rows').innerHTML = items.map((m, i) => {
     const up = m.up === 'up', busy = up || m.up === 'done';
     return `<div class="row" data-i="${i}">${two ? `<span class="sw" style="background:${LOCAL_COLORS[i]}">${'AB'[i]}</span>` : ''}
-      <span class="what"><b class="name" title="${esc(nameOf(m))}">${esc(two ? midName(nameOf(m)) : nameOf(m))}</b> <span class="size">${fmtSize(m.size)}${m.files.length > 1 ? `, ${m.files.length} files` : ''}</span></span>
+      <span class="what"><b class="name" title="${esc(nameOf(m))}">${esc(two ? midName(nameOf(m)) : nameOf(m))}</b> <span class="size"${m.detail ? ` title="Simplified by the server for comparing: ${esc(m.detail)}"` : ''}>${m.detail ? esc(m.detail.replace(/,.*/, '')) : `${fmtSize(m.size)}${m.files.length > 1 ? `, ${m.files.length} files` : ''}`}</span></span>
       ${two ? `<label class="show" title="Untick to hide this mesh"><input type="checkbox"${m.shown ? ' checked' : ''}> show</label>` : ''}
       <button class="sm up"${busy || m.site ? ' hidden' : ''}>${m.up === 'failed' ? 'Upload again' : 'Upload'}</button>
       <button class="sm sec cancel"${up ? '' : ' hidden'}>Cancel</button>
@@ -6871,21 +6871,34 @@ function compareLocal(files){
   showTitle(`${a.main.name} and ${b.main.name}`, 'Not uploaded');
   return startCompare(a, b);
 }
-// ---- two of the site's meshes compared, from a link /m/<a>+<b> (an editor's): each fetched whole, and compared as two
-// local meshes are (above), with nothing to upload. Either may be one of an A/B test's runs, ab-<test>-<COLMAP version>,
-// which isn't a mesh of the site's.
+// ---- two of the site's meshes compared, from a link /m/<a>+<b> (an editor's): each simplified by the server to about
+// half a million faces (made the first time it's asked for: whole, Caveman's two took Chrome about a gigabyte, and
+// minutes to measure), fetched, and compared as two local meshes are (above), with nothing to upload. Either may be one
+// of an A/B test's runs, ab-<test>-<COLMAP version>, which isn't a mesh of the site's.
 const AB_KEY = /^ab-(\d{8}-\d{6}-[0-9a-f]+)-(\d+\.\d+\.\d+)$/;
 async function pairSource(key){
   const ab = key.match(AB_KEY);
   if (ab) {
     const t = await api(`/api/abtests/${ab[1]}`);
     if (!t.made.includes(ab[2])) throw new Error(`A/B test ${ab[1]} has no mesh made with COLMAP ${ab[2]}`);
-    return { url: `/api/abtests/${ab[1]}/${ab[2]}/mesh.glb`, file: 'mesh.glb', title: `${t.name || ab[1]} · COLMAP ${ab[2]}` };
+    return { key, title: `${t.name || ab[1]} · COLMAP ${ab[2]}` };
   }
   const m = meshesById[key];      // as named, not the newest that replaced it: that may be what's compared
   if (!m) throw new Error(`there's no mesh ${key}`);
-  return { url: `/meshes/${key}/${m.filename}${m.v ? `?v=${m.v}` : ''}`, file: m.filename, title: `${soleClimb(m) ? meshTitle(m) : m.name} (${key.slice(0, 6)})` };
+  if (!/\.glb$/i.test(m.filename)) throw new Error(`${key} isn't a GLB, which comparing needs`);
+  return { key, title: `${soleClimb(m) ? meshTitle(m) : m.name} (${key.slice(0, 6)})` };
 }
+// A key's simplified copy, once the server has it (asked again every few seconds while it makes it)
+async function compareShape(s, say){
+  for (let i = 0; ; i++) {
+    const r = await api(`/api/compare/${encodeURIComponent(s.key)}`);
+    if (r.state === 'ready') return r;
+    if (i === 200) throw new Error(`the server is still simplifying ${s.title}: try again in a while`);
+    say(i ? `The server is simplifying it for comparing (${3 * i} s)…` : 'The server is simplifying it for comparing…');
+    await tick(3000);
+  }
+}
+const kFaces = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`;
 async function openPair(keys){
   if (!editor) return toast('Only editors can compare two meshes', 8000);
   if (keys.length !== 2 || keys[0] === keys[1]) return toast('A comparison link names two different meshes: /m/<one>+<other>', 8000);
@@ -6893,10 +6906,15 @@ async function openPair(keys){
   try {
     const sources = await Promise.all(keys.map(pairSource));
     for (const [i, s] of sources.entries()) {     // one after the other, each with its own progress
-      const loaded = loading(`${s.title} (${i + 1} of 2)`);
+      const loaded = loading(`${s.title} (${i + 1} of 2)`), detail = $('#loading .detail');
       const bytes = (n, total) => loadingUpdate?.({ loaded: n, total, lengthComputable: !!total });
-      try { const f = new File([await fetchBlob(s.url, bytes, undefined, token ? { Authorization: 'Bearer ' + token } : undefined)], s.file); items.push(Object.assign(localItem([f], f), { title: s.title, site: true })); }
-      finally { loaded(); }
+      try {
+        const shape = await compareShape(s, text => { detail.textContent = text; });
+        const blob = await fetchBlob(`/api/compare/${encodeURIComponent(s.key)}.glb`, bytes, undefined, token ? { Authorization: 'Bearer ' + token } : undefined);
+        const f = new File([blob], 'mesh.glb');
+        items.push(Object.assign(localItem([f], f), { title: s.title, site: true,
+          detail: shape.faces < shape.source_faces ? `${kFaces(shape.faces)} of ${kFaces(shape.source_faces)} faces, within ${(100 * shape.error).toPrecision(1)}% of its size` : `${kFaces(shape.faces)} faces` }));
+      } finally { loaded(); }
     }
   } catch (e) { items.forEach(dropLocal); return toast(`Couldn't open the two meshes: ${e.message}`, 10000); }
   endLocal();

@@ -132,6 +132,35 @@ def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float 
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def simplified(src: Path, dst: Path, faces: int, timeout: float = 900) -> dict:
+    """A copy of src simplified to about this many faces (or all of them, packed, if it has fewer than twice as many),
+    written to dst (a GLB) at a low priority, with no textures needed, for comparing two meshes in the viewer.
+
+    Returns:
+        {"faces", "source_faces", "error": the most it moved the surface, as a share of the mesh's size (0 if not
+        simplified), "bytes", "seconds"}.
+    """
+    cmd = runtime()
+    if not cmd:
+        raise RuntimeError("simplifying meshes needs node or deno")
+    tmp = dst.parent / f".{dst.name}.partial"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        nice = ["nice", "-n", "15"] if shutil.which("nice") else []
+        r = subprocess.run([*nice, *cmd, str(src), str(tmp), str(faces), str(2 * faces)], capture_output=True, text=True,
+                           timeout=timeout, env={**os.environ, "DENO_NO_UPDATE_CHECK": "1"})
+        if r.returncode:
+            raise RuntimeError((r.stderr.strip().splitlines() or [f"exit status {r.returncode}"])[-1])
+        made = json.loads(r.stdout.strip().splitlines()[-1])
+        lod = "preview" if made.get("preview") else "full"
+        (tmp / f"{lod}.glb").replace(dst)
+        return {"faces": made[lod]["faces"], "source_faces": made["source_faces"], "error": made[lod].get("error", 0),
+                "bytes": made[lod]["bytes"], "seconds": made["seconds"]}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def labels(src: Path, lod: str, faces_file: Path, label_bytes: int) -> bytes | None:
     """A cleanup's piece for each face (meshclean.FACES_FILE, label_bytes each) put in the order of src's packed copy's
     faces; None if it has none."""

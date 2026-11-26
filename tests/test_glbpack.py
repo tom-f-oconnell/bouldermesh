@@ -160,6 +160,15 @@ with tempfile.TemporaryDirectory() as td:
     assert "preview" not in rec and glbpack.made_for(rec, 0), "0: no previews"
     print("repacking OK")
 
+    # --- a copy simplified for comparing two meshes: written where asked, with how far it moved the surface; a mesh
+    # under twice as many faces is packed whole
+    got = glbpack.simplified(src, d / "cmp" / "a.glb", 1000)
+    assert 800 <= got["faces"] <= 1200 and got["source_faces"] == FACES and 0 < got["error"] < 0.01, got
+    assert (d / "cmp" / "a.glb").is_file() and sorted(p.name for p in (d / "cmp").iterdir()) == ["a.glb"], "nothing else left"
+    got = glbpack.simplified(src, d / "cmp" / "b.glb", FACES)
+    assert got["faces"] == FACES and got["error"] == 0, got
+    print("simplified OK")
+
     # --- the versions shown when the site doesn't show all textures: coloured per vertex, or untextured
     import retexture
     (d / "permitted").mkdir()
