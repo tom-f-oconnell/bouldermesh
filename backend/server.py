@@ -2718,7 +2718,8 @@ def beta_shown(mid: str, record: dict | None) -> dict | None:
 def mesh_lines(mid: str) -> dict:
     """A mesh's climbs' lines, for the viewer: {lines: [{climb, name, grade, p, n, at, videos, agree, drawn}], of,
     climbs, pending}, in the order of its climbs' names; of is every climb the mesh is of ([{climb, name, grade,
-    drawn: the points of its line drawn by hand, if it has one}], for drawing one), and climbs how many. pending:
+    drawn: the points of its line drawn by hand, if it has one}], for drawing one), and climbs how many, and astray_fails the share of a line's videos' holds off it (its astray) at which
+    it's in doubt (betalines.ASTRAY), which the viewer colours lines by for editors. pending:
     those kept aren't of its beta, its climbs' videos and the lines drawn on it as they are now (or none are kept
     yet), so they're being made again: asked for again in a few seconds, they're the new ones."""
     d = MESHES / mid
@@ -2727,14 +2728,14 @@ def mesh_lines(mid: str) -> dict:
     rows = {r["id"]: r for r in q(f"SELECT id, name, grade FROM climbs WHERE id IN ({','.join('?' * len(of)) or 'NULL'})", *of)}
     every = [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], "drawn": (drawn.get(cid) or {}).get("p")} for cid in of if cid in rows]
     if not record.get("videos") and not drawn:
-        return {"lines": [], "of": every, "climbs": len(of), "pending": False}
+        return {"lines": [], "of": every, "climbs": len(of), "pending": False, "astray_fails": betalines.ASTRAY}
     had = betalines.load(d) or {}
     pending = record.get("status") != "running" and had.get("key") != _lines_key(mid, record, of)
     if pending:
         want_lines(mid)
     kept = had.get("lines") or {}
     return {"lines": [{"climb": cid, "name": rows[cid]["name"], "grade": rows[cid]["grade"], **kept[cid]} for cid in of if cid in kept and cid in rows],
-            "of": every, "climbs": len(of), "pending": pending}
+            "of": every, "climbs": len(of), "pending": pending, "astray_fails": betalines.ASTRAY}
 
 
 def draw_line(mid: str, climb: str, points, by: str | None) -> dict:

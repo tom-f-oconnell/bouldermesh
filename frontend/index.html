@@ -6029,11 +6029,21 @@ const LINE_MAP = (() => {       // across a line: a dark edge either side, so it
   const c = document.createElement('canvas'); c.width = 64; c.height = 4;
   const x = c.getContext('2d');
   x.fillStyle = 'rgba(6,22,34,.9)'; x.fillRect(0, 0, 64, 4);
-  x.fillStyle = LINE_COLOR; x.fillRect(8, 0, 48, 4);
+  x.fillStyle = '#fff'; x.fillRect(8, 0, 48, 4);      // white, for each line's material to colour
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 })();
-function lineMaterial(faint){
-  const m = new THREE.MeshBasicMaterial({ map: LINE_MAP, side: THREE.DoubleSide, transparent: true, opacity: faint ? .2 : .95, depthWrite: false });
+// A line's colour. To an editor, one made from videos says how far it's in doubt (astray: the share of its videos'
+// holds beyond a reach of it): LINE_COLOR up to half of what fails (fails: the server's limit, where it stops judging
+// holds by the line), from there towards LINE_WARN as it nears that, and LINE_FAIL at it or past it. null for a line
+// not in doubt.
+const LINE_WARN = '#ff9a2e', LINE_FAIL = '#ff3b30';
+function lineDoubt(line, fails){
+  if (!editor || line.drawn || !(fails > 0) || !(line.astray > fails / 2)) return null;
+  if (line.astray >= fails) return LINE_FAIL;
+  return '#' + new THREE.Color(LINE_COLOR).lerp(new THREE.Color(LINE_WARN), (line.astray - fails / 2) / (fails / 2)).getHexString();
+}
+function lineMaterial(faint, color = LINE_COLOR){
+  const m = new THREE.MeshBasicMaterial({ map: LINE_MAP, color, side: THREE.DoubleSide, transparent: true, opacity: faint ? .2 : .95, depthWrite: false });
   m.onBeforeCompile = sh => {
     sh.uniforms.lineLift = lineLift;
     sh.vertexShader = 'uniform float lineLift;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
@@ -6117,6 +6127,7 @@ function showLinesButton(){
   b.hidden = !(st?.lines?.length && st.climbs > 1 && st.mid === shownMesh) || !!thumbMode;
   b.setAttribute('aria-pressed', String(linesOn));
   b.title = linesOn ? "Each climb's line, where the climbers in its videos went: press to hide them. A name picks its line out, and Open climb then goes to it."
+      + (editor ? " A red line is in doubt: a third or more of its videos' holds are beyond a reach of it. Towards orange, it's nearly so." : '')
     : "Show each climb's line: where the climbers in its videos went";
   const d = $('#vldraw');
   d.hidden = !(editor && st?.of?.length && st.mid === shownMesh) || !!thumbMode;
@@ -6144,9 +6155,10 @@ function drawLines(){
   for (const line of st.lines) {
     if (line.p.length < 2) continue;
     const faint = only != null && only !== line.climb;
-    const ribbon = new THREE.Mesh(lineRibbon(line, width, unit * LINE_RAISE), lineMaterial(faint));
+    const doubt = lineDoubt(line, st.fails);
+    const ribbon = new THREE.Mesh(lineRibbon(line, width, unit * LINE_RAISE), lineMaterial(faint, doubt || LINE_COLOR));
     ribbon.renderOrder = 2; ribbon.userData.beta = true; g.add(ribbon);
-    const label = lineLabel(named(line), faint);
+    const label = lineLabel(named(line) + (doubt ? ` · ${Math.round(line.astray * 100)}% of holds off it` : ''), faint);
     Object.assign(label.userData, { climb: line.climb, at: new THREE.Vector3(...line.p[line.at]), normal: new THREE.Vector3(...line.n[line.at]) });
     label.position.copy(label.userData.at); label.renderOrder = 5; g.add(label); st.labels.push(label);
     const probe = lineProbe(label);
@@ -6202,7 +6214,7 @@ function startLines(id){
     try { r = await api(`/api/meshes/${id}/lines`); } catch { return; }      // none shown: nothing to say
     if (lineState !== st) return;
     const same = JSON.stringify(r.lines) === JSON.stringify(st.lines);
-    Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0 });
+    Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0, fails: r.astray_fails });
     if (!same || !st.group) drawLines();
     if (r.pending && ++st.tries <= 5) st.timer = setTimeout(st.ask, LINE_RETRY_MS);
   };
@@ -6264,7 +6276,7 @@ function renderLineDraw(){
     try {
       const r = await api(`/api/meshes/${st.mid}/lines/${d.climb}`, { method, ...(json ? { json } : {}) });
       if (lineState !== st) return;
-      Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0 });
+      Object.assign(st, { lines: r.lines || [], of: r.of || [], climbs: r.climbs || 0, fails: r.astray_fails });
       stopLineDraw(); refreshLines();
       toast(method === 'POST' ? 'Saved: its line is laid on the rock in a few seconds' : 'Removed: its line is as its videos give it', 4000);
     } catch (e) { toast(e.message, 6000); }

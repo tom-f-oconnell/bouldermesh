@@ -127,6 +127,7 @@ try:
     seen = {h["id"]: h for h in server.beta_shown("aa11", beta_mod.load(d))["videos"][0]["holds"]}
     assert [i for i, h in seen.items() if h.get("off")] == [0, 3] and (seen[1]["role"], seen[2]["role"]) == ("start", "start")
     assert next(x for x in server.mesh_lines("aa11")["lines"] if x["climb"] == "ca")["astray"] == round(2 / 7, 3)
+    assert server.mesh_lines("aa11")["astray_fails"] == betalines.ASTRAY, "what the viewer colours an editor's lines by"
     (d / "scale.json").unlink()
     assert server.make_lines("aa11")
 
