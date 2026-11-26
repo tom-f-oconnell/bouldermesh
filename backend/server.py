@@ -291,6 +291,10 @@ def init_db() -> None:
         -- given the videos its page links to (climb_obj())
         CREATE TABLE IF NOT EXISTS same_climbs(ch TEXT PRIMARY KEY, mp TEXT, how TEXT, km REAL, found REAL);
         CREATE INDEX IF NOT EXISTS same_climbs_mp ON same_climbs(mp);
+        -- a video whose frames were chosen the old way (before harvest.FRAMES_VERSION 2), looked at for cuts
+        -- (frames_check()): how many shots it has, and its length, which say whether its frames would be chosen
+        -- differently now (frames_differ())
+        CREATE TABLE IF NOT EXISTS video_shots(url TEXT PRIMARY KEY, shots INTEGER, seconds REAL, checked REAL);
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
         offload_mod.migrate(con)            # what's been offloaded to the backup, or marked to be, and its files (offload.py)
@@ -4542,12 +4546,141 @@ TIERS_EVERY = 600       # seconds mesh_tiers() is kept before it's worked out ag
 _tiers: dict = {"at": 0.0, "report": None}
 # remade by the admin page's buttons at low priority, after old meshes (old_rerun 1) and YouTube's re-searches (2):
 # old_rerun's value for each, the order _claim_old() takes them in
-REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4, "roi": 3, "collapsed": 1, "vggt": 3, "clip": 3}
+REMAKE_RANKS = {"pipeline": 3, "new_data": 3, "grouping": 3, "fallback": 4, "roi": 3, "collapsed": 1, "vggt": 3, "clip": 3,
+                "frames": 3}
 ROI_URGENT_RANK = 1     # a mesh OpenMVS cut over roicrop.URGENT of goes with old meshes
 
 
 def tiers_changed() -> None:
     _tiers["at"] = 0.0
+
+
+# ---- videos whose frames would be chosen differently now. Since harvest.FRAMES_VERSION 2 a video cut together from
+# several shots, or longer than harvest.LONG_SECONDS, gives its frames to the views it has rather than its minutes; a
+# video of one shot is framed as before, frame for frame. So only meshes with a video of several shots, or a long one,
+# would come out different, and which those are is told without remaking them: by each old-way video's length, and a
+# look at small copies of its frames for cuts (frames_check(), a few seconds a video, asked for on the admin page).
+_frames_check: dict = {"state": "idle", "done": 0, "of": 0, "away": 0}
+
+
+def frames_differ(v: dict, shots: dict[str, dict], lengths: dict[str, float]) -> bool | None:
+    """Whether a harvest's video (as its record has it) would be framed differently now: False if it gave no frames,
+    was framed the new way already, or is one shot and not long; True if it's long or has cuts; None if it hasn't been
+    looked at for cuts (frames_check())."""
+    if not v.get("frames") or v.get("frames_version") or not v.get("url"):
+        return False
+    secs = v.get("duration") or lengths.get(v["url"]) or (shots.get(v["url"]) or {}).get("seconds")
+    if secs and secs > harvest_mod.LONG_SECONDS:
+        return True
+    seen = shots.get(v["url"])
+    return None if seen is None else (seen["shots"] or 0) > 1
+
+
+def frames_tier() -> dict:
+    """What the admin page's "frames" tier is worked out from: {differ: {harvest's project id: how many of its videos
+    would be framed differently now}, unchecked: [the URLs of old-way videos not looked at for cuts yet]}, over every
+    harvest an area's climb has."""
+    shots = {r["url"]: r for r in q("SELECT url, shots, seconds FROM video_shots")}
+    lengths = {r["url"]: r["duration"] for r in q("SELECT url, duration FROM videos WHERE duration IS NOT NULL")}
+    differ, unchecked = {}, {}
+    for p in q("SELECT id, harvest FROM projects WHERE kind='harvest' AND harvest IS NOT NULL AND harvest LIKE '%\"videos\"%'"):
+        try:
+            videos = json.loads(p["harvest"]).get("videos") or []
+        except (TypeError, ValueError):
+            continue
+        for v in videos:
+            d = frames_differ(v, shots, lengths)
+            if d:
+                differ[p["id"]] = differ.get(p["id"], 0) + 1
+            elif d is None:
+                unchecked[v["url"]] = True
+    return {"differ": differ, "unchecked": list(unchecked)}
+
+
+def mesh_harvests(rec: dict) -> list[str]:
+    """The harvests a mesh was made from, by its record (meshinputs): its own project, or for a boulder's or a pool's
+    mesh those of its climbs that it pooled."""
+    if rec.get("kind") in ("boulder", "pool"):
+        return [h for hs in (rec.get("climbs") or {}).values() for h in hs or []]
+    return [rec["project"]] if rec.get("project") else []
+
+
+def shots_of(video: Path) -> tuple[int, float | None]:
+    """How many shots a video has, as the harvest would find them (harvest.find_shots(), over a frame a second, or
+    harvest.MAX_CANDIDATES of a long one), from small copies of its frames; and its length in seconds."""
+    secs = harvest_mod.video_seconds(video)
+    fps = min(1.0, harvest_mod.MAX_CANDIDATES / secs) if secs and secs > harvest_mod.LONG_SECONDS else 1.0
+    with tempfile.TemporaryDirectory(prefix="shots-", dir=str(DATA)) as td:
+        jobctl.run(["ffmpeg", "-loglevel", "error", "-threads", "1", "-i", str(video), "-vf", f"fps={fps:g},scale=640:-2", "-q:v", "4",
+                    str(Path(td) / "f%05d.jpg")], timeout=900)
+        return len(harvest_mod.find_shots(sorted(Path(td).glob("f*.jpg")), lambda s: None)), secs
+
+
+def frames_check() -> None:
+    """Look at every old-way video not looked at yet (frames_tier()'s unchecked) for cuts, one at a time at low
+    priority, keeping what's found (video_shots): those here in the cache; one offloaded to the backup is left, and
+    counted ("away"). On a thread of its own, started from the admin page (admin_frames_check())."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
+    except OSError:
+        pass
+    todo = frames_tier()["unchecked"]
+    _frames_check.update(state="running", done=0, of=len(todo), away=0)
+    try:
+        for url in todo:
+            if _stopping or _draining:
+                break
+            video = youtube_mod.cached(url)
+            if not video:
+                _frames_check["away"] += 1
+                continue
+            try:
+                n, secs = shots_of(video)
+                q("INSERT OR REPLACE INTO video_shots(url, shots, seconds, checked) VALUES(?,?,?,?)", url, n, secs, time.time(), write=True)
+            except Exception as e:  # noqa: BLE001 - this video stays unchecked
+                print(f"frames check: {url}: {type(e).__name__}: {e}", flush=True)
+            _frames_check["done"] += 1
+            if _frames_check["done"] % 20 == 0:
+                tiers_changed()
+    finally:
+        _frames_check["state"] = "idle"
+        tiers_changed()
+
+
+def admin_frames_check(_: dict) -> dict:
+    """Start frames_check(), unless it's running."""
+    if _frames_check["state"] == "running":
+        raise ValueError(f"already looking: {_frames_check['done']} of {_frames_check['of']} done")
+    n = len(frames_tier()["unchecked"])
+    if not n:
+        raise ValueError("every video whose frames were chosen the old way has been looked at")
+    _frames_check.update(state="running", done=0, of=n, away=0)
+    threading.Thread(target=frames_check, daemon=True, name="frames-check").start()
+    return {"result": f"looking at {n} video(s) for cuts, a few seconds each, at low priority: those with several shots, or longer than "
+                      f"{harvest_mod.LONG_SECONDS / 60:.0f} min, put their meshes in the tier"}
+
+
+def queue_reframes(mids: list[str]) -> dict:
+    """Queue the climbs whose harvests have videos that would be framed differently now (frames_tier()), of these meshes,
+    to be harvested again and rebuilt at low priority: their boulder, or the climbs their photos match, is meshed again
+    with them, as after any harvest again. Returns {queued, busy, not_in_area}."""
+    differ = frames_tier()["differ"]
+    out = {"queued": 0, "busy": 0, "not_in_area": 0}
+    pids = dict.fromkeys(h for mid in dict.fromkeys(mids) for h in mesh_harvests(meshinputs.load(MESHES / mid) or {}) if h in differ)
+    for pid in pids:
+        rows = q("SELECT campaign_id, source_id, status, redo, blocked FROM campaign_items WHERE project_id=? ORDER BY rank", pid)
+        free = [r for r in rows if r["status"] in ("done", "skipped", "failed", "hidden") and not r["redo"] and not r["blocked"]]
+        if not free:
+            out["busy" if rows else "not_in_area"] += 1
+            continue
+        r = free[0]
+        set_item(r["campaign_id"], r["source_id"], status="pending", retry=0, redo="harvest+rebuild", was=r["status"], redo_started=0,
+                 old_rerun=REMAKE_RANKS["frames"], note=f"queued to {REDO_NAMES['harvest+rebuild']}, at low priority: "
+                 f"{plural(differ[pid], 'video')} of it would give other frames now (cut from several shots, or long)")
+        out["queued"] += 1
+    if out["queued"]:
+        tiers_changed()
+    return out
 
 
 def _new_photos(rec: dict, mesh_made: float) -> int | None:
@@ -4607,7 +4740,8 @@ def mesh_tiers(fresh: bool = False) -> dict:
     if not fresh and _tiers["report"] and time.time() - _tiers["at"] < TIERS_EVERY:
         return _tiers["report"]
     ids: dict[str, list[str]] = {"pipeline": [], "fallback": [], "texture": [], "new_data": [], "grouping": grouping_tier(),
-                                 "collapsed": [], "vggt": [], "clip": []}
+                                 "collapsed": [], "vggt": [], "clip": [], "frames": []}
+    framing = frames_tier()
     rules, unkept, why, photos, clip_waits = 0, 0, collections.Counter(), 0, 0
     cropped: list[tuple[str, float | None]] = []
     replace: list[str] = []     # cropped, but not to be made from their cameras as they were (run_kept())
@@ -4624,6 +4758,8 @@ def mesh_tiers(fresh: bool = False) -> dict:
             why[pipeline.fallback_tier(made)] += 1
         if pipeline.vggt_tier(made):    # whatever else: placed again, where VGGT can run
             ids["vggt"].append(m["id"])
+        if any(h in framing["differ"] for h in mesh_harvests(rec)):     # a video of it would give other frames now
+            ids["frames"].append(m["id"])
         out, waits = filtered_from(rec)     # made again from what today's filter keeps
         if out:
             ids["clip"].append(m["id"])
@@ -4654,6 +4790,7 @@ def mesh_tiers(fresh: bool = False) -> dict:
     report = {"roi": len(cropped), "roi_urgent": sum(s is not None and s > roicrop.URGENT for s in shares),
               "roi_flagged": sum(s is not None and s > roicrop.FLAG for s in shares), "roi_unknown": shares.count(None),
               "roi_replace": len(replace), "collapsed": len(ids["collapsed"]), "vggt": len(ids["vggt"]), "clip": len(ids["clip"]), "clip_waits": clip_waits,
+              "frames": len(ids["frames"]), "frames_unchecked": len(framing["unchecked"]), "frames_check": dict(_frames_check),
               "pipeline_version": pipeline.PIPELINE_VERSION, "texture_version": pipeline.TEXTURE_VERSION, "meshes": len(rows), "adds": adds,
               "rules": rules, "pipeline": len(ids["pipeline"]), "fallback": {"n": len(ids["fallback"]), "why": dict(why)},
               "texture": len(ids["texture"]), "texture_unkept": unkept, "new_data": len(ids["new_data"]), "new_photos": photos,
@@ -4757,7 +4894,7 @@ def adds_summary() -> dict:
 
 def queue_remakes(mids: list[str], tier: str, add: bool = False) -> dict:
     """Queue these meshes to be made again at low priority (old_rerun REMAKE_RANKS[tier]; ROI_URGENT_RANK for one OpenMVS
-    cut much of, roicrop.URGENT), taken only when no area has
+    cut much of, roicrop.URGENT; the "frames" tier is queue_reframes()'s), taken only when no area has
     anything else (_claim_old()), from the photos they have: a climb's own mesh by rebuilding its climb (for grouping, by
     meshing its boulder, harvesting its other problems first), a boulder's by
     meshing its boulder again (even from the same photos, unless it's for new photos), a pool's by meshing its climbs
@@ -16641,7 +16778,7 @@ def admin_abtest(body: dict) -> dict:
 
 def admin_remake_tier(body: dict) -> dict:
     """Queue the meshes of one of mesh_tiers()'s tiers to be made again at low priority (queue_remakes()):
-    {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi" | "collapsed" | "vggt" | "clip", "add": true to add new photos to meshes' models rather than
+    {"tier": "pipeline" | "fallback" | "new_data" | "grouping" | "roi" | "collapsed" | "vggt" | "clip" | "frames", "add": true to add new photos to meshes' models rather than
     remake}."""
     tier = body.get("tier")
     if tier not in REMAKE_RANKS:
@@ -16657,6 +16794,11 @@ def admin_remake_tier(body: dict) -> dict:
                 + (f"; {kept['busy']} busy or queued already" if kept["busy"] else "")
                 + (f"; {full['queued']} that kept no cameras to be made from scratch" if full and full["queued"] else "")
                 + (f" ({full['not_in_area']} of those in no area, left)" if full and full["not_in_area"] else "")}
+    if tier == "frames":    # their climbs harvested again, for the frames, then meshed again
+        got = queue_reframes(mesh_tiers(fresh=True)["ids"]["frames"])
+        return {"result": f"queued {got['queued']} climb(s) to be harvested again and rebuilt at low priority"
+                + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
+                + (f"; {got['not_in_area']} not in any area, left (harvest each again from its climb's card)" if got["not_in_area"] else "")}
     got = queue_remakes(mesh_tiers(fresh=True)["ids"][tier], tier, add=bool(body.get("add")))
     how = "to be placed again from scratch, with old meshes" if tier == "collapsed" else "to be made again at low priority"
     return {"result": f"queued {got['queued']} {how}" + (f"; {got['busy']} already queued or busy" if got["busy"] else "")
@@ -16788,7 +16930,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "abtest": admin_abtest,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "frames-check": admin_frames_check, "abtest": admin_abtest,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial, "volunteer-trust": admin_volunteer_trust,

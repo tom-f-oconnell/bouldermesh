@@ -280,6 +280,55 @@ INTERRUPTED: the server restarted during this job: Retry carries on from the las
     ph.write_bytes(b"123456")
     assert one["fingerprint"] != server.machine_identity("filter", {"photos/ph.jpg": ph, "cache.sqlite": ph}, {"a": 1}, [1, 1])["fingerprint"]
     print("jobs kept over a restart OK")
+
+    # ---- the frames tier: meshes with a video that would give other frames now (cut from several shots, or long)
+    import subprocess
+    import numpy as np
+    from PIL import Image
+    yt = lambda i: f"https://www.youtube.com/watch?v=frames{i:05d}"  # noqa: E731
+
+    def harvested(pid: str, *videos: dict) -> None:
+        server.q("UPDATE projects SET harvest=? WHERE id=?", json.dumps({"images": 9, "videos": list(videos)}), pid, write=True)
+    harvested(mesh("cuts", made=current, tex=tex_now), {"url": yt(1), "frames": 12}, {"url": yt(9), "frames": 0})
+    harvested(mesh("tripod", made=current, tex=tex_now), {"url": yt(2), "frames": 20})
+    harvested(mesh("longvid", made=current, tex=tex_now), {"url": yt(3), "frames": 20})
+    harvested(mesh("unlooked", made=current, tex=tex_now), {"url": yt(4), "frames": 20})
+    harvested(mesh("newway", made=current, tex=tex_now), {"url": yt(5), "frames": 20, "frames_version": 2, "shots": 5, "duration": 4000})
+    mesh("itsboulder", kind="boulder", made=current, tex=tex_now, leaf='["A", "Rock"]', climbs={"c1": ["pcuts"], "c2": ["ptripod"]})
+    server.q("INSERT INTO video_shots(url, shots, seconds, checked) VALUES(?,4,200,0),(?,1,100,0)", yt(1), yt(2), write=True)
+    server.save_video({"url": yt(3), "duration": 2000.0})
+    t = server.mesh_tiers(fresh=True)
+    assert sorted(t["ids"]["frames"]) == ["cuts", "itsboulder", "longvid"] and t["frames"] == 3, t["ids"]["frames"]
+    assert t["frames_unchecked"] == 1 and t["frames_check"]["state"] == "idle", (t["frames_unchecked"], t["frames_check"])
+    # looking at the one not looked at: a video of two shots, in the cache
+    with tempfile.TemporaryDirectory() as td:
+        for name, seed in (("a", 1), ("b", 2)):
+            rng = np.random.default_rng(seed)
+            img = sum(w * np.kron(rng.uniform(-1, 1, (360 // c + 1, 640 // c + 1)), np.ones((c, c)))[:360, :640] for c, w in ((64, 60), (16, 40), (4, 25)))
+            Image.fromarray(np.clip(128 + img, 0, 255).astype(np.uint8)).convert("RGB").save(f"{td}/{name}.png")
+        server.youtube_mod.VIDEO_CACHE.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-loop", "1", "-t", "4", "-i", f"{td}/a.png", "-loop", "1", "-t", "4", "-i", f"{td}/b.png",
+                        "-filter_complex", "[0][1]concat=n=2:v=1", "-r", "5", "-pix_fmt", "yuv420p",
+                        str(server.youtube_mod.VIDEO_CACHE / "frames00004.mp4")], check=True, timeout=120)
+    assert "1 video" in server.admin_frames_check({})["result"]
+    for _ in range(100):
+        if server._frames_check["state"] == "idle":
+            break
+        time.sleep(0.1)
+    seen = server.q("SELECT shots, seconds FROM video_shots WHERE url=?", yt(4), one=True)
+    assert seen and seen["shots"] == 2 and 7 < seen["seconds"] < 9, seen
+    t = server.mesh_tiers(fresh=True)
+    assert sorted(t["ids"]["frames"]) == ["cuts", "itsboulder", "longvid", "unlooked"] and t["frames_unchecked"] == 0, t["ids"]["frames"]
+    # remaking the tier: each climb whose harvest has such a video is harvested again and rebuilt, at low priority
+    server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('fr','Frames','999','popularity',0,'done')", write=True)
+    for i, pid in enumerate(("pcuts", "ptripod", "plongvid")):
+        server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,project_id,status) VALUES('fr',?,?,?,?,'done')", str(i), i, pid, pid, write=True)
+    server._records_state["state"] = "done"     # as once the server has worked out what's out of date after starting
+    assert "queued 2 climb(s)" in server.admin_remake_tier({"tier": "frames"})["result"], "the boulder's is its climb's; one isn't in an area"
+    got = {r["project_id"]: r for r in server.q("SELECT project_id, status, redo, old_rerun, note FROM campaign_items WHERE campaign_id='fr'")}
+    assert (got["pcuts"]["redo"], got["pcuts"]["old_rerun"], got["pcuts"]["status"]) == ("harvest+rebuild", 3, "pending"), got["pcuts"]
+    assert got["plongvid"]["redo"] == "harvest+rebuild" and got["ptripod"]["redo"] is None and "1 video" in got["pcuts"]["note"], got
+    print("frames tier OK")
     print("ALL TIERS TESTS PASSED")
 finally:
     import shutil
