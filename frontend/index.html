@@ -5921,25 +5921,29 @@ function drawBeta(){
     Object.assign(betaState, { group: g, node, rings: g.children.filter(o => o.isSprite), markers: [] });
     return liftRings(), renderBetaVids(), drawLines();
   }
+  // the climb picked out, in the panel (renderBetaPanel()) or by its line's name (drawLines()): other climbs' holds faint
+  const cf = betaState.climbFocus ?? (lineState?.mid === betaState.mid ? lineState.pick : null) ?? null;
+  const notOf = ids => cf != null && !(cf === '' ? !ids.some(id => betaState.climbs?.[id]) : ids.includes(cf));
   // each video's holds; where its climber went is its climb's line (drawLines()), not a line for each hand and foot
   for (const v of betaState.found?.videos || []) {
     if (!betaState.shown.has(v.tag)) continue;
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
-    const cf = betaState.climbFocus, outside = cf != null && !(cf === '' ? !(v.climbs || []).some(id => betaState.climbs?.[id]) : (v.climbs || []).includes(cf));
+    const outside = notOf(v.climbs || []);
     // nor those off its climb's line (offLine()), unless asked for: then faint
     for (const h of v.holds || []) if (!(h.off && !betaState.showOff) && !onHiddenFace(h.p, node))
       ring(h.p, h.role, 'found', h.off || outside || (!!betaState.focus && betaState.focus !== v.tag)).userData.hold = `${v.tag}/${h.id}`;
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
   // where the mesh's size is known: the selected hold's, and those given a size
-  const mpu = meshesById[betaState.mid]?.scale?.metres_per_unit;
+  const mpu = meshesById[betaState.mid]?.scale?.metres_per_unit, set = betaState.sets.find(x => x.id === betaState.sid);
+  const setOut = !betaState.marking && !!set && notOf(set.climb ? [set.climb] : []);     // a set tied to another climb
   betaState.markers = betaState.marked.map((h, i) => {
-    const sprite = ring(h.p, h.role, 'marked'), on = i === betaState.sel;
+    const sprite = ring(h.p, h.role, 'marked', setOut), on = i === betaState.sel;
     sprite.userData.marked = i;
     if (onHiddenFace(h.p, node)) { sprite.visible = false; return sprite; }     // hidden with the faces it's on
     if (on) sprite.userData.size *= 1.4;
     if (mpu > 0 && (on || h.r_m)) {
-      const reach = new THREE.LineSegments(REACH, new THREE.LineBasicMaterial({ color: ROLES[h.role].color, transparent: true, opacity: on ? .95 : .45 }));
+      const reach = new THREE.LineSegments(REACH, new THREE.LineBasicMaterial({ color: ROLES[h.role].color, transparent: true, opacity: setOut ? .15 : on ? .95 : .45 }));
       reach.position.fromArray(h.p); reach.scale.setScalar((h.r_m || HOLD_R_M) / mpu); reach.userData.beta = true; g.add(reach);
     }
     return sprite;
@@ -6252,7 +6256,7 @@ renderer.domElement.addEventListener('click', ev => {     // a name picks its li
   const on = raycaster.intersectObjects(st.labels.filter(l => l.visible), false)[0]?.object.userData.climb;
   if (!on) return;
   st.pick = st.pick === on ? null : on;
-  drawLines();
+  if (betaInView()) drawBeta(); else drawLines();     // drawBeta() draws the lines too
 });
 function roleCounts(holds){
   const n = {}; for (const h of holds) n[h.role] = (n[h.role] || 0) + 1;
