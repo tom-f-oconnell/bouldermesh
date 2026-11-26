@@ -523,7 +523,8 @@ at (Nov 2026): about 10 hours on the CPU, more while meshing runs alongside.
 A mesh of several climbs shows a line for each climb that has beta, drawn on the rock in cyan with the
 climb's name beside it, as a guidebook's topo has them. *Lines*, by the *Beta* button, hides and shows
 them. A mesh of one climb shows its line with its beta. Clicking a name picks that line out, the others
-going faint, and *Open climb* then goes to that climb; clicking it again undoes it.
+going faint, and *Open climb* then goes to that climb; clicking it again undoes it. A line is 6 cm wide where the
+mesh's size is known, else 1.6% of its height, so a long, low mesh doesn't make them thick.
 
 A line is where the climbers in the climb's videos went: each video's track of its climber's centre (halfway
 between the middles of their shoulders and hips, cast onto the rock), and of those the part the videos

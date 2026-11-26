@@ -5911,7 +5911,9 @@ function liftRings(){
 // ---- climbs' lines: where each climb on the mesh goes, as the climbers in its videos went (backend/betalines.py),
 // drawn flat on the rock with the climb's name beside it, as a guidebook's topo has them. On a mesh of several climbs
 // they show with it, until the Lines button hides them; on a mesh of one, its line shows with its beta.
-// Each is a ribbon LINE_WIDTH across (a share of the boulder's size, as the rest), raised LINE_RAISE off the rock and
+// Each is a ribbon LINE_WIDTH_M across where the mesh's size is known, else LINE_WIDTH of its height (not its longest
+// side, which on a long low boulder made them thick), kept between LINE_WIDTH_MIN and LINE_WIDTH of its longest side;
+// raised LINE_RAISE off the rock (a share of the boulder's size, as the rest) and
 // drawn LINE_LIFT nearer the camera than it is, along the line from the camera, as holds' rings are: so rock a little
 // proud of it doesn't cut through it, and a line round the back stays hidden. Where it crosses a gap in the rock (its
 // points LINE_GAP times further apart than they mostly are) it's left open. A name is a sprite the same size on screen
@@ -5920,7 +5922,7 @@ function liftRings(){
 // place, and while its point is behind other rock. That last is asked of the graphics card (lineProbe()), which has
 // drawn the rock already. Picked (again to undo), its line shows alone, the rest faint, and Open climb goes to that
 // climb.
-const LINE_COLOR = '#46c8ff', LINE_WIDTH = .016, LINE_RAISE = .003, LINE_LIFT = .03, LINE_GAP = 3, LINE_RETRY_MS = 4000;
+const LINE_COLOR = '#46c8ff', LINE_WIDTH = .016, LINE_WIDTH_M = .06, LINE_WIDTH_MIN = .0025, LINE_RAISE = .003, LINE_LIFT = .03, LINE_GAP = 3, LINE_RETRY_MS = 4000;
 const LABEL_FACING = [.08, .3];      // a name fades in between these cosines of the rock's facing the camera
 const lineLift = { value: 0 };      // LINE_LIFT in the scene's units, shared by every line's material
 // {mid, lines: [{climb, name, grade, p, n, at}], climbs: how many the mesh is of, group, node, labels, pick, tries}
@@ -6038,13 +6040,15 @@ function drawLines(){
   if (!linesWanted()) return;
   const node = meshNode(), g = new THREE.Group(), scale = node.getWorldScale(new THREE.Vector3()).x;
   // the boulder's size as the view frames it, in the units of the node the lines are in (drawBeta()'s)
-  const unit = Math.max(...mainBox(current).getSize(new THREE.Vector3()).toArray()) / scale;
+  const size = mainBox(current).getSize(new THREE.Vector3()), unit = Math.max(...size.toArray()) / scale;
   lineLift.value = unit * scale * LINE_LIFT;
+  const mpu = meshesById[st.mid]?.scale?.metres_per_unit;
+  const width = Math.min(unit * LINE_WIDTH, Math.max(unit * LINE_WIDTH_MIN, mpu > 0 ? LINE_WIDTH_M / mpu : size.y / scale * LINE_WIDTH));
   const cf = betaState?.mid === st.mid ? betaState.climbFocus : null, only = cf != null ? cf : st.pick;
   for (const line of st.lines) {
     if (line.p.length < 2) continue;
     const faint = only != null && only !== line.climb;
-    const ribbon = new THREE.Mesh(lineRibbon(line, unit * LINE_WIDTH, unit * LINE_RAISE), lineMaterial(faint));
+    const ribbon = new THREE.Mesh(lineRibbon(line, width, unit * LINE_RAISE), lineMaterial(faint));
     ribbon.renderOrder = 2; ribbon.userData.beta = true; g.add(ribbon);
     const label = lineLabel(named(line), faint);
     Object.assign(label.userData, { climb: line.climb, at: new THREE.Vector3(...line.p[line.at]), normal: new THREE.Vector3(...line.n[line.at]) });
