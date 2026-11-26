@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The kept /api/meshes (server._mesh_list_for()): fresh copies, an older one given while it's made again in the
-background, a change by an editor waited for, and the counts of each. Offline, with the list's making stubbed.
+background, a change waited for only by who made it, rows for links, copies saved for the next start, and the counts
+of each. Offline, with the list's making stubbed.
 
     python3 tests/test_mesh_list.py
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import json
 import sys
 import tempfile
 import threading
@@ -58,15 +60,37 @@ def main() -> None:
     mark[0] = "2"
     release.clear()
     assert get(slow=True) == b'{"n": 2}'
-    # an editor's change meanwhile: the next asking waits for a fresh one, and the making begun before it isn't kept
-    server.forget_mesh_list()
-    assert get() == b'{"n": 3}'
+    # an editor's change meanwhile: others get the older copy, made again in the background; the editor waits for a
+    # making begun since, not the one begun before the change
+    server.forget_mesh_list(("editor", "e1"))
+    assert get() == b'{"n": 2}', "others aren't kept waiting by another's change"
+    mine = server._mesh_list_for(None, server.MESH_LIST_TTL, make, ("editor", "e1"))
+    assert mine == b'{"n": 3}', mine
     release.set()
     for _ in range(100):
         if not server._mesh_lists_making:
             break
         time.sleep(0.02)
-    assert get() == b'{"n": 3}', "the making begun before the change was dropped"
+    assert get() == b'{"n": 3}', "the making begun before the change isn't kept over the one begun since"
+    assert server._mesh_lists_kept[None].began >= server._mesh_list_changes[("editor", "e1")]
+
+    # rows for links, and a copy saved and read back by the next start
+    server.MESH_LIST_SAVE_EVERY = 0
+    rows = [{"id": "a1", "climbs": [{"id": "c1"}]}, {"id": "b2", "adds_to": "a1", "boulder_climbs": [{"id": "c2"}]}]
+    key = (True, "e1")
+    server._mesh_list_for(key, 5, lambda: rows)
+    assert server._mesh_list_for(key, 5, lambda: []) == json.dumps(rows).encode(), "the same JSON as made whole"
+    assert [json.loads(r)["id"] for r in server.list_rows(key, climbs=["c2"])] == ["b2", "a1"], "with the mesh it adds to"
+    assert [json.loads(r)["id"] for r in server.list_rows(key, ["a1"], ["c1"])] == ["a1"]
+    assert server.list_rows(key, ["zz"]) == [] and server.list_rows((True, "nobody"), ["a1"]) is None
+    saved = sorted(f.name for f in server.MESH_LIST_SAVED.glob("*.json"))
+    assert saved == ["editor-e1.json", "visitors.json"], saved
+    server._mesh_lists_kept.clear()
+    assert server.load_mesh_lists() == 2
+    hold, began = threading.Event(), time.monotonic()
+    assert server._mesh_list_for(key, 5, lambda: (hold.wait(10), [])[1]) == json.dumps(rows).encode(), "the saved copy at once"
+    assert time.monotonic() - began < 0.5 and key in server._mesh_lists_making, "while it's made again"
+    hold.set()
 
     day = server.mesh_list_note()
     assert day and day.startswith("The list of meshes: ") and "waited for it" in day, day

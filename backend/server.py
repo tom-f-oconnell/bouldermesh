@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import concurrent.futures
 import contextlib
 import copy
 import csv
@@ -266,6 +267,8 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS campaign_items_boulder ON campaign_items(boulder);
         -- a climb's meshes, counted for each climb listed (climb_row(), MESH_COUNT)
         CREATE INDEX IF NOT EXISTS mesh_links_climb ON mesh_links(climb_id);
+        -- a boulder's climbs (boulder_untried(), boulder_climbs() and the like): each a scan of every climb without it
+        CREATE INDEX IF NOT EXISTS climbs_area_path ON climbs(area_path);
         -- videos of climbs, found on their pages or by searching, and what their uploaders say about the
         -- climber's size (youtube.stats), for scaling meshes later
         CREATE TABLE IF NOT EXISTS videos(
@@ -1388,7 +1391,7 @@ def leaf_url(leaf: str, cache: dict) -> str | None:
 
 
 def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = None, homes: dict | None = None,
-                   least: float | None = None) -> dict:
+                   least: float | None = None, known_on: dict[str, set] | None = None, source: str | None = None) -> dict:
     """What a pooled mesh's card says of it: how many climbs' photos it's made from and how many of them it places (by
     their own photos, each counted only on the mesh of its boulder that places most of them: homes, {climb: mesh}), its
     lowest area and what that is, and whether it's one boulder. climbs: {id, name, view (views.json's, if placed), own
@@ -1402,7 +1405,8 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
     that, it's the climbs that left REST_LEAST out: none did, or meshing theirs made nothing. Otherwise a mesh placing
     more than one climb is a group. A mesh from before its rest was kept goes by whether every climb known on the area
     is placed in it. short: the climbs with own photos too few of which it places, {name, placed, of}; apart: how many
-    scenes (or climbs) it left out to mesh apart, and rest how that went, as rest_summary() says.
+    scenes (or climbs) it left out to mesh apart, and rest how that went, as rest_summary() says. known_on: every
+    climb's id by its area_path (climbs_by_area()), and source the mesh's, for many meshes at once.
     """
     leaf = pool_leaf(key)
     placed = {c["id"] for c in climbs if c.get("view") and (not homes or homes.get(c["id"], mid) == mid)}
@@ -1416,13 +1420,14 @@ def pooled_summary(key: str, climbs: list[dict], kinds: dict, mid: str | None = 
     kind = leaf_kind(leaf, kinds)
     rest = load_rest(mid) if mid and not is_pool(key) else None
     apart, state, split, blocks = rest_summary(rest) if rest is not None else (0, None, False, False)
-    untried = boulder_untried(mid, leaf) if mid and not is_pool(key) else None
+    untried = boulder_untried(mid, leaf, known_on, source) if mid and not is_pool(key) else None
     if len(placed) < 2 or short:
         whole = False
     elif rest is not None:
         whole = kind == "boulder" and not blocks and untried == 0
     else:
-        on_leaf = {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)} if kind == "boulder" and not is_pool(key) else set()
+        on_leaf = (set(known_on.get(leaf, ())) if known_on is not None else {c["id"] for c in q("SELECT id FROM climbs WHERE area_path=?", leaf)}) \
+            if kind == "boulder" and not is_pool(key) else set()
         whole = bool(on_leaf) and on_leaf <= {c["id"] for c in climbs if c.get("view")}
     return {"climbs": len(climbs), "placed": len(placed), "area": json.loads(leaf)[-1].strip("* "), "kind": kind, "whole": whole,
             "apart": apart, "rest": state if apart else None, "split": split, "untried": untried,
@@ -1450,14 +1455,24 @@ def boulder_shares() -> list[dict]:
     return out
 
 
-def boulder_untried(mid: str, leaf: str) -> int | None:
+def climbs_by_area() -> dict[str, set]:
+    """Every climb's id by its area_path: for pooled_summary() of many meshes, one query in place of one each."""
+    out: dict[str, set] = {}
+    for r in q("SELECT id, area_path FROM climbs"):
+        out.setdefault(r["area_path"], set()).add(r["id"])
+    return out
+
+
+def boulder_untried(mid: str, leaf: str, known_on: dict[str, set] | None = None, source: str | None = None) -> int | None:
     """How many of a boulder's climbs its mesh didn't try to place: known on it, or listed on its Mountain Project page
     when the mesh was made, but with no photo pooled into it from a harvest of theirs (never harvested, a harvest that
-    found none, or known since). None if its project's record of them can't be read."""
-    src = q("SELECT source FROM meshes WHERE id=?", mid, one=True)
-    if not src or not src["source"].startswith("project:"):
+    found none, or known since). None if its project's record of them can't be read. known_on: climbs_by_area()'s; source:
+    the mesh's, if known."""
+    if source is None:
+        source = (q("SELECT source FROM meshes WHERE id=?", mid, one=True) or {}).get("source") or ""
+    if not source.startswith("project:"):
         return None
-    pdir = PROJECTS / src["source"].split(":", 1)[1]
+    pdir = PROJECTS / source.split(":", 1)[1]
     try:
         record = json.loads((pdir / CLIMBS_FILE).read_text())
     except (OSError, ValueError):
@@ -1468,7 +1483,7 @@ def boulder_untried(mid: str, leaf: str) -> int | None:
     except (OSError, ValueError):   # no record of which harvest gave which photo: those harvested, as before
         gave = {h for c in record.get("climbs") or [] for h in c.get("projects") or []}
     pooled = {c["id"] for c in record.get("climbs") or [] if gave & set(c.get("projects") or [])}
-    known = {r["id"] for r in q("SELECT id FROM climbs WHERE area_path=?", leaf)}
+    known = known_on.get(leaf, set()) if known_on is not None else {r["id"] for r in q("SELECT id FROM climbs WHERE area_path=?", leaf)}
     return max(len(known - pooled), (record.get("page_problems") or 0) - len(pooled), 0)
 
 
@@ -5514,7 +5529,7 @@ def mesh_files_fields(r: dict) -> None:
     try:    # one mesh's unreadable file shouldn't empty the whole list
         r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
         r["orientation"] = orientation.load(MESHES / r["id"])
-        r["sources"] = provenance.summary(mesh_record(MESHES / r["id"]))
+        r["sources"] = provenance.summary(mesh_record(MESHES / r["id"], copied=False))
         r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
         sets = beta_mod.load_sets(MESHES / r["id"])
         r["marked"] = sum(len(one["holds"]) for one in sets)
@@ -10050,7 +10065,7 @@ def texture_mode(mid: str, source: str | None = None) -> str:
     setting = settings().get("site.textures")
     if setting in ("none", "all") or source == "upload":       # what the mesh's photos are doesn't matter
         return policy.texture_mode(setting, source == "upload", None, False)
-    return policy.texture_mode(setting, False, mesh_record(MESHES / mid), retexture.has_variant(MESHES / mid))
+    return policy.texture_mode(setting, False, mesh_record(MESHES / mid, copied=False), retexture.has_variant(MESHES / mid))
 
 
 def served_dir(mid: str, mode: str | None = None) -> Path:
@@ -10142,6 +10157,21 @@ def video_info(url: str) -> dict | None:
     return {"license": row["license"], "uploader": row["uploader"]} if row else None
 
 
+_video_infos: dict = {"at": 0.0, "by": {}}
+VIDEO_INFOS_FRESH = 60      # seconds known_video_info()'s copy of the videos table is kept
+
+
+def known_video_info(url: str) -> dict | None:
+    """video_info() from a copy of the whole videos table, made at most once in VIDEO_INFOS_FRESH seconds: for reading
+    many meshes' records at once, which asked once for each of their videos (2 s of the list's 14 cold, Nov 2026)."""
+    now = time.time()
+    if now - _video_infos["at"] > VIDEO_INFOS_FRESH:
+        _video_infos["by"] = {r["url"]: {"license": r["license"], "uploader": r["uploader"]}
+                              for r in q("SELECT url, license, uploader FROM videos")}
+        _video_infos["at"] = now
+    return _video_infos["by"].get(url)
+
+
 def video_entry(url: str) -> dict:
     """A video as a photo's record, for policy.permitted and source_access."""
     return {"source": "youtube", **(video_info(url) or {"license": None})}
@@ -10151,11 +10181,12 @@ _records: dict[str, tuple[float, float, dict | None]] = {}     # mesh_record()'s
 RECORD_FRESH = 300      # seconds a mesh's provenance is kept for: what's learnt of its videos' licences shows by then
 
 
-def mesh_record(mesh_dir: Path) -> dict | None:
+def mesh_record(mesh_dir: Path, copied: bool = True) -> dict | None:
     """A mesh's provenance, with its frames' licences and uploaders filled in from the videos table where the
     harvest hadn't recorded them: older harvests didn't, and a video's licence is learnt from its metadata later.
     Kept for RECORD_FRESH seconds, or until its file changes: the admin page asks for every mesh's, every few seconds
-    (each a file and a query for each of its video frames), which took it 10-40 s on the live server."""
+    (each a file and a query for each of its video frames), which took it 10-40 s on the live server. Without copied,
+    the kept record itself, for a caller that only reads it (copying it was 1.4 s of the list's 14, cold)."""
     path = mesh_dir / provenance.FILE
     try:
         stamp = path.stat().st_mtime
@@ -10164,10 +10195,10 @@ def mesh_record(mesh_dir: Path) -> dict | None:
     key, now = str(mesh_dir), time.time()
     had = _records.get(key)
     if had and had[0] == stamp and now - had[1] < RECORD_FRESH:
-        return copy.deepcopy(had[2])
-    rec = provenance.load(mesh_dir, video_info)
+        return copy.deepcopy(had[2]) if copied else had[2]
+    rec = provenance.load(mesh_dir, known_video_info)
     _records[key] = (stamp, now, rec)
-    return copy.deepcopy(rec)
+    return copy.deepcopy(rec) if copied else rec
 
 
 def stop_campaign(camp_id: str, now: bool = True) -> None:
@@ -10448,12 +10479,12 @@ def again_progress(areas: dict[str, list[dict]] | None = None) -> dict[str, dict
 CAMPAIGNS_TTL = 10      # seconds the Areas tab's list (/api/campaigns) is fresh
 
 
-def kept_campaigns() -> bytes:
+def kept_campaigns(who=None) -> bytes:
     """/api/campaigns (campaigns_listed()) as JSON, kept as the list of meshes is (_mesh_list_for()): the same for
-    everyone, made again in the background once CAMPAIGNS_TTL old, and at once after any change through the site
-    (forget_mesh_list()). Every open Areas tab asks every 5 s while areas run, and making it took ~5 s each (Nov 20):
+    everyone, made again in the background once CAMPAIGNS_TTL old or after any change through the site, and waited for
+    by who made that change (forget_mesh_list()). Every open Areas tab asks every 5 s while areas run, and making it took ~5 s each (Nov 20):
     most of the server's CPU."""
-    return _mesh_list_for("campaigns", CAMPAIGNS_TTL, campaigns_listed)
+    return _mesh_list_for("campaigns", CAMPAIGNS_TTL, campaigns_listed, who)
 
 
 def campaigns_listed() -> list[dict]:
@@ -12051,7 +12082,7 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
     areas, rated = mesh_areas(), mesh_ratings()
     pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
     homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
-    least = settings().get("boulders.placed_percent")
+    least, known_on = settings().get("boulders.placed_percent"), climbs_by_area()
     for r in rows:
         r["climbs"] = by.get(r["id"], [])
         r["rating"] = rated.get(r["id"])
@@ -12063,7 +12094,7 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
             views = pooled_views[r["id"]]
             r["boulder_climbs"] = [{**c, "view": (views.get("climbs") or {}).get(c["id"]),
                                     "own": (views.get("unplaced") or {}).get(c["id"], 0)} for c in on.get(r["boulder"], [])]
-            r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes, least)
+            r["pooled"] = pooled_summary(r["boulder"], r["boulder_climbs"], kinds, r["id"], homes, least, known_on, r["source"] or "")
         # the Mountain Project page of the lowest area a mesh of several climbs is on: a pooled mesh's, or
         # that of the climbs linked to one, when they're all on one
         leaf = (pool_leaf(r["boulder"]) if r["boulder"] else
@@ -12097,21 +12128,53 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
 MESH_LIST_TTL = 30      # seconds visitors' copy of /api/meshes is fresh, unless a mesh is made, deleted or replaced sooner
 # seconds an editor's copy is: what's worked out in the background (a packed copy, a preview) shows in it soon
 EDITOR_LIST_TTL = 5
-_mesh_list_lock = threading.Lock()      # one making at a time
-_mesh_lists_kept: dict = {}     # by None (visitors) or (editor, account): (mark, when, body)
-_mesh_lists_making: set = set()     # keys being made again in the background
-_mesh_list_gen = 0      # forget_mesh_list()'s count: a making begun before it isn't kept
+# The kept copies, written here (at most every MESH_LIST_SAVE_EVERY seconds each) so that a start has one to give at once
+# while it makes its own: the first asking after a deploy waited 30-90 s for it, as the start's backfills held the CPU (Nov 2026)
+MESH_LIST_SAVED = DATA / "cache" / "mesh-lists"
+MESH_LIST_SAVE_EVERY = 300
+_mesh_list_lock = threading.Lock()      # the bookkeeping below; never held while a list is made
+# by None (visitors), (editor, account) or "campaigns": its newest copy, as (mark, began, when, body, rows) (_Kept)
+_mesh_lists_kept: dict = {}
+_mesh_lists_making: dict = {}       # by key: the newest making under way, (began, Future of its _Kept)
+_mesh_list_stale = 0.0      # forget_mesh_list()'s last time: copies begun before it are made again, in the background
+_mesh_list_changes: dict = {}       # by who (list_who()): when they last changed something, which their next asking waits to see
+_mesh_list_saved: dict = {}     # by key: when its copy was last written to MESH_LIST_SAVED
 MESH_LIST_STATS = {"since": time.time(), "fresh": 0, "older": 0, "waited": 0, "made": collections.deque(maxlen=500),
                    "day": {"fresh": 0, "older": 0, "waited": 0, "made": []}}
 
 
-def forget_mesh_list() -> None:
-    """Have /api/meshes made again at its next asking, which waits for it: after an editor's or account's change, so
-    that it shows at once."""
-    global _mesh_list_gen
+# A kept list: mark (_list_mark() as its making began), began and when (made), body (the JSON sent), and for the meshes'
+# lists rows: {mesh: its row's JSON}, climbs: {climb: meshes listing it, as its own, shared or on its boulder}, and
+# adds_to: {mesh: the mesh it adds to}, for list_rows()
+_Kept = collections.namedtuple("_Kept", "mark began when body rows climbs adds_to")
+
+
+def _kept_list(mark: str, began: float, made, meshes: bool = True) -> _Kept:
+    """made kept, as JSON; for a list of meshes, by row too."""
+    if not (meshes and isinstance(made, list) and all(isinstance(r, dict) and "id" in r for r in made)):
+        return _Kept(mark, began, time.time(), json.dumps(made, default=str).encode(), None, None, None)
+    rows, climbs, adds = {}, {}, {}
+    for r in made:
+        rows[r["id"]] = json.dumps(r, default=str).encode()
+        for c in (r.get("climbs") or []) + (r.get("boulder_climbs") or []):
+            climbs.setdefault(c["id"], []).append(r["id"])
+        if r.get("adds_to"):
+            adds[r["id"]] = r["adds_to"]
+    return _Kept(mark, began, time.time(), b"[" + b", ".join(rows.values()) + b"]", rows, climbs, adds)
+
+
+def forget_mesh_list(who=None) -> None:
+    """After a change through the site: every kept list is made again at its next asking, in the background (the older
+    copy given meanwhile), but who made the change (list_who()) waits for a copy begun since, so that it shows to them
+    at once. Others see it once that's made."""
+    global _mesh_list_stale
     with _mesh_list_lock:
-        _mesh_list_gen += 1
-        _mesh_lists_kept.clear()
+        now = _mesh_list_stale = time.time()
+        if who is not None:
+            if len(_mesh_list_changes) > 1000:
+                for k in [k for k, t in _mesh_list_changes.items() if now - t > 3600]:
+                    del _mesh_list_changes[k]
+            _mesh_list_changes[who] = now
 
 
 def _count_mesh_list(kind: str, seconds: float | None = None) -> None:
@@ -12125,29 +12188,39 @@ def _count_mesh_list(kind: str, seconds: float | None = None) -> None:
         MESH_LIST_STATS["day"][kind] += 1
 
 
-def _make_mesh_list(key, make: Callable[[], dict], gen: int) -> bytes:
-    """Make a /api/meshes body (or /api/campaigns', key "campaigns") and keep it under key, unless forget_mesh_list()
-    was called since gen."""
-    mark, began = _list_mark(key), time.monotonic()
-    body = json.dumps(make(), default=str).encode()
-    if key != "campaigns":
-        _count_mesh_list("made", time.monotonic() - began)
-    if gen == _mesh_list_gen:
-        _mesh_lists_kept[key] = (mark, time.time(), body)
-    return body
-
-
-def _remake_mesh_list(key, make: Callable[[], dict], gen: int) -> None:
-    """A thread: make key's /api/meshes again, at a low CPU priority, while askers get the older copy. Not under
-    _mesh_list_lock, which an asking that must wait (after a change) would otherwise wait behind it for."""
+def _make_mesh_list(key, make: Callable[[], object], began: float, fut) -> None:
+    """Make key's list (a /api/meshes body, or /api/campaigns', key "campaigns"), keep it unless a newer one was begun
+    meanwhile, and settle fut with it."""
     try:
-        tid = threading.get_native_id()     # its priority only ever lowered: raising it needs privileges (under nice, say)
+        mark, t = _list_mark(key), time.monotonic()
+        kept = _kept_list(mark, began, make(), key != "campaigns")
+        if key != "campaigns":
+            _count_mesh_list("made", time.monotonic() - t)
+        with _mesh_list_lock:
+            had = _mesh_lists_kept.get(key)
+            if not had or had.began <= began:
+                _mesh_lists_kept[key] = kept
+            if _mesh_lists_making.get(key, (0, None))[1] is fut:
+                del _mesh_lists_making[key]
+        fut.set_result(kept)
+    except BaseException as e:
+        with _mesh_list_lock:
+            if _mesh_lists_making.get(key, (0, None))[1] is fut:
+                del _mesh_lists_making[key]
+        fut.set_exception(e)
+        return
+    _save_mesh_list(key, kept)
+
+
+def _remake_mesh_list(key, make: Callable[[], object], began: float, fut) -> None:
+    """A thread: make key's list again, at a low CPU priority, while askers get the older copy."""
+    tid = threading.get_native_id()     # its priority only ever lowered: raising it needs privileges (under nice, say)
+    with contextlib.suppress(OSError):
         os.setpriority(os.PRIO_PROCESS, tid, max(10, os.getpriority(os.PRIO_PROCESS, tid)))
-        _make_mesh_list(key, make, gen)
-    except Exception as e:  # noqa: BLE001 - the next asking tries again
+    _make_mesh_list(key, make, began, fut)
+    if fut.exception():     # the next asking tries again
+        e = fut.exception()
         print(f"error: making the list of meshes again: {type(e).__name__}: {e}", flush=True)
-    finally:
-        _mesh_lists_making.discard(key)
 
 
 def _list_mark(key) -> str:
@@ -12155,27 +12228,94 @@ def _list_mark(key) -> str:
     return "" if key == "campaigns" else meshes_mark()
 
 
-def _mesh_list_for(key, ttl: float, make: Callable[[], dict]) -> bytes:
-    """/api/meshes for key: its kept copy while fresh (the same meshes_mark(), within ttl seconds); once it isn't, still
-    that copy, while it's made again in the background, so no one waits for its making (~10 s on the server's 2 busy
-    cores, Nov 2026) but the first to ask after a start or forget_mesh_list(), and those asking meanwhile."""
-    kept, counted = _mesh_lists_kept.get(key), key != "campaigns"
-    if kept and kept[0] == _list_mark(key) and time.time() - kept[1] < ttl:
-        if counted:
-            _count_mesh_list("fresh")
-        return kept[2]
-    if kept:
-        if counted:
-            _count_mesh_list("older")
-        if key not in _mesh_lists_making:
-            _mesh_lists_making.add(key)
-            threading.Thread(target=_remake_mesh_list, args=(key, make, _mesh_list_gen), daemon=True).start()
-        return kept[2]
+def _mesh_list_for(key, ttl: float, make: Callable[[], object], who=None) -> bytes:
+    """key's list: its kept copy while fresh (the same meshes_mark(), within ttl seconds, and begun since any change);
+    once it isn't, still that copy, while it's made again in the background, so that no one waits for its making (~10 s
+    on the server's 2 busy cores, Nov 2026). Only those with no copy wait (a start with none saved), and who made a
+    change (forget_mesh_list()) until there's a copy begun since; those waiting at once share one making."""
+    mark, need = _list_mark(key), _mesh_list_changes.get(who, 0.0) if who is not None else 0.0
+    counted = key != "campaigns"
     with _mesh_list_lock:
-        kept = _mesh_lists_kept.get(key)       # made by another while this one waited
-        if counted:
-            _count_mesh_list("waited")
-        return kept[2] if kept else _make_mesh_list(key, make, _mesh_list_gen)
+        kept = _mesh_lists_kept.get(key)
+        if kept and kept.began >= need:
+            fresh = kept.mark == mark and kept.began >= _mesh_list_stale and time.time() - kept.when < ttl
+            if not fresh and key not in _mesh_lists_making:
+                began, fut = time.time(), concurrent.futures.Future()
+                _mesh_lists_making[key] = (began, fut)
+                threading.Thread(target=_remake_mesh_list, args=(key, make, began, fut), daemon=True).start()
+            if counted:
+                _count_mesh_list("fresh" if fresh else "older")
+            return kept.body
+        making = _mesh_lists_making.get(key)
+        mine = not (making and making[0] >= need)
+        if mine:
+            making = _mesh_lists_making[key] = (time.time(), concurrent.futures.Future())
+    if counted:
+        _count_mesh_list("waited")
+    if mine:
+        _make_mesh_list(key, make, *making)
+    return making[1].result().body
+
+
+def _list_file(key) -> Path | None:
+    """Where key's copy is saved: visitors', editors' or an account's (one awaiting approval); not the areas'."""
+    if key is None:
+        return MESH_LIST_SAVED / "visitors.json"
+    if isinstance(key, tuple):
+        return MESH_LIST_SAVED / f"{'editor' if key[0] else 'account'}-{re.sub(r'[^A-Za-z0-9_-]', '_', key[1] or 'token')}.json"
+    return None
+
+
+def _save_mesh_list(key, kept: _Kept) -> None:
+    """Write key's copy to MESH_LIST_SAVED, if not written in the last MESH_LIST_SAVE_EVERY seconds: a line saying
+    which, then its body."""
+    f, now = _list_file(key), time.time()
+    if f is None or now - _mesh_list_saved.get(key, 0) < MESH_LIST_SAVE_EVERY:
+        return
+    _mesh_list_saved[key] = now
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_bytes(json.dumps({"key": list(key) if key else None, "mark": kept.mark, "began": kept.began}).encode() + b"\n" + kept.body)
+        os.replace(tmp, f)
+    except OSError as e:
+        print(f"error: saving the list of meshes: {type(e).__name__}: {e}", flush=True)
+
+
+def load_mesh_lists() -> int:
+    """At a start: the copies saved by the last (_save_mesh_list()), kept as made long ago, so that they're given while
+    made again in the background. Returns how many."""
+    n = 0
+    for f in sorted(MESH_LIST_SAVED.glob("*.json")) if MESH_LIST_SAVED.is_dir() else []:
+        try:
+            head, body = f.read_bytes().split(b"\n", 1)
+            h = json.loads(head)
+            key = tuple(h["key"]) if h["key"] else None
+            kept = _kept_list(h["mark"], 0.0, json.loads(body))
+            _mesh_lists_kept.setdefault(key, kept._replace(began=0.0, when=0.0))
+            n += 1
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            print(f"error: reading the saved list of meshes {f.name}: {type(e).__name__}: {e}", flush=True)
+    return n
+
+
+def list_rows(key, ids=(), climbs=()) -> list[bytes] | None:
+    """Rows of key's kept list (as fresh as it is), for a link to open its mesh before the whole list comes: those of
+    ids, and of the meshes listing any of climbs (which the page needs to name a mesh, and pick a climb's); with the
+    meshes each adds to (a capture's). None if there's no copy."""
+    kept = _mesh_lists_kept.get(key)
+    if not kept or kept.rows is None:
+        return None
+    want = [*ids, *(mid for c in climbs for mid in kept.climbs.get(c, []))]
+    seen, out = set(), []
+    for mid in want:
+        for _ in range(8):
+            if mid in seen or mid not in kept.rows:
+                break
+            seen.add(mid)
+            out.append(kept.rows[mid])
+            mid = kept.adds_to.get(mid)
+    return out
 
 
 def mesh_list_stats(day: bool = False) -> dict:
@@ -12249,22 +12389,36 @@ def shape_existing_meshes() -> None:
         time.sleep(0.2)
 
 
-def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> bytes:
-    """/api/meshes as an editor, or an account with meshes awaiting approval, sees it (mesh_list()), as JSON: kept for
-    each such (editing or not, and who) as visitors' is (visitors_mesh_list()), and forgotten after any change
-    (forget_mesh_list()), so that their own changes show at once (for EDITOR_LIST_TTL). Made afresh for every asking, it took an
-    editor 2-4 s, and three links opened together ~11 s each (Nov 19)."""
-    return _mesh_list_for((editor, (me or {}).get("id")), EDITOR_LIST_TTL,
-                          lambda: mesh_list(editor, me, waiting if waiting is not None else unapproved_meshes()))
+def mesh_list_key(editor: bool, me: dict | None, waiting: dict[str, str]):
+    """Which kept /api/meshes someone gets: their own, (editor, account), as an editor, or an account with meshes
+    awaiting approval (the owner's, or theirs), sees theirs alone; anyone else visitors' (None)."""
+    if editor or (me and (me["role"] == "owner" or me["id"] in waiting.values())):
+        return (editor, (me or {}).get("id"))
+    return None
+
+
+def list_who(editor: bool, me: dict | None):
+    """Who asked, for forget_mesh_list(): an editor (by account, or the editing token), or an account; None for others."""
+    return ("editor" if editor else "account", (me or {}).get("id")) if editor or me else None
+
+
+def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str] | None = None) -> bytes:
+    """/api/meshes as someone sees it (mesh_list()), as JSON: kept for each of mesh_list_key()'s, made at most once in its
+    time (MESH_LIST_TTL for visitors; EDITOR_LIST_TTL for editors, so that what's worked out in the background shows
+    soon), and again as soon as meshes_mark() changes or anything changes through the site (_mesh_list_for()). Every
+    page asks for it as it opens, and making it took ~2 CPU-seconds warm, 10-15 cold, of the server's 2 cores (Nov 2026);
+    made afresh for every asking, 20 visitors arriving together waited up to a minute. What only shows in it (a rating,
+    a mesh hidden or linked) reaches others once it's made again, though who changed it waits to see it at once."""
+    waiting = unapproved_meshes() if waiting is None else waiting
+    key = mesh_list_key(editor, me, waiting)
+    if key is None:
+        return _mesh_list_for(None, MESH_LIST_TTL, lambda: mesh_list(False, None, unapproved_meshes()), list_who(editor, me))
+    return _mesh_list_for(key, EDITOR_LIST_TTL, lambda: mesh_list(editor, me, unapproved_meshes()), list_who(editor, me))
 
 
 def visitors_mesh_list() -> bytes:
-    """/api/meshes as anyone neither editing nor awaiting approval sees it, as JSON, made at most once in
-    MESH_LIST_TTL seconds and again as soon as meshes_mark() changes. Every page asks for it as it opens, and making it
-    took ~2 CPU-seconds of the server's 2 cores (Nov 2026), so 20 visitors arriving together waited up to a minute.
-    Those asking while it's made wait for that one rather than making their own. What only shows in it (a rating, a
-    mesh hidden or linked) reaches visitors within MESH_LIST_TTL, and the making that takes (_mesh_list_for())."""
-    return _mesh_list_for(None, MESH_LIST_TTL, lambda: mesh_list(False, None, unapproved_meshes()))
+    """/api/meshes as anyone neither editing nor awaiting approval sees it (kept_mesh_list())."""
+    return kept_mesh_list(False, None, {})
 
 
 def unapproved_meshes() -> dict[str, str]:
@@ -13127,6 +13281,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_rows(self, obj: dict, rows: list[bytes] | None) -> None:
+        """obj as JSON, with rows (list_rows()'s, already JSON) as its "rows": a list, or null."""
+        body = json.dumps(obj, default=str).encode()
+        tail = b"null" if rows is None else b"[" + b", ".join(rows) + b"]"
+        self.send_bytes(body[:-1] + (b", " if len(obj) else b"") + b'"rows": ' + tail + b"}", "application/json", "no-cache")
+
     def send_error_json(self, e: Exception, code: int | None = None) -> None:
         """A failure as JSON: its message without this server's paths, and the whole of it in the log. A ValueError
         is the client's fault (400) unless a code is given."""
@@ -13591,16 +13751,20 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def handle_one_request(self):
-        """One request, then: a change by anyone but a visitor reporting (client_report(), feedback, a rating) makes
-        visitors' /api/meshes again on its next asking, and one that took SLOW_SECONDS or more for anyone not editing
-        is noted (note_slow_request())."""
+        """One request, then: a change by anyone but a visitor reporting (client_report(), feedback, a rating) has the
+        kept lists made again (forget_mesh_list()), and one that took SLOW_SECONDS or more for anyone not editing is
+        noted (note_slow_request())."""
         self.began = None
         super().handle_one_request()
         if self.began is None:
             return
         took, path = time.monotonic() - self.began, urlparse(self.path).path
         if self.command in ("POST", "PATCH", "DELETE", "PUT") and not REPORT_PATH.fullmatch(path):
-            forget_mesh_list()
+            try:
+                who = list_who(self.is_editor(), self.who())
+            except Exception:  # noqa: BLE001 - still made again, only not waited for by its maker
+                who = None
+            forget_mesh_list(who)
         try:
             if took >= SLOW_SECONDS and not path.startswith(SLOW_LEFT_OUT) and \
                     int(self.headers.get("Content-Length") or 0) <= 2**20 and not self.is_editor():
@@ -13659,19 +13823,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_page(head, status)
             m = re.fullmatch(r"/api/links/([cbm])/([^/]+)", p)
             if m:   # what the page opens for a link: a climb, a boulder's meshes, or what took a deleted mesh's place
+                # with rows: the meshes it opens, from the kept list (list_rows()), so that the page needn't wait for
+                # the whole of it to open them; null with none kept
                 kind, key = m[1], unquote(m[2])
+                editor, me = self.is_editor(), self.who()
+                lkey = mesh_list_key(editor, me, unapproved_meshes())
                 if kind == "m":
                     g = gone_mesh(key)
-                    return self.send_json({"id": key, "gone": g} if g else {"error": "no such mesh"}, 200 if g else 404)
+                    if g:
+                        return self.send_json({"id": key, "gone": g})
+                    own = [r["climb_id"] for r in q("SELECT climb_id FROM mesh_links WHERE mesh_id=?", key)]
+                    rows = list_rows(lkey, [key], own) or None     # one newer than the kept copy: the page waits for the list
+                    if rows is None and not q("SELECT 1 FROM meshes WHERE id=?", key, one=True):
+                        return self.send_json({"error": "no such mesh"}, 404)
+                    return self.send_rows({"id": key}, rows)
                 found = find_link(kind, links_mod.slugify(key))
                 if not found:
                     return self.send_json({"error": f"no {'climb' if kind == 'c' else 'boulder'} called {key} here"}, 404)
                 if kind == "b":
-                    return self.send_json(boulder_choices(found["leaf"], found["slug"]))
+                    r = boulder_choices(found["leaf"], found["slug"])
+                    return self.send_rows(r, list_rows(lkey, [x["id"] for x in r["meshes"]]))
                 c = q("SELECT id, name, grade FROM climbs WHERE id=?", found["ref"], one=True)
                 if not c:
                     return self.send_json({"error": "that climb is gone"}, 404)
-                return self.send_json({"slug": found["slug"], **c, "same": same_named(c["id"], c["name"])})
+                return self.send_rows({"slug": found["slug"], **c, "same": same_named(c["id"], c["name"])}, list_rows(lkey, climbs=[c["id"]]))
             if p.startswith("/static/"):
                 f = (FRONTEND / p[len("/static/"):]).resolve()
                 if FRONTEND.resolve() not in f.parents:
@@ -13798,11 +13973,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/meshes/mark":     # cheap to ask often: changes when /api/meshes would (a mesh made, gone, replaced)
                 return self.send_json({"mark": meshes_mark()})
             if p == "/api/meshes":
-                editor, me = self.is_editor(), self.who()
-                waiting = unapproved_meshes()
-                if editor or (me and (me["role"] == "owner" or me["id"] in waiting.values())):     # theirs alone
-                    return self.send_bytes(kept_mesh_list(editor, me, waiting), "application/json", "no-cache")
-                return self.send_bytes(visitors_mesh_list(), "application/json", "no-cache")
+                return self.send_bytes(kept_mesh_list(self.is_editor(), self.who()), "application/json", "no-cache")
             if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
                 return self.send_json(capture_meshes())
             if p == "/api/capture/fresh":   # for the phone apps: whether the meshes they keep changed, or were rebuilt (?ids=a,b,…)
@@ -14034,7 +14205,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_bytes(data, cache=cache)
                 return self.send_file(f, download="download" in qs, cache=None if "download" in qs else cache)
             if p == "/api/campaigns":   # kept, as the Areas tab asks every 5 s while areas run (kept_campaigns())
-                return self.send_bytes(kept_campaigns(), "application/json", "no-cache")
+                return self.send_bytes(kept_campaigns(list_who(self.is_editor(), self.who())), "application/json", "no-cache")
             # ---- climbs
             if p == "/api/climbs":   # the newest, or with q those of every climb with each of its words: limit (most 2000) from offset
                 sql, args, order = "SELECT id FROM climbs", [], []
@@ -15765,7 +15936,7 @@ def admin_state() -> dict:
     counts = dict.fromkeys(("meshes", "all_permitted", "variant", "hidden_if_permitted", "can_retexture", "need_rebuild"), 0)
     for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL"):
         d, upload = MESHES / m["id"], m["source"] == "upload"
-        ok, variant = upload or bool(policy.mesh_permitted(mesh_record(d))), retexture.has_variant(d)
+        ok, variant = upload or bool(policy.mesh_permitted(mesh_record(d, copied=False))), retexture.has_variant(d)
         counts["meshes"] += 1
         counts["all_permitted"] += ok
         counts["variant"] += variant and not ok
@@ -15983,7 +16154,7 @@ def admin_retexture(_: dict) -> dict:
     n = away = 0
     for m in q("SELECT id, source FROM meshes WHERE replaced_by IS NULL AND source LIKE 'project:%'"):
         d = MESHES / m["id"]
-        if m["id"] in _retexturing or policy.mesh_permitted(mesh_record(d)):
+        if m["id"] in _retexturing or policy.mesh_permitted(mesh_record(d, copied=False)):
             continue
         if photos_away(m["source"].split(":", 1)[1]):
             away += 1
@@ -16167,6 +16338,9 @@ def main() -> None:
     with db() as con:
         links_mod.init(con)
     threading.Thread(target=startup_links, daemon=True, name="links").start()
+    # the list of meshes, the last start's given while it's made again (or made now, with none saved), before anyone asks
+    load_mesh_lists()
+    threading.Thread(target=visitors_mesh_list, daemon=True, name="mesh-list").start()
     moved = settle_far_coordinates()
     if moved:
         print(f"{moved} climb(s) whose page's GPS was far from their area's now use their area's", flush=True)

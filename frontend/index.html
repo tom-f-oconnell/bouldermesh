@@ -932,11 +932,25 @@ const api = async (url, opt={}) => {
   if (token) opt.headers = { ...(opt.headers || {}), Authorization: 'Bearer ' + token };
   if (opt.sent) return apiSend(url, opt);
   const r = await fetch(url, opt);
-  const j = await r.json().catch(()=>({}));
+  const j = await (opt.got ? readBody(r, opt.got) : r.json()).catch(()=>({}));
   if (APP && r.status === 503) throw new TypeError('no connection');     // the apps' copy kept for no signal answers so
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
+// A response's JSON, saying how much of it has come as it comes: got(bytes, total, done), total from X-File-Size (its
+// size before compression), or 0
+async function readBody(r, got){
+  const total = +r.headers.get('X-File-Size') || 0;
+  got(0, total);
+  if (!r.body?.getReader) { const j = await r.json(); got(total, total, true); return j; }
+  const reader = r.body.getReader(), parts = [];
+  for (let n = 0; ;) {
+    const { done, value } = await reader.read();
+    if (done) { got(n, total, true); break; }
+    parts.push(value); n += value.length; got(n, total);
+  }
+  return JSON.parse(await new Blob(parts).text());
+}
 // The same over XMLHttpRequest, which says how much of the body has gone as it goes: opt.sent(bytes). opt.signal stops it.
 const apiSend = (url, opt) => new Promise((ok, fail) => {
   const x = new XMLHttpRequest(), stopped = () => fail(new DOMException('Cancelled', 'AbortError'));
@@ -3463,12 +3477,12 @@ function closeClimb(){
 }
 // A climb's meshes, a current one before an older version, newest first: its own, or (shared) those an area linked it to
 // that were made for another climb on its boulder
-const climbMeshes = (id, shared = false) => (meshesCache || []).filter(m => m.climbs.some(c => c.id === id && !!c.shared === shared))
+const climbMeshes = (id, shared = false) => listedMeshes().filter(m => m.climbs.some(c => c.id === id && !!c.shared === shared))
   .sort((a, b) => (a.replaced_by ? 1 : 0) - (b.replaced_by ? 1 : 0) || (b.preferred || 0) - (a.preferred || 0) || (b.created || 0) - (a.created || 0));
 // A capture with the phone app makes a mesh beside the one it adds to (adds_to), not in its place. Those tied to a mesh
 // that way, itself among them, the one their climbs show first leading: the one an editor chose last, or else the newest
 const tieRoot = m => { let r = m; for (let i = 0; i < 8 && r.adds_to && meshesById[r.adds_to]; i++) r = meshesById[r.adds_to]; return r; };
-const tiedMeshes = m => { const root = tieRoot(m).id; return (meshesCache || []).filter(x => !x.replaced_by && tieRoot(x).id === root)
+const tiedMeshes = m => { const root = tieRoot(m).id; return listedMeshes().filter(x => !x.replaced_by && tieRoot(x).id === root)
   .sort((a, b) => (b.preferred || 0) - (a.preferred || 0) || (b.created || 0) - (a.created || 0)); };
 // what a capture's mesh says of itself: what took it, what it adds to, and how well the two are tied (the server's tie_capture())
 function captureLine(m){
@@ -3480,7 +3494,7 @@ function captureLine(m){
 }
 // the current pooled mesh placing most of a climb's own photos (the one it counts toward), or else the newest listing it
 const boulderMeshOf = (id, ok = () => true) => {
-  const on = (meshesCache || []).filter(m => !m.replaced_by && ok(m) && (m.boulder_climbs || []).some(c => c.id === id));
+  const on = listedMeshes().filter(m => !m.replaced_by && ok(m) && (m.boulder_climbs || []).some(c => c.id === id));
   const n = m => m.boulder_climbs.find(c => c.id === id).view?.photos || 0;
   return on.sort((a, b) => n(b) - n(a))[0];
 };
@@ -4736,13 +4750,35 @@ async function guardedPress(ev, fn){
 // refresh): returns what takes the card down, a no-op once a mesh's own loading has taken it over
 async function listedWithCard(label){
   const card = loading(label);
-  $('#loading .detail').textContent = 'Getting the list of meshes…';
+  listCardSeq = loadSeq; $('#loading .detail').textContent = listPhase;
   try { await meshesListed(); } catch (e) { card(); throw e; }
   return card;
 }
+// where the list of meshes has got to, on a loading card waiting for it (listedWithCard()) until a mesh's own takes over
+let listPhase = 'Waiting for the server\'s list of meshes…', listCardSeq = null;
+function setListPhase(text){
+  listPhase = text;
+  if (listCardSeq === loadSeq && !$('#loading').hidden) $('#loading .detail').textContent = text;
+}
+const listGot = (n, total, done) => setListPhase(done ? 'Reading the list of meshes…' : !n ? 'The list of meshes is coming…'
+  : `The list of meshes: ${mb(n)}${total ? ` of ${mb(total)}` : ''} MB`);
+// meshes a link's lookup came with (the server's kept list's rows of what it opens): in meshesById at once, so that
+// the link's mesh opens without waiting for the whole list, which replaces them when it comes
+function takeRows(rows){
+  if (meshesGot) return;
+  for (const m of rows || []) meshesById[m.id] = m;
+}
+// every mesh: the list, or before it's come, those a link's lookup brought (takeRows())
+const listedMeshes = () => meshesCache.length || meshesGot ? meshesCache : Object.values(meshesById);
 function meshesListed(){
   if (!meshesFetch) refreshMeshes().catch(() => {});
   return meshesFetch;
+}
+// the list, fetched once: what's had, or the fetch under way, how far it's got shown on the loading card if one's up
+function meshesOnce(){
+  if (meshesGot) return Promise.resolve();
+  listCardSeq = loadSeq; setListPhase(listPhase);
+  return meshesListed();
 }
 // a mesh by its id, from a press: fetching the list first if it hasn't the mesh yet (one made since it came)
 function viewMeshPressed(ev, id, from = null, via = '', climb = null){
@@ -4755,9 +4791,13 @@ function viewMeshPressed(ev, id, from = null, via = '', climb = null){
   });
 }
 let meshesFetch = null;     // the list's fetch under way, if one is: resolves once meshesById has it, before it's drawn
+let meshesGot = false;      // whether it's come once
+let pageListed = null;      // the page's first lists of meshes and climbs, as it opens
 async function refreshMeshes(){
   hideSourceTip();
-  const f = meshesFetch = api('/api/meshes').then(list => { meshesCache = list; meshesById = Object.fromEntries(list.map(m => [m.id, m])); });
+  setListPhase('Waiting for the server\'s list of meshes…');
+  const f = meshesFetch = api('/api/meshes', { got: listGot })
+    .then(list => { meshesCache = list; meshesById = Object.fromEntries(list.map(m => [m.id, m])); meshesGot = true; });
   try { await f; } finally { if (meshesFetch === f) meshesFetch = null; }
   listSeconds ??= performance.now() / 1000;
   await scrollStill();
@@ -4904,9 +4944,10 @@ function showTitle(name, area = ''){ $('#vname').textContent = name; $('#varea')
 let linkCounts = null, linksOf = null;
 function soleClimb(m){
   if (m.boulder || m.replaced_by) return null;
-  if (linksOf !== meshesCache) {
-    linksOf = meshesCache; linkCounts = new Map();
-    for (const x of meshesCache) if (!x.replaced_by) for (const c of x.climbs) linkCounts.set(c.id, (linkCounts.get(c.id) || 0) + 1);
+  const all = listedMeshes();
+  if (linksOf !== all) {
+    linksOf = all; linkCounts = new Map();
+    for (const x of all) if (!x.replaced_by) for (const c of x.climbs) linkCounts.set(c.id, (linkCounts.get(c.id) || 0) + 1);
   }
   const own = m.climbs.filter(c => !c.shared);
   return own.length === 1 && linkCounts.get(own[0].id) === 1 ? own[0] : null;
@@ -4975,12 +5016,14 @@ async function openFromAddress(){
   addressMeshLoads = meshLoads;
   try {
     if (kind === 'm' && thumbMode) return await drawThumb(key);
-    if (kind === 'm' && key.includes('+')) return await openPair(key.split('+'));
-    if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
+    if (kind === 'm' && key.includes('+')) { await meshesOnce(); return await openPair(key.split('+')); }
+    // the lookup comes with the rows of the meshes it opens (takeRows()): opened without waiting for the whole list
     const r = await api(`/api/links/${kind}/${encodeURIComponent(decodeURIComponent(key))}`);
+    takeRows(r.rows);
     if (addressGivenWay('link')) return;
+    if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'), r);
     if (kind === 'b') return pickBoulder(r, true);
-    if (!(await viewClimbMesh(r.id, 'link'))) return openClimb(r.id);
+    if (!(await viewClimbMesh(r.id, 'link'))) { await pageListed; return openClimb(r.id); }
     if (r.same?.length) {   // others of the same name have links of their own, with something added
       viewNote(`${r.same.length === 1 ? 'Another climb is' : `${r.same.length} other climbs are`} also called ${r.name}:`);
       for (const c of r.same) {
@@ -5047,10 +5090,17 @@ async function setThumb(m, pose, b){
 }
 // /m/<id>: that mesh, with the Newest button if it's been rebuilt since; a deleted one's link opens what took its
 // place, else its climb's newest mesh, else its boulder's meshes to pick from, saying so
-async function openExact(id, fromSlug){
-  const m = meshesById[id];
-  if (m) return viewMesh(id, (m.boulder_climbs || []).find(c => c.slug === fromSlug)?.id, 'link');
-  const g = (await api(`/api/links/m/${encodeURIComponent(id)}`)).gone;
+// r: its link's lookup (GET /api/links/m/<id>), if had
+async function openExact(id, fromSlug, r = null){
+  // one newer than the server's kept list, or none kept: from the whole list
+  const card = !meshesById[id] && !r?.gone ? await listedWithCard('the mesh in this link') : null;
+  try {
+    const m = meshesById[id];
+    if (m) return viewMesh(id, (m.boulder_climbs || []).find(c => c.slug === fromSlug)?.id, 'link');
+  } finally { card?.(); }
+  const g = (r?.gone ? r : await api(`/api/links/m/${encodeURIComponent(id)}`)).gone;
+  if (!g) return toast('That mesh isn\'t here any more.', 8000);
+  await meshesOnce();      // what took its place: its successor, or its climbs' newest
   const was = `The mesh this link was to${g.name ? ` (${g.name})` : ''} has been deleted`, next = newestOf(g.successor);
   if (next) { await viewMesh(next, null, 'link'); return viewNote(was + ': this is the one that replaced it.'); }
   for (const c of g.climbs) {
@@ -5063,7 +5113,7 @@ async function openExact(id, fromSlug){
 // A boulder's meshes to pick from (GET /api/links/b/<name>): most of its climbs first, each with the climbs it's the
 // home of (bold) and others it shows, then its climbs no mesh places. From a link, a boulder with one mesh opens it.
 async function pickBoulder(r, fromLink = false){
-  if (r.meshes.some(x => !meshesById[x.id])) await meshesListed();
+  if (r.meshes.some(x => !meshesById[x.id])) await meshesOnce();
   if (fromLink && addressGivenWay('link')) return;
   const items = r.meshes.filter(x => meshesById[x.id] && (editor || !(meshesById[x.id].old || meshesById[x.id].old_data))), names = Object.fromEntries(r.climbs.map(c => [c.id, named(c)]));
   const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
@@ -7838,12 +7888,15 @@ if (!thumbMode) {      // the areas list from this browser's last copy at once; 
 // a link's mesh, climb or boulder: the loading card at once (the lists it's found in can take seconds), and opened as soon
 // as the meshes are listed, not after the projects too
 const linked = !thumbMode && /^\/[cbm]\//.test(location.pathname), linkCard = linked ? loading('the mesh in this link') : null;
-if (linkCard) $('#loading .detail').textContent = 'Getting the list of meshes…';
+if (linkCard) $('#loading .detail').textContent = 'Finding it…';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); openFromAddress(); }
 else {
-  await Promise.all([refreshClimbs(), refreshMeshes()]);     // together: each can take seconds
-  const opened = openFromAddress();
+  pageListed = Promise.all([refreshClimbs(), refreshMeshes()]);     // together: each can take seconds
+  // a link's mesh as soon as its lookup says which (openFromAddress()), not after the lists
+  const opened = linked ? openFromAddress() : null;
   if (linkCard) opened.finally(linkCard);       // gone once its mesh's own loading takes over, or if nothing loads
+  await pageListed;
+  if (!linked) openFromAddress();
   await refreshProjects(); poll(); campaignLoop();
 }
 addEventListener('hashchange', openLinked);

@@ -990,8 +990,8 @@ public server's system disk (mounted back at the same path), and the cap counts 
 ship.sh deletes the server's images no container uses before sending a new one, so that each ship leaves only the build
 before.
 
-**What it doesn't do.** There's no rate limiting, and `GET /api/meshes` reads every mesh's records for each request, so a
-busy site wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
+**What it doesn't do.** There's no rate limiting. `GET /api/meshes` is kept and made again in the background (saved
+in `data/cache/mesh-lists/` for the next start), but a busy site still wants a cache in front: Cloudflare's free plan, with the name proxied and SSL mode *Full (strict)*, caches the
 textures by itself and the meshes once a cache rule makes `/meshes/` eligible, limits requests, and hides the machine's
 address, and Caddy still gets its certificate through it. Its proxy refuses any request over 100 MB, so the page sends
 files in requests under 80 MB, and a bigger one in parts of 64 MB (`POST /api/uploads`), which carry on from where they

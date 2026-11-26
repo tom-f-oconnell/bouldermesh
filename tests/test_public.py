@@ -295,9 +295,11 @@ def with_token(tmp: Path) -> None:
              "ref": "www.reddit.com", "new": True, "app": None, "editor": None}, opened[0]
         assert opened[1]["bot"] is True and "lat" not in opened[1] and "198.51.100" not in json.dumps(opened), opened
 
-        # visitors' list of meshes is made once and kept a while, but an editor's change is in it at once
+        # visitors' list of meshes is made once and kept a while; a change is in it once it's made again, in the
+        # background (the older copy given meanwhile), but in the list of the editor who made it at once
         mine = lambda: [m["id"] for m in req(B, "GET", "/api/meshes")[2]]  # noqa: E731
-        assert mid in mine() and mine() == mine()
+        soon(lambda: mid in mine(), "a new mesh in visitors' list once made again")
+        assert mine() == mine()
         cid = req(B, "POST", "/api/climbs/manual", {"name": "Hidden Arete"}, headers=AUTH)[2]["id"]
         assert req(B, "POST", f"/api/meshes/{mid}/links", {"climb_id": cid}, headers=AUTH)[0] == 201
         assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": "a test"}, headers=AUTH)[0] == 200
@@ -308,12 +310,14 @@ def with_token(tmp: Path) -> None:
         assert (seen["n_links"], seen["meshes"]) == (0, []), seen
         seen = req(B, "GET", f"/api/climbs/{cid}", headers=AUTH)[2]
         assert (seen["n_links"], seen["n_links_hidden"], seen["meshes"][0]["hidden"]) == (1, 1, "a test"), seen
-        assert mid not in mine() and mid in [m["id"] for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]], "editors still see it"
+        soon(lambda: mid not in mine(), "hidden from visitors once their list is made again")
+        assert mid in [m["id"] for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]], "editors still see it"
         # an editor's list is kept too, and their own change is in it at once
         theirs = lambda: {m["id"]: m.get("hidden") for m in req(B, "GET", "/api/meshes", headers=AUTH)[2]}  # noqa: E731
         assert theirs()[mid] == "a test" and theirs() == theirs()
         assert req(B, "POST", f"/api/meshes/{mid}/hide", {"why": None}, headers=AUTH)[0] == 200
-        assert mid in mine() and theirs()[mid] is None
+        assert theirs()[mid] is None, "the editor's own change at once"
+        soon(lambda: mid in mine(), "shown again to visitors")
         # the labelling page: open to load, its data and labels only for editors
         st, h, page = req(B, "GET", "/label")
         assert st == 200 and "Is it rock?" in (page if isinstance(page, str) else page.decode()), (st, h)
@@ -335,7 +339,8 @@ def with_token(tmp: Path) -> None:
             {"mean": 1.5, "n": 2}, "the same browser from another address: still its one"
         assert rate({"browser": "b" * 32, "rating": None, "comment": "  "})[2]["rating"] == {"mean": 1.0, "n": 1}, "taken back: gone"
         assert rate({"browser": "c" * 32, "comment": "only a comment"})[2]["rating"] == {"mean": 1.0, "n": 1}, "a comment isn't a rating"
-        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["rating"] == {"mean": 1.0, "n": 1}
+        soon(lambda: next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["rating"] == {"mean": 1.0, "n": 1},
+             "the rating in the list once it's made again")
         with sqlite3.connect(tmp / "data" / "bouldermesh.sqlite") as con:
             kept = con.execute("SELECT browser, address, rating, comment FROM mesh_ratings WHERE mesh_id=? ORDER BY browser", (mid,)).fetchall()
         assert kept == [("a" * 32, "198.51.100.31", 1, "worse on my phone"), ("c" * 32, "198.51.100.30", None, "only a comment")], kept
@@ -355,7 +360,7 @@ def with_token(tmp: Path) -> None:
         assert f"{mid} " in out and "from random in 2.3 s" in out and "LEFT while loading after 12.3 s (page)" in out and "2 view(s) of 1 mesh(es); by how: random 1, other 1" in out, out
         # a scene splat beside it is listed and served; the page's policy lets the splat viewer's worker run
         (tmp / "data" / "meshes" / mid / "scene.splat").write_bytes(b"\0" * 64)
-        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["splat"] is True
+        soon(lambda: next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mid)["splat"] is True, "its splat listed")
         st, h, body = req(B, "GET", f"/meshes/{mid}/scene.splat")
         assert st == 200 and h["Content-Type"] == "application/octet-stream" and len(body) == 64 and "Content-Disposition" not in h, h
         assert "worker-src 'self' blob:" in csp and "'wasm-unsafe-eval'" in csp and "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", ""), csp
@@ -561,8 +566,9 @@ def links_site(tmp: Path) -> None:
                             "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (cid, "test", cid, None, name, "boulder", grade, boulder, path, "{}", n))
             for mid, cid in zip(mids, ("c1", "c2", "c4")):
                 con.execute("INSERT INTO mesh_links VALUES(?,?,NULL,?)", (mid, cid, time.time()))
-        listed = {m["id"]: m for m in req(B, "GET", "/api/meshes")[2]}
-        assert [c["slug"] for c in listed[mids[0]]["climbs"]] == ["the-mandala"], listed[mids[0]]["climbs"]
+        listed = lambda: {m["id"]: m for m in req(B, "GET", "/api/meshes")[2]}  # noqa: E731
+        soon(lambda: [c["slug"] for c in listed()[mids[0]]["climbs"]] == ["the-mandala"], "its climbs' links")
+        listed = listed()
         assert listed[mids[0]]["boulder_link"] == {"slug": "mandala-boulder", "name": "Mandala Boulder", "meshes": 2, "old": 0}, listed[mids[0]]
         assert listed[mids[1]]["boulder_link"]["meshes"] == 1 and listed[mids[1]]["climbs"][0]["slug"] == "unnamed"
         assert req(B, "GET", "/api/links/c/unnamed-the-pig-sty")[2]["id"] == "c3", "the second gets its boulder's name added"
@@ -620,7 +626,8 @@ def links_site(tmp: Path) -> None:
         assert st == 200 and body == b"\xff\xd8small" and h["Cache-Control"] == "public, max-age=86400", (st, h)
         assert req(B, "GET", f"/meshes/{mids[0]}/thumb.jpg?v=old")[1]["Cache-Control"] == "no-cache"
         assert req(B, "GET", f"/api/meshes/{mids[0]}/thumb")[2] == {"thumb": {"v": "abc123", "hand": False}, "queued": False, "failed": None}
-        assert next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mids[0])["thumb"] == {"v": "abc123", "hand": False}
+        soon(lambda: next(m for m in req(B, "GET", "/api/meshes")[2] if m["id"] == mids[0])["thumb"] == {"v": "abc123", "hand": False},
+             "its picture listed")
         page = req(B, "GET", "/c/the-mandala-direct")[2]
         assert b'<meta property="og:image" content="https://rocks.example/meshes/' + mids[0].encode() + b'/thumb.jpg?v=abc123">' in page \
             and b'content="summary_large_image"' in page, page[:2000]
@@ -638,6 +645,16 @@ def links_site(tmp: Path) -> None:
     finally:
         srv.stop()
     print("links OK")
+
+
+def soon(ok, what: str) -> None:
+    """Wait for ok(): a change in the kept list of meshes, which others than its maker see once it's made again in the
+    background (server._mesh_list_for())."""
+    for _ in range(100):
+        if ok():
+            return
+        time.sleep(0.1)
+    raise AssertionError(what)
 
 
 def slow_requests(tmp: Path) -> None:
