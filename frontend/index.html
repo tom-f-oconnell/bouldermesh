@@ -128,7 +128,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.readonly .findsize,body.readonly button.find,body.readonly .findall,body.readonly .stopall,body.readonly:not(.account) button.mark,body.readonly:not(.account) .clearmine,body.readonly:not(.account) #vbadd,
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,body.readonly #pieces .undo,
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
-  body.readonly .tabs button[data-tab=projects],body.readonly .projs{display:none!important}
+  body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .campacts{display:none!important}
   /* the ? tab: comments and bug reports, from anyone, and the Donate button */
   .tabs button[data-tab=help]{flex:0 0 auto;padding:10px 16px}
   #pane-help p{font-size:13px;margin:0 0 8px} #pane-help a{color:var(--acc)} #pane-help .fine{font-size:12px;color:var(--mute);margin:10px 0 0}
@@ -4227,7 +4227,7 @@ async function refreshCampaigns(kept = null){
         ${againBar(c.again_progress)}
         ${c.note ? `<div class="notice" style="margin-top:6px">${esc(c.note)}</div>` : ''}
         <div class="now">${currentHtml(c)}</div>
-        <div class="row" style="margin-top:8px">
+        <div class="row campacts" style="margin-top:8px">
           ${c.status === 'running' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><button class="sm sec stoplater">Stop after this climb</button>` : ''}
           ${c.status === 'stopping' ? `<button class="sm danger stopnow" title="Pauses the climb in progress too; it carries on from its last finished step when you resume">Stop now</button><span class="status">finishing this climb, then stopping</span>` : ''}
           ${c.status === 'stopped' ? `<button class="sm resume">Resume</button>` : ''}
