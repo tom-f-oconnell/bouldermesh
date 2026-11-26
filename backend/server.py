@@ -16071,8 +16071,26 @@ def admin_texture_again(body: dict) -> dict:
     return {"result": f"queued {n} mesh(es) to be textured again: each one's texture-again.log says how it went"}
 
 
+STAGE_PREFIXES = ("bm-beta-", "bm-filter-", "bm-scenery-", "bm-inputs-")    # jobs' staging folders in DATA/compute
+
+
+def clear_stale_stages() -> int:
+    """Delete the staging folders in DATA/compute that jobs cut off by the server stopping left behind (each job deletes
+    its own as it ends, so at start any there are left over). Listed at once, so none made after are touched, and
+    deleted in the background. Returns how many."""
+    compute_dir = DATA / "compute"
+    stale = [d for d in compute_dir.iterdir() if d.is_dir() and d.name.startswith(STAGE_PREFIXES)] if compute_dir.is_dir() else []
+    if stale:
+        threading.Thread(target=lambda: [shutil.rmtree(d, ignore_errors=True) for d in stale], daemon=True,
+                         name="clear-stages").start()
+    return len(stale)
+
+
 def main() -> None:
     began = time.time()
+    stale = clear_stale_stages()
+    if stale:
+        print(f"{plural(stale, 'staging folder')} left by jobs the last stop cut off: deleting them", flush=True)
     init_db()
     with db() as con:
         links_mod.init(con)
