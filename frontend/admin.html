@@ -488,12 +488,13 @@ function addsNote(a){
       `<li>${esc(r.mesh)} (to ${esc(r.to)}): ${esc(r.gate)} <small>${esc(JSON.stringify(r.measured))}</small></li>`).join('')}</ul></details>` : ''}`;
 }
 // A/B tests of COLMAP 3.9.1 against 4.2.1 (server abtests_state()): each run's time, photos placed, faces and check
+const abBoth = t => ['3.9.1', '4.2.1'].every(v => t.runs?.[v] && !t.runs[v].failed);    // both made a mesh, which the site's page can compare
 function abNote(tests){
   if (!tests?.length) return '';
   const run = r => !r ? '–' : r.failed ? `<span class="bad">failed</span>` : `${Math.round((r.tools_seconds || 0) / 60)} min, ${r.placed ?? '?'} of ${r.photos_in ?? '?'} placed,
     ${r.faces != null ? Math.round(r.faces / 1000) + 'k faces' : '?'}, check <span class="${r.check ? 'ok' : 'bad'}" title="${esc(r.check_why)}">${r.check ? 'passed' : 'failed'}</span>${r.placings > 1 ? ', placed twice' : ''}`;
   return `<b>A/B tests</b><table><tr><th>Project</th><th>State</th><th>COLMAP 3.9.1</th><th>COLMAP 4.2.1</th></tr>${tests.map(t =>
-    `<tr><td title="${esc(t.why)}">${esc(t.project)}<br><small>${esc((t.order || []).join(' then '))}</small></td><td>${esc(t.state)}${t.failed ? `: ${esc(t.failed)}` : ''}</td>
+    `<tr><td title="${esc(t.why)}">${esc(t.project)}<br><small>${esc((t.order || []).join(' then '))}</small></td><td>${esc(t.state)}${t.failed ? `: ${esc(t.failed)}` : ''}${abBoth(t) ? `<br><a href="/m/ab-${esc(t.id)}-3.9.1+ab-${esc(t.id)}-4.2.1" target="_blank" title="The two meshes on the site's page, laid over each other and coloured by how far apart they are">Compare</a>` : ''}</td>
       <td>${run(t.runs?.['3.9.1'])}</td><td>${run(t.runs?.['4.2.1'])}</td></tr>`).join('')}</table>`;
 }
 // What's out of date, by tier (server mesh_tiers()): what each button remakes or textures again, and how many

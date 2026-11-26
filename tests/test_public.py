@@ -215,6 +215,13 @@ def with_token(tmp: Path) -> None:
         assert pr["waiting"] is False and pr["given"]["to"] == "198.51.100.50 (Phone/1)" and pr["given"]["at"] >= b["made"], pr
         assert "camera=(self)" in req(B, "GET", "/")[1]["Permissions-Policy"], "Edit…'s Scan button uses the camera"
 
+        # an A/B test's runs, for the page comparing two meshes: only with the token
+        ab = tmp / "data" / "abtests" / "20261123-112337-cf58448c395a"
+        (ab / "out" / "3.9.1").mkdir(parents=True)
+        (ab / "out" / "3.9.1" / "mesh.glb").write_bytes(b"glTF-ish")
+        assert req(B, "GET", f"/api/abtests/{ab.name}")[0] == 403 and req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb")[0] == 403
+        assert req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb", headers=AUTH)[2] == b"glTF-ish"
+
         # changes: refused without the token, before the body is read; with it, as before; never from another site's page
         st, h, e = req(B, "POST", "/api/projects", {"name": "x"})
         assert st == 401 and "token" in e["error"] and h["WWW-Authenticate"].startswith("Bearer"), (st, e, h)
@@ -574,6 +581,20 @@ def links_site(tmp: Path) -> None:
         st, _, page = req(B, "GET", "/b/mandala-boulder")
         assert st == 200 and b"Mandala Boulder in 3D \xc2\xb7 Buttermilks, Bishop \xc2\xb7 2 meshes." in page, page[:1500]
         assert req(B, "GET", f"/m/{mids[1]}")[0] == 200 and req(B, "GET", "/m/0123456789ab")[0] == 404
+
+        # two compared (an editor's page), and an A/B test's runs for it: only to editors, and only runs that made a mesh
+        st, _, page = req(B, "GET", f"/m/{mids[1]}+{mids[2]}")
+        assert st == 200 and b"<title>Two meshes compared" in page and b'name="robots" content="noindex"' in page, page[:800]
+        ab = tmp / "data" / "abtests" / "20261123-112337-cf58448c395a"
+        (ab / "out" / "3.9.1").mkdir(parents=True)
+        (ab / "out" / "3.9.1" / "mesh.glb").write_bytes(b"glTF-ish")
+        (ab / "request.json").write_text(json.dumps({"project": "cf58448c395a", "why": "x", "order": ["3.9.1", "4.2.1"]}))
+        st, _, t = req(B, "GET", f"/api/abtests/{ab.name}", headers=AUTH)
+        assert st == 200 and t["made"] == ["3.9.1"] and t["name"] == "cf58448c395a", t
+        st, h, glb = req(B, "GET", f"/api/abtests/{ab.name}/3.9.1/mesh.glb", headers=AUTH)
+        assert st == 200 and glb == b"glTF-ish" and h["Cache-Control"] == "private, no-store", (st, h)
+        assert req(B, "GET", f"/api/abtests/{ab.name}/4.2.1/mesh.glb", headers=AUTH)[0] == 404
+        assert req(B, "GET", "/api/abtests/..%2F..%2Fmeshes/3.9.1/mesh.glb", headers=AUTH)[0] == 404
 
         # a boulder's meshes to pick from: most of its climbs first, and its climbs no mesh places
         b = req(B, "GET", "/api/links/b/mandala-boulder")[2]

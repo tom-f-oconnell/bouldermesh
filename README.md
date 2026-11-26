@@ -730,6 +730,11 @@ name added, and a rename keeps the old name as an alias (design.md, "Links to cl
 address follows the view, as the link that opens what's in it, and old `#mesh=<id>` links still open. *Meshes (n)*
 over *Rate* lists the meshes of the boulder in view.
 
+**Two meshes compared.** For editors, `/m/<id>+<id>` opens two meshes laid over each other, as two meshes chosen from
+this device are compared: coloured by how far apart they are, *Flip* (or holding Space) to show one then the other, and
+*Line them up* to fit one onto the other. Either may be one of an A/B test's runs, `ab-<test>-<COLMAP version>` (the
+admin page's A/B tests table links each test's two). Each is fetched whole, without its texture.
+
 **Pictures.** Each mesh has a picture, on its card, in a boulder's list of meshes, and in its links' previews in chat
 apps. The server draws them itself with the site's own viewer in a browser with no screen, from where its climb's
 photos were taken, moved back to show the whole rock, as soon as the mesh is packed for viewing, and again when it's

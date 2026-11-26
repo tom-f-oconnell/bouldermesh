@@ -2577,7 +2577,7 @@ function localManager(){ const m = new THREE.LoadingManager(); m.setURLModifier(
 // A local glTF: grey if its texture files weren't chosen with it, saying which
 async function loadLocalGltf(url){
   const gltf = await loadGltf(url);
-  if (!texturesLost(gltf)) return { gltf, note: '' };
+  if (!texturesLost(gltf) || localMesh?.site) return { gltf, note: '' };     // one of the site's, compared: its shape is all that's fetched
   const missing = gltf.parser.json.images.map(i => i.uri).filter(u => u && !u.startsWith('data:') && !localMesh?.urls.has(fileName(u)));
   return { gltf, note: missing.length ? `Showing plain grey: choose its texture${missing.length > 1 ? 's' : ''} along with it (${missing.join(', ')}).`
                                       : 'Showing plain grey: this browser couldn\'t read its texture.' };
@@ -2773,15 +2773,15 @@ async function fetchDetail(d){
   }
   showDetail('');
 }
-async function fetchBlob(url, onBytes, signal){
-  const res = await fetch(url, { signal });
+async function fetchBlob(url, onBytes, signal, headers){
+  const res = await fetch(url, { signal, headers });
   if (!res.ok) throw new Error(`the server answered ${res.status}`);
   if (!res.body?.getReader) return res.blob();
-  const reader = res.body.getReader(), parts = [];
+  const reader = res.body.getReader(), parts = [], total = +res.headers.get('Content-Length') || 0;
   for (let n = 0; ;) {
     const { done, value } = await reader.read();
     if (done) break;
-    parts.push(value); onBytes(n += value.length);
+    parts.push(value); onBytes(n += value.length, total);
   }
   return new Blob(parts, { type: res.headers.get('Content-Type') || '' });
 }
@@ -4967,6 +4967,7 @@ async function openFromAddress(){
   addressMeshLoads = meshLoads;
   try {
     if (kind === 'm' && thumbMode) return await drawThumb(key);
+    if (kind === 'm' && key.includes('+')) return await openPair(key.split('+'));
     if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'));
     const r = await api(`/api/links/${kind}/${encodeURIComponent(decodeURIComponent(key))}`);
     if (addressGivenWay('link')) return;
@@ -6500,6 +6501,8 @@ function localItem(files, main){
 const localItems = () => [localMesh, localOther].filter(Boolean);
 const midName = (name, most = 32) => name.length > most ? `${name.slice(0, 15)}…${name.slice(15 - most + 1)}` : name;     // a long name's start and end: two to compare often differ only at the end
 const isLocal = m => !!m && (m === localMesh || m === localOther);
+// what a local mesh is called: its file's name, or for one of the site's (openPair()) its own; and what's said of it
+const nameOf = m => m.title || m.main.name, unsent = m => m.site ? '' : ' (not uploaded)';
 function renderLocal(){
   const el = $('#localbar'), items = localItems(), two = items.length === 2;
   el.hidden = !items.length; vEl.classList.toggle('local', !!items.length); el.classList.toggle('two', two);
@@ -6507,15 +6510,16 @@ function renderLocal(){
   el.querySelector('.rows').innerHTML = items.map((m, i) => {
     const up = m.up === 'up', busy = up || m.up === 'done';
     return `<div class="row" data-i="${i}">${two ? `<span class="sw" style="background:${LOCAL_COLORS[i]}">${'AB'[i]}</span>` : ''}
-      <span class="what"><b class="name" title="${esc(m.main.name)}">${esc(two ? midName(m.main.name) : m.main.name)}</b> <span class="size">${fmtSize(m.size)}${m.files.length > 1 ? `, ${m.files.length} files` : ''}</span></span>
+      <span class="what"><b class="name" title="${esc(nameOf(m))}">${esc(two ? midName(nameOf(m)) : nameOf(m))}</b> <span class="size">${fmtSize(m.size)}${m.files.length > 1 ? `, ${m.files.length} files` : ''}</span></span>
       ${two ? `<label class="show" title="Untick to hide this mesh"><input type="checkbox"${m.shown ? ' checked' : ''}> show</label>` : ''}
-      <button class="sm up"${busy ? ' hidden' : ''}>${m.up === 'failed' ? 'Upload again' : 'Upload'}</button>
+      <button class="sm up"${busy || m.site ? ' hidden' : ''}>${m.up === 'failed' ? 'Upload again' : 'Upload'}</button>
       <button class="sm sec cancel"${up ? '' : ' hidden'}>Cancel</button>
-      <button class="sm sec rm" title="Take this mesh out of the view. Nothing of it was uploaded." aria-label="Remove ${esc(m.main.name)}"${busy ? ' hidden' : ''}>✕</button>
+      <button class="sm sec rm" title="Take this mesh out of the view.${m.site ? '' : ' Nothing of it was uploaded.'}" aria-label="Remove ${esc(nameOf(m))}"${busy ? ' hidden' : ''}>✕</button>
       <span class="state${m.up === 'failed' ? ' bad' : ''}" role="status"${m.note || up ? '' : ' hidden'}>${esc(m.note || 'Uploading…')}</span>
       <div class="prog"${up ? '' : ' hidden'}><div class="bar" role="progressbar" aria-label="Uploaded" aria-valuemin="0" aria-valuemax="100"><i></i></div><span class="pct"></span></div></div>`;
   }).join('');
-  el.querySelector('.only').textContent = `Not uploaded yet: only you see ${two ? 'these' : 'this'}`;
+  el.querySelector('.only').textContent = items.every(m => m.site) ? `Compared here only: nothing changes on the site`
+    : `Not uploaded yet: only you see ${two ? 'these' : 'this'}`;
   $('#localdiscard').textContent = two ? 'Discard both' : 'Discard';
   $('#localcmp').hidden = two || !localMesh.ready;
   $('#localfold').hidden = !two;
@@ -6558,8 +6562,8 @@ function clearView(){
 }
 // A local mesh shown on its own, as a mesh of the site's is, with its textures
 function showLocal(m){
-  showTitle(m.main.name, 'Not uploaded');
-  return loadMeshUrl(m.url, m.main.name, `${m.main.name} (not uploaded)`, null, true).then(ok => { if (localMesh === m) { m.ready = !!ok; renderLocal(); } markShown(); });
+  showTitle(nameOf(m), m.site ? 'Compared' : 'Not uploaded');
+  return loadMeshUrl(m.url, m.main.name, nameOf(m) + unsent(m), null, true).then(ok => { if (localMesh === m) { m.ready = !!ok; renderLocal(); } markShown(); });
 }
 function previewLocal(files){
   if (!editor) return toast('This copy of the site is view-only.');
@@ -6595,8 +6599,8 @@ function removeLocal(m){
   localMesh = keep; localOther = null;
   dropLocal(m);
   if (wasFirst) { keep.ready = false; renderLocal(); return showLocal(keep); }     // it was only a shape so far: loaded as a mesh on its own is
-  showTitle(keep.main.name, 'Not uploaded');
-  $('#viewing').textContent = `Viewing: ${keep.main.name} (not uploaded)`;
+  showTitle(nameOf(keep), keep.site ? 'Compared' : 'Not uploaded');
+  $('#viewing').textContent = `Viewing: ${nameOf(keep)}${unsent(keep)}`;
   renderLocal(); markShown();
 }
 async function uploadLocal(m){
@@ -6805,18 +6809,59 @@ function compareLocal(files){
   showTitle(`${a.main.name} and ${b.main.name}`, 'Not uploaded');
   return startCompare(a, b);
 }
+// ---- two of the site's meshes compared, from a link /m/<a>+<b> (an editor's): each fetched whole, and compared as two
+// local meshes are (above), with nothing to upload. Either may be one of an A/B test's runs, ab-<test>-<COLMAP version>,
+// which isn't a mesh of the site's.
+const AB_KEY = /^ab-(\d{8}-\d{6}-[0-9a-f]+)-(\d+\.\d+\.\d+)$/;
+async function pairSource(key){
+  const ab = key.match(AB_KEY);
+  if (ab) {
+    const t = await api(`/api/abtests/${ab[1]}`);
+    if (!t.made.includes(ab[2])) throw new Error(`A/B test ${ab[1]} has no mesh made with COLMAP ${ab[2]}`);
+    return { url: `/api/abtests/${ab[1]}/${ab[2]}/mesh.glb`, file: 'mesh.glb', title: `${t.name || ab[1]} · COLMAP ${ab[2]}` };
+  }
+  const m = meshesById[key];      // as named, not the newest that replaced it: that may be what's compared
+  if (!m) throw new Error(`there's no mesh ${key}`);
+  return { url: `/meshes/${key}/${m.filename}${m.v ? `?v=${m.v}` : ''}`, file: m.filename, title: `${soleClimb(m) ? meshTitle(m) : m.name} (${key.slice(0, 6)})` };
+}
+async function openPair(keys){
+  if (!editor) return toast('Only editors can compare two meshes', 8000);
+  if (keys.length !== 2 || keys[0] === keys[1]) return toast('A comparison link names two different meshes: /m/<one>+<other>', 8000);
+  const items = [];
+  try {
+    const sources = await Promise.all(keys.map(pairSource));
+    for (const [i, s] of sources.entries()) {     // one after the other, each with its own progress
+      const loaded = loading(`${s.title} (${i + 1} of 2)`);
+      const bytes = (n, total) => loadingUpdate?.({ loaded: n, total, lengthComputable: !!total });
+      try { const f = new File([await fetchBlob(s.url, bytes, undefined, token ? { Authorization: 'Bearer ' + token } : undefined)], s.file); items.push(Object.assign(localItem([f], f), { title: s.title, site: true })); }
+      finally { loaded(); }
+    }
+  } catch (e) { items.forEach(dropLocal); return toast(`Couldn't open the two meshes: ${e.message}`, 10000); }
+  endLocal();
+  viewedClimb = null;
+  closeLinkMenu();
+  for (const id of ['vclimb', 'vvia', 'vnewest', 'vothers']) $('#' + id).hidden = true;
+  const [a, b] = items;
+  localMesh = a;
+  renderLocal();
+  await showLocal(a);
+  if (localMesh !== a || !a.ready) return dropLocal(b);
+  localOther = b;
+  showTitle(`${a.title} and ${b.title}`, 'Compared');
+  return startCompare(a, b);
+}
 async function startCompare(a, b){
   const c = cmp = { a, b, job: 0, mode: 'diff', solo: null, T: noFit(), undo: null, top: 'auto', dist: new Map(), geo: [], size: 0, fitG: null, parts: null,
                     say: '', warn: false, busy: null, v: new THREE.Vector3(), hit: {}, last: 0 };
   renderLocal();
-  const loaded = loading(b.main.name);
+  const loaded = loading(nameOf(b));
   let obj;
   try { obj = await loadShape(b); }
   catch (e) {
     loaded();
     if (cmp !== c) return;
     removeLocal(b);
-    return viewNote(`Could not show ${b.main.name} here: ${e.message.replace(/\.+$/, '')}. If it has other files (.bin), choose them all together.`);
+    return viewNote(`Could not show ${nameOf(b)} here: ${e.message.replace(/\.+$/, '')}.${b.site ? '' : ' If it has other files (.bin), choose them all together.'}`);
   }
   loaded();
   if (cmp !== c) return;
@@ -6832,7 +6877,7 @@ async function startCompare(a, b){
   c.heat = [0, 1].map(() => new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: .85 }));
   b.ready = true;
   viewNote('');
-  $('#viewing').textContent = `Comparing ${a.main.name} with ${b.main.name} (not uploaded)`;
+  $('#viewing').textContent = `Comparing ${nameOf(a)} with ${nameOf(b)}${a.site && b.site ? '' : ' (not uploaded)'}`;
   applyCompare();
   markShown();
   return runCompare(c, 'auto');
@@ -6986,7 +7031,7 @@ async function prepareCompare(c, alive){
     await tick(30);
     if (!alive()) return false;
     const g = mergeGeo(c.parts[i]), geo = new THREE.BufferGeometry(), n = CMP.samples;
-    if (!g.index.length) throw new Error(`${[c.a, c.b][i].main.name} has no faces`);
+    if (!g.index.length) throw new Error(`${nameOf([c.a, c.b][i])} has no faces`);
     geo.setAttribute('position', new THREE.BufferAttribute(g.pos, 3)); geo.setIndex(new THREE.BufferAttribute(g.index, 1));
     g.bvh = new lib.MeshBVH(geo);
     g.samples = sampleSurface(g, n, 1 + i);

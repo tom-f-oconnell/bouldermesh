@@ -12956,6 +12956,8 @@ def page_head(title: str, text: str, path: str | None, found: bool = True, mid: 
 def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
     """What the page at /c/, /b/ or /m/<key> says of itself (page_head()): (status, its head, the address to redirect
     to, for an alias or a name spelt otherwise)."""
+    if kind == "m" and "+" in key:     # two compared: an editor's page (index.html's openPair())
+        return 200, page_head("Two meshes compared", SITE_TEXT, None, False), None
     if kind == "m":
         m = q("SELECT name FROM meshes WHERE id=?", key, one=True) if re.fullmatch(r"[0-9a-f]+", key) else None
         g = None if m else gone_mesh(key) if re.fullmatch(r"[0-9a-f]+", key) else None
@@ -13584,6 +13586,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.is_editor():
                     return self.send_json({"error": "only editors label meshes"}, 403)
                 return self.send_json(labels_view())
+            m = re.fullmatch(r"/api/abtests/([^/]+)(?:/(\d+\.\d+\.\d+)/mesh\.glb)?", p)
+            if m:   # an A/B test, and each run's mesh, for an editor's page comparing them
+                if READ_ONLY or (EDIT_TOKEN and not self.is_editor()):   # as /api/status says who's an editor
+                    return self.send_json({"error": "only editors see A/B tests"}, 403)
+                info = abtest_info(m[1])
+                if not info or (m[2] and m[2] not in info["made"]):
+                    return self.send_json({"error": "no such A/B test or run"}, 404)
+                if m[2]:
+                    return self.send_file(ABTESTS / m[1] / "out" / m[2] / "mesh.glb", cache="private, no-store")
+                return self.send_json(info)
             m = re.fullmatch(r"/static/(app\.[0-9a-f]{16}\.(?:js|css))", p)
             if m:
                 return self.send_asset(m[1])
@@ -16018,6 +16030,18 @@ def abtests_state() -> list[dict]:
                     "state": "done" if summ and not summ.get("failed") else "failed" if summ else "waiting",
                     "failed": (summ or {}).get("failed"), "runs": runs})
     return out
+
+
+def abtest_info(test: str) -> dict | None:
+    """One A/B test, for the page comparing its two runs (/m/ab-<test>-<version>+...): what it was of, and its runs as
+    abtests_state() has them. None if there's no such test."""
+    d = ABTESTS / test
+    if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]+", test) or not d.is_dir():
+        return None
+    got = next((t for t in abtests_state() if t["id"] == test), None) or {"id": test}
+    row = q("SELECT name FROM projects WHERE id=?", got.get("project"), one=True) if got.get("project") else None
+    return got | {"name": row["name"] if row else got.get("project"),
+                  "made": sorted(v.name for v in (d / "out").iterdir() if (v / "mesh.glb").is_file()) if (d / "out").is_dir() else []}
 
 
 def admin_abtest(body: dict) -> dict:
