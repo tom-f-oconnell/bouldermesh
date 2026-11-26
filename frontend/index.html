@@ -100,7 +100,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--bg);margin-bottom:8px}
   .card.active{border-color:var(--acc)}
   .chip.dim{color:var(--dim);opacity:.8}
-  #meshes>.card.pinned{border-color:var(--acc);background:var(--src-bg)}   /* the mesh in the viewer: a copy first, and its own place */
+  #meshes>.card.pinned{border-color:var(--acc);background:var(--src-bg)}   /* the mesh in the viewer, in its place in the list */
   .card.dim{color:var(--dim)} .card.dim .name{color:var(--dim)}     /* hidden from visitors as a failure: editors see it, greyed */
   #climbs>.card{cursor:pointer}
   #climbs>.card.multi{border-color:var(--warn);box-shadow:inset 3px 0 0 var(--warn)}   /* more than one mesh, while picked out */
@@ -4826,9 +4826,9 @@ async function hideAsFailure(m){
   if (!m.hidden && !why) return;
   await api(`/api/meshes/${m.id}/hide`, { method: 'POST', json: { why } }); await refreshMeshes(); refreshClimbs(); showRate();
 }
-let pinnedMesh = null;    // the mesh in the viewer, a copy of its card kept first in the Meshes tab
+let pinnedMesh = null;    // the mesh in the viewer, its card highlighted in the Meshes tab
 // Where the Meshes tab is scrolled to, kept as its list is drawn again and while it's hidden (a phone's view of a mesh,
-// another tab), which loses a scroll: the card at its top, not a copy kept first, and how far down it is, or {top}
+// another tab), which loses a scroll: the card at its top and how far down it is, or {top}
 let meshScroll = null;
 // cards' heights as last laid out, given to their new copies: off screen they aren't laid out (content-visibility),
 // and at the usual guess of 110 px a card drawn again moved what's in view, by hundreds of pixels some way down
@@ -4836,11 +4836,11 @@ const meshCardHeights = new Map();
 function meshScrollMark(){
   const pane = $('#pane-meshes');
   if (!pane.clientHeight) return;
-  for (const c of $('#meshes').children) if (c.dataset.mesh && !c.classList.contains('pintop')) meshCardHeights.set(c.dataset.mesh, c.offsetHeight);
+  for (const c of $('#meshes').children) if (c.dataset.mesh) meshCardHeights.set(c.dataset.mesh, c.offsetHeight);
   if (pane.scrollTop <= 0) return void (meshScroll = { top: 0 });
   const top = pane.getBoundingClientRect().top;
   for (const c of $('#meshes').children) {
-    if (!c.dataset.mesh || c.classList.contains('pintop')) continue;
+    if (!c.dataset.mesh) continue;
     const r = c.getBoundingClientRect();
     if (r.bottom > top) return void (meshScroll = { id: c.dataset.mesh, off: r.top - top, top: pane.scrollTop });
   }
@@ -4849,7 +4849,7 @@ function meshScrollMark(){
 function meshScrollRestore(){
   const pane = $('#pane-meshes');
   if (!pane.clientHeight || !meshScroll) return;
-  const c = meshScroll.id && $('#meshes').querySelector(`:scope>[data-mesh="${CSS.escape(meshScroll.id)}"]:not(.pintop)`);
+  const c = meshScroll.id && $('#meshes').querySelector(`:scope>[data-mesh="${CSS.escape(meshScroll.id)}"]`);
   if (c) pane.scrollTop += c.getBoundingClientRect().top - pane.getBoundingClientRect().top - meshScroll.off;
   else pane.scrollTop = meshScroll.top;
 }
@@ -4885,11 +4885,9 @@ function renderMeshes(filter = true){
   // each mesh once, however many climbs link to it; a boulder's own mesh and its climbs' own are each one
   $('#m-count').textContent = meshesCache.length ? `(${narrowed ? `${shown.length} shown of ` : ''}${meshesCache.length - older}${$('#m-older').checked && older ? `, and ${older} older` : ''})` : '';
   $('#m-older').parentNode.lastChild.textContent = ` Show older versions of rebuilt meshes (${older})`;
-  if (meshesCache.length && !shown.length && !pinnedMesh) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
-  // the mesh in view first, whatever the sort and filter, and in its own place too
-  const cards = pinnedMesh ? [meshesById[pinnedMesh], ...shown] : shown;
-  for (const [k, m] of cards.entries()) {
-    const d = document.createElement('div'); d.className = 'card mesh' + (m.hidden ? ' dim' : '') + (m.id === pinnedMesh ? ' pinned' : '') + (pinnedMesh && !k ? ' pintop' : '');
+  if (meshesCache.length && !shown.length) el.innerHTML = '<div class="status">No mesh fits the filter.</div>';
+  for (const m of shown) {     // the mesh in view highlighted in its place
+    const d = document.createElement('div'); d.className = 'card mesh' + (m.hidden ? ' dim' : '') + (m.id === pinnedMesh ? ' pinned' : '');
     d.dataset.mesh = m.id;
     if (meshCardHeights.has(m.id)) d.style.containIntrinsicSize = `auto ${meshCardHeights.get(m.id)}px`;
     const sole = soleClimb(m), several = ['groups', 'boulders'].includes(meshKind(m));
