@@ -1575,7 +1575,8 @@ function renderViews(){
   const span = { day: 'the last day', week: 'the last week', month: 'the last 30 days' }[viewsSpan];
   $('#views-note').textContent = `${v.n} time${v.n === 1 ? '' : 's'} in ${span}: ${v.new} in browsers new to the site, ${v.app} in the phone apps; from ${
     v.countries.length} countr${v.countries.length === 1 ? 'y' : 'ies'} and ${v.places.length} place${v.places.length === 1 ? '' : 's'}${
-    v.unplaced ? ` (${v.unplaced} not placed)` : ''}. Editors' own: ${v.editor}.`;
+    v.unplaced ? ` (${v.unplaced} not placed)` : ''}. Editors' own: ${v.editor}.${
+    v.embedded?.n ? ` Not counted in those: ${v.embedded.n} embed${v.embedded.n === 1 ? '' : 's'} shown in other sites' pages.` : ''}`;
   const days = $('#views-days');
   days.hidden = viewsSpan === 'day' || !v.days.length;
   if (!days.hidden) {
@@ -1587,7 +1588,7 @@ function renderViews(){
     days.innerHTML = out.join('');
   }
   $('#views-lists').innerHTML = bars(v.countries.slice(0, 12).map(([c, n]) => [c === '?' ? 'Unknown' : regionName(c), n]), 'Countries')
-    + bars(v.referrers, 'Linked from');
+    + bars(v.referrers, 'Linked from') + bars(v.embedded?.sites || [], 'Embedded on');
   if (typeof L === 'undefined') { $('#views-map').textContent = 'The map needs Leaflet, from cdnjs.cloudflare.com, which didn\'t load.'; return; }
   if (!viewsMap) {
     viewsMap = L.map('views-map', { worldCopyJump: true }).setView([30, 0], 1);

@@ -91,9 +91,12 @@ def page_views(opened: list[dict], since: str, until: str | None = None) -> dict
     """Where the page was opened from, since until (UTC times, as summary()), by visitors (not editors, nor browsers
     calling themselves bots): how many times (n), in browsers that hadn't opened it before (new), places as Cloudflare
     placed them ({lat, lng, place, n}, most first), countries [code, n], sites that linked there [host, n], and the
-    count each UTC day [day, n]; with editors' own opening (editor)."""
+    count each UTC day [day, n]; with editors' own opening (editor). Not counting embeds (/embed/...: a mesh's picture
+    shown in another site's page, whether or not it's then viewed), which are counted apart, with the sites showing
+    them: embedded {n, sites [host, n]}."""
     within = [v for v in opened if since <= v.get("time", "") and (until is None or v["time"] < until) and not v.get("bot")]
-    vs = [v for v in within if not v.get("editor")]
+    embeds = [v for v in within if str(v.get("path") or "").startswith("/embed/") and not v.get("editor")]
+    vs = [v for v in within if not v.get("editor") and not str(v.get("path") or "").startswith("/embed/")]
     places: dict[tuple, dict] = {}
     for v in vs:
         if isinstance(v.get("lat"), (int, float)) and isinstance(v.get("lng"), (int, float)):
@@ -108,6 +111,7 @@ def page_views(opened: list[dict], since: str, until: str | None = None) -> dict
         "countries": collections.Counter(v.get("country") or "?" for v in vs).most_common(),
         "referrers": collections.Counter(v["ref"] for v in vs if v.get("ref")).most_common(10),
         "days": sorted(collections.Counter(v["time"][:10] for v in vs).items()),
+        "embedded": {"n": len(embeds), "sites": collections.Counter(v.get("ref") or "?" for v in embeds).most_common(10)},
     }
 
 
@@ -121,12 +125,17 @@ def note(s: dict, hours: float = 24, opened: dict | None = None) -> tuple[str, s
     """The summary as a notification: (title, text, whether anything in it wants looking at), or None if nothing at
     all happened. Kept under ntfy's 2000 characters. With opened (page_views()), how often the page was opened too."""
     errs, slow = s["errors"], s["slow"]
-    if not s["views"] and not errs["n"] and not errs["old_pages"] and not slow["n"] and not s["left"] and not (opened and opened["n"]):
+    embedded = (opened or {}).get("embedded") or {"n": 0}
+    if not s["views"] and not errs["n"] and not errs["old_pages"] and not slow["n"] and not s["left"] and not (opened and opened["n"]) \
+            and not embedded["n"]:
         return None
     lines = [f"{s['views']} view(s) of {s['meshes']} mesh(es) in {hours:g} h."]
     if opened and opened["n"]:
         lines.insert(0, f"The page opened {opened['n']} time(s) ({opened['new']} in new browsers), from "
                      + ", ".join(f"{c} {n}" for c, n in opened["countries"][:6]) + (", ..." if len(opened["countries"]) > 6 else "") + ".")
+    if embedded["n"]:
+        lines.insert(1 if opened and opened["n"] else 0, f"Embeds shown in other sites' pages: {embedded['n']} ("
+                     + ", ".join(f"{h} {n}" for h, n in embedded["sites"][:4]) + (", ..." if len(embedded["sites"]) > 4 else "") + ").")
     if s["load"]:
         ld = s["load"]
         lines.append(f"Loading a mesh: median {ld['median']:g} s, 90% under {ld['p90']:g} s; {ld['slow']} over {SLOW_LOAD} s"

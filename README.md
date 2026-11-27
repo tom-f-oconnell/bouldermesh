@@ -752,7 +752,10 @@ which opens the boulder's mesh, or when it has several made apart (a side its ma
 them, each with the climbs it shows, to pick from; and the mesh's own, `/m/<id>`, which opens that one, with *Newest*
 over *Rate* once it's been rebuilt. A phone hands the link to its share sheet, to pick the app; a computer copies it.
 The share button on each card in the Climbs and Meshes tabs does the same with that climb's or mesh's link, without
-opening it.
+opening it. The embed button beside it (`</>`) copies the HTML that shows that climb's newest mesh, or that exact mesh,
+in 3D on another site's page: an `<iframe>` of `/embed/c/<name>` or `/embed/m/<id>` (`/embed/b/<name>` works too). It
+shows the mesh's picture until *View in 3D* is pressed, and its title and *boulderme.sh* button open it here in a new
+tab. Any site may embed them (design.md, "Embeds").
 The names are given once and kept: the first climb called The Mandala gets `/c/the-mandala`, a later one its boulder's
 name added, and a rename keeps the old name as an alias (design.md, "Links to climbs, boulders and meshes"). The
 address follows the view, as the link that opens what's in it, and old `#mesh=<id>` links still open. *Meshes (n)*

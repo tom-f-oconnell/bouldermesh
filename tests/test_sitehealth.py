@@ -85,6 +85,15 @@ def main() -> None:
     assert pv["days"] == [("2026-11-19", 4)], pv
     title, text, _ = sitehealth.note(quiet, opened=pv)
     assert text.startswith("The page opened 4 time(s) (1 in new browsers), from US 2, FR 1, ? 1."), text
+    # embeds, in other sites' pages: counted apart, with the sites showing them
+    emb = opened + [{"time": t(7), "path": "/embed/c/the-mandala", "ref": "blog.example", "country": "US", "lat": 3.0, "lng": 3.0},
+                    {"time": t(8), "path": "/embed/m/<id>"}, {"time": t(9), "path": "/embed/m/<id>", "editor": True}]
+    pe = sitehealth.page_views(emb, f"{DAY}00:00:00Z")
+    assert pe["n"] == pv["n"] and pe["places"] == pv["places"] and pe["embedded"] == {"n": 2, "sites": [("blog.example", 1), ("?", 1)]}, pe
+    assert pv["embedded"] == {"n": 0, "sites": []}, pv
+    text = sitehealth.note(quiet, opened=pe)[1]
+    assert "\nEmbeds shown in other sites' pages: 2 (blog.example 1, ? 1).\n" in text, text
+    assert sitehealth.note(quiet, opened=sitehealth.page_views(emb[-3:], f"{DAY}00:00:00Z")), "embeds alone: still sent"
 
     with tempfile.TemporaryDirectory() as td:   # from a data folder: the file and the one before it, bad lines skipped
         d = Path(td)

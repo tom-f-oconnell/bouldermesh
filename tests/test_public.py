@@ -146,7 +146,7 @@ def with_token(tmp: Path) -> None:
         csp = h["Content-Security-Policy"]
         inline = re.findall(rb"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", (ROOT / "frontend" / "index.html").read_bytes(), re.S)
         want = {f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'" for m in inline}
-        assert len(inline) == 3 and want <= set(re.findall(r"'sha256-[^']+'", csp)), (want, csp)
+        assert len(inline) == 4 and want <= set(re.findall(r"'sha256-[^']+'", csp)), (want, csp)
         assert "frame-ancestors 'none'" in csp and "object-src 'none'" in csp and "'unsafe-inline'" not in csp.split("style-src")[0], csp
         assert b'onclick="' not in page, "an inline handler, which the policy would block"
         assert h["X-Content-Type-Options"] == "nosniff" and h["X-Frame-Options"] == "DENY" and h["Referrer-Policy"], h
@@ -570,7 +570,7 @@ def fetcher() -> None:
 
 def links_site(tmp: Path) -> None:
     """Links to climbs, boulders and meshes: /c/<name> and /b/<name> as the server names them, aliases after a rename,
-    the page's preview for each, a boulder's meshes to pick from, and a deleted mesh's link."""
+    the page's preview for each, a boulder's meshes to pick from, a deleted mesh's link, and each link's embed."""
     srv = Server(tmp, SITE_URL="https://rocks.example")
     B, port = srv.url, srv.port
     try:
@@ -606,6 +606,35 @@ def links_site(tmp: Path) -> None:
         st, _, page = req(B, "GET", "/b/mandala-boulder")
         assert st == 200 and b"Mandala Boulder in 3D \xc2\xb7 Buttermilks, Bishop \xc2\xb7 2 meshes." in page, page[:1500]
         assert req(B, "GET", f"/m/{mids[1]}")[0] == 200 and req(B, "GET", "/m/0123456789ab")[0] == 404
+
+        # each link's embed, for another site's page to frame: only it may be framed, by any site; the mesh's picture
+        # (none drawn yet) with a button to view it, which loads the page's module script, only named till then; its
+        # title and the site's button open the link here; the same preview, but no address of its own, not indexed
+        st, h, page = req(B, "GET", "/embed/c/the-mandala")
+        csp = h["Content-Security-Policy"]
+        assert st == 200 and "frame-ancestors *" in csp and "'none'" not in csp.split("frame-ancestors")[1] and "X-Frame-Options" not in h, (st, h)
+        assert page.count(b'<body class="embed">\n<div id="embed"><button id="eplay" type="button" aria-label="View The Mandala V12 in 3D">'
+                          b'<span class="go">') == 1 and b"<img" not in page.split(b'id="eplay"')[1].split(b"</button>")[0], page[-3000:]
+        assert re.search(rb'<meta name="bm-app" content="/static/app\.[0-9a-f]{16}\.js">', page) and b'<script type="module"' not in page
+        assert b'<a id="etitle" href="/c/the-mandala" target="_blank" rel="noopener" title="Open it on boulderme.sh">The Mandala V12' \
+            b"<small>Mandala Boulder, Buttermilks, Bishop</small></a>" in page and b'id="esite" href="/c/the-mandala"' in page, page[:3000]
+        assert b'<meta property="og:title" content="The Mandala V12">' in page and b"canonical" not in page and b"og:url" not in page \
+            and b'name="robots" content="noindex"' in page
+        st, h, page = req(B, "GET", "/c/the-mandala")
+        assert h["X-Frame-Options"] == "DENY" and "frame-ancestors 'none'" in h["Content-Security-Policy"] and b'class="embed"' not in page
+        out = raw_request(port, f"GET /embed/c/The-Mandala?x=1 HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert out.startswith(b"HTTP/1.0 301") and b"Location: /embed/c/the-mandala?x=1\r\n" in out, out[:300]
+        st, h, page = req(B, "GET", f'/embed/m/{mids[0]}?from=x%22onclick%3D')
+        assert st == 200 and f'href="/m/{mids[0]}"'.encode() in page and b"from=x" not in page, "a from that isn't a name: left off"
+        assert f'href="/m/{mids[0]}?from=the-mandala"'.encode() in req(B, "GET", f"/embed/m/{mids[0]}?from=the-mandala")[2]
+        st, h, page = req(B, "GET", "/embed/c/unnamed-the-pig-sty")
+        assert st == 200 and b'<div id="eplay" class="none"><span class="go">No mesh of it yet</span></div>' in page, "a climb with no mesh"
+        for bad in ("/embed/c/nobody-at-all", "/embed/m/0123456789ab", f"/embed/m/{mids[1]}+{mids[0]}"):
+            st, h, page = req(B, "GET", bad)
+            assert st == 404 and "X-Frame-Options" not in h and b'<div id="eplay" class="none"><span class="go">Not on boulderme.sh' in page \
+                and b'id="esite" href="/"' in page, (bad, st)
+        st, _, page = req(B, "GET", "/embed/b/mandala-boulder")
+        assert st == 200 and b"<small>Buttermilks, Bishop</small>" in page and b'href="/b/mandala-boulder"' in page, page[:3000]
 
         # two compared (an editor's page), and an A/B test's runs for it: only to editors, and only runs that made a mesh
         st, _, page = req(B, "GET", f"/m/{mids[1]}+{mids[2]}")
@@ -659,6 +688,8 @@ def links_site(tmp: Path) -> None:
         page = req(B, "GET", "/c/the-mandala-direct")[2]
         assert b'<meta property="og:image" content="https://rocks.example/meshes/' + mids[0].encode() + b'/thumb.jpg?v=abc123">' in page \
             and b'content="summary_large_image"' in page, page[:2000]
+        assert f'<img src="/meshes/{mids[0]}/thumb.jpg?v=abc123" alt="">'.encode() in req(B, "GET", "/embed/c/the-mandala-direct")[2], \
+            "its picture under the embed's button"
         (pic / "thumb.json").write_text(json.dumps({"v": "abc123", "mode": "hidden", "key": "abc123"}))
         assert req(B, "GET", f"/meshes/{mids[0]}/thumb.jpg")[0] == 404, "drawn when its texture was shown otherwise: not shown"
         assert b"og:image" not in req(B, "GET", "/c/the-mandala-direct")[2]
@@ -670,6 +701,7 @@ def links_site(tmp: Path) -> None:
         g = req(B, "GET", f"/api/links/m/{mids[2]}")[2]["gone"]
         assert g["climbs"] == ["c4"] and g["boulder_slug"] == "mandala-boulder" and g["successor"] is None, g
         assert req(B, "GET", f"/m/{mids[2]}")[0] == 200 and req(B, "GET", "/api/links/m/0123456789ab")[0] == 404
+        assert b'<button id="eplay"' in req(B, "GET", f"/embed/m/{mids[2]}")[2], "its embed opens what its link would"
     finally:
         srv.stop()
     print("links OK")

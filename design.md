@@ -2247,6 +2247,32 @@ hasn't got, and the whole of it comes again. So, with the links:
   modified" for one it has.
 - `/api/` and `/meshes/`, and their caching, don't change.
 
+**Embeds.** Built on 2026-11-27. `/embed/c/<climb>`, `/embed/b/<boulder>` and `/embed/m/<id>` are a link's view alone,
+for another site's page to show in an `<iframe>`, as YouTube's embeds are; the cards' embed buttons copy the code. Only
+those pages may be framed, by any site: they send `frame-ancestors *` and no `X-Frame-Options`, while every other page
+keeps refusing it (against clickjacking). Framing them is safe as nothing there changes anything: the page acts as a
+visitor's (no editing token sent, never an editor even where editing is open to all), and browsers keep a framed
+page's storage apart for each site framing it anyway.
+
+**Loaded when pressed.** An embed is first the mesh's picture with *View in 3D*, which the server puts in the page
+(`embed_overlay()`), with the page's module script only named (`<meta name="bm-app">`); a small inline loader adds it
+once the button is pressed. Until then nothing more loads: no three.js, no lists, no WebGL context. So a page with many
+embeds stays light (browsers allow about 16 live WebGL contexts a page, dropping the oldest past that), and a mesh's
+megabytes go only to those who look.
+
+**Back to the site.** The title (top left) and a button with the site's icon and name (bottom right) open the link
+here in a new tab, where its climbs, photos and sources are. *Full screen* shows where the frame allows it
+(`allowfullscreen`). The address stays the embed's (`setLink()` leaves it), and a boulder's with several meshes opens
+the first, as there's no list to pick from.
+
+**Counted apart.** The loader reports the embed's opening as the page reports its own, with the framing site's host
+(browsers send its origin as the referrer by default). Site health and the admin page count embeds apart from the
+site's own opening, with the sites showing them.
+
+**Not done: oEmbed.** With an oEmbed endpoint, sites would turn a pasted link into the view themselves. But WordPress,
+the likeliest, puts embeds it finds that way in `sandbox="allow-scripts"`, which gives the page an opaque origin: its
+module script and API calls would need CORS, and its links couldn't open a tab. So the code is pasted as HTML for now.
+
 ## Pictures of meshes (`backend/thumbs.py`)
 
 Built on 2026-11-12, for link previews (WhatsApp, iMessage, Slack want 1200 x 630) and the Meshes tab's cards. A

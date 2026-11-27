@@ -13936,10 +13936,11 @@ def admin_origins() -> list[str]:
 
 def page_csp() -> str | None:
     """The page's Content-Security-Policy: its own inline scripts by their hashes, libraries from their CDNs, images from
-    anywhere (climbs' photos are shown from their sites), and never framed. The splat viewer sorts in a worker made from
-    a blob: URL, with WebAssembly, which 'wasm-unsafe-eval' allows (it doesn't allow eval itself). It may fetch data: and blob: URLs, as the 3D
-    viewer loads a mesh's buffers embedded in it that way (OpenMVS embeds a second one when a texture is split in two).
-    CSP=0 turns it off; CSP=<policy> replaces it."""
+    anywhere (climbs' photos are shown from their sites), and never framed, but for a link's embed, which any site may
+    frame (send_page()). The splat viewer sorts in a worker made from a blob: URL, with WebAssembly, which
+    'wasm-unsafe-eval' allows (it doesn't allow eval itself). It may fetch data: and blob: URLs, as the 3D viewer loads a
+    mesh's buffers embedded in it that way (OpenMVS embeds a second one when a texture is split in two). CSP=0 turns it
+    off; CSP=<policy> replaces it."""
     setting = os.environ.get("CSP")
     if setting == "0":
         return None
@@ -13988,15 +13989,22 @@ def page_parts() -> dict:
     return _page
 
 
+def mesh_picture(mid: str | None) -> str | None:
+    """Where the picture of a mesh is (thumbs.py), for its links' previews and its embed: None if it hasn't one drawn as
+    its texture is shown now."""
+    row = q("SELECT source FROM meshes WHERE id=?", mid, one=True) if mid else None
+    pic = row and thumb_now(mid, texture_mode(mid, row["source"]))
+    return f"/meshes/{mid}/thumb.jpg?v={pic['v']}" if pic else None
+
+
 def page_head(title: str, text: str, path: str | None, found: bool = True, mid: str | None = None) -> str:
     """The page's title, and what apps showing a link's preview (WhatsApp, iMessage, Slack) read: its title and a line
     about it, the link's own address, and the picture of the mesh it opens (mid's, thumbs.py), where SITE_URL says the
     site's."""
     e = lambda v: html.escape(v, quote=True)    # noqa: E731
     url = f"{SITE_URL}{path}" if SITE_URL and path is not None else None
-    row = q("SELECT source FROM meshes WHERE id=?", mid, one=True) if mid and SITE_URL else None
-    pic = row and thumb_now(mid, texture_mode(mid, row["source"]))
-    src = f"{SITE_URL}/meshes/{mid}/thumb.jpg?v={pic['v']}" if pic else ""
+    pic = mesh_picture(mid) if SITE_URL else None
+    src = f"{SITE_URL}{pic}" if pic else ""
     image = [f'<meta property="og:image" content="{e(src)}">',
              f'<meta property="og:image:width" content="{thumbs_mod.SIZE[0]}">', f'<meta property="og:image:height" content="{thumbs_mod.SIZE[1]}">',
              f'<meta property="og:image:alt" content="{e(title)} in 3D">'] if pic else []
@@ -14009,41 +14017,72 @@ def page_head(title: str, text: str, path: str | None, found: bool = True, mid: 
                       *([] if found else ['<meta name="robots" content="noindex">'])])
 
 
-def link_page(kind: str, key: str) -> tuple[int, str, str | None]:
+def link_page(kind: str, key: str, embed: bool = False) -> tuple[int, str, str | None, dict]:
     """What the page at /c/, /b/ or /m/<key> says of itself (page_head()): (status, its head, the address to redirect
-    to, for an alias or a name spelt otherwise)."""
-    if kind == "m" and "+" in key:     # two compared: an editor's page (index.html's openPair())
-        return 200, page_head("Two meshes compared", SITE_TEXT, None, False), None
+    to, for an alias or a name spelt otherwise, and what it's of, for its embed (embed_overlay()): {title, where, path:
+    its link, mid: the mesh it opens, play: whether it has one to open, as a deleted mesh's link may though it has no
+    successor (index.html's openExact())}, or {} for none). An embed's (/embed/<kind>/<key>) head has the same
+    preview, but no address of its own, and asks not to be indexed: the link's own page is the one to find."""
+    def page(title: str, text: str, path: str, mid: str | None, where: str = "") -> tuple[int, str, None, dict]:
+        return 200, page_head(title, text, None if embed else path, not embed, mid), None, \
+            {"title": title, "where": where, "path": path, "mid": mid, "play": bool(mid) or kind == "m"}
+    if kind == "m" and "+" in key:     # two compared: an editor's page (index.html's openPair()), never an embed
+        return (404, page_head("No such mesh", SITE_TEXT, None, False), None, {}) if embed else \
+            (200, page_head("Two meshes compared", SITE_TEXT, None, False), None, {})
     if kind == "m":
         m = q("SELECT name FROM meshes WHERE id=?", key, one=True) if re.fullmatch(r"[0-9a-f]+", key) else None
         g = None if m else gone_mesh(key) if re.fullmatch(r"[0-9a-f]+", key) else None
         if not m and not g:
-            return 404, page_head("No such mesh", SITE_TEXT, None, False), None
+            return 404, page_head("No such mesh", SITE_TEXT, None, False), None, {}
         own = [links_mod.named(c["name"], c["grade"]) for c in q(
             "SELECT c.name, c.grade FROM mesh_links l JOIN climbs c ON c.id=l.climb_id WHERE l.mesh_id=? AND COALESCE(l.note,'') "
             "NOT LIKE ? ORDER BY c.name", key, SHARED + "%")] if m else []
         title = ", ".join(own[:3]) + (f" +{len(own) - 3}" if len(own) > 3 else "") if own else (m or g)["name"] or "A mesh"
-        return 200, page_head(title, f"{title} in 3D, a mesh made from photos and videos of climbing it.", f"/m/{key}",
-                              mid=key if m else g["successor"]), None
+        return page(title, f"{title} in 3D, a mesh made from photos and videos of climbing it.", f"/m/{key}", key if m else g["successor"])
     slug = links_mod.slugify(key)
     found = find_link(kind, slug)
     if not found:
-        return 404, page_head(f"No {'climb' if kind == 'c' else 'boulder'} called {key} here", SITE_TEXT, None, False), None
+        return 404, page_head(f"No {'climb' if kind == 'c' else 'boulder'} called {key} here", SITE_TEXT, None, False), None, {}
     if found["slug"] != key:
-        return 301, "", f"/{kind}/{found['slug']}"
+        return 301, "", f"/{kind}/{found['slug']}", {}
     if kind == "c":
         c = q("SELECT name, grade, area_path FROM climbs WHERE id=?", found["ref"], one=True) or {}
         name = links_mod.named(c.get("name") or key, c.get("grade"))
-        where = [str(a).strip("* ") for a in json.loads(c.get("area_path") or "[]")][-3:][::-1]
-        return 200, page_head(name, f"{name} in 3D" + (f" · {', '.join(where)}" if where else "") + ".", f"/c/{key}",
-                              mid=climb_mesh(found["ref"])), None
+        where = ", ".join([str(a).strip("* ") for a in json.loads(c.get("area_path") or "[]")][-3:][::-1])
+        return page(name, f"{name} in 3D" + (f" · {where}" if where else "") + ".", f"/c/{key}", climb_mesh(found["ref"]), where)
     path = json.loads(found["leaf"] or "[]")
     first = boulder_choices(found["leaf"], found["slug"])["meshes"][:1] if path else []
     n = len(boulder_mesh_sets().get(found["leaf"], []))
-    where = ", ".join(str(a).strip("* ") for a in path[-3:-1][::-1])
-    return 200, page_head(boulder_name(found["leaf"]) if path else key,
-                          f"{boulder_name(found['leaf']) if path else key} in 3D" + (f" · {where}" if where else "")
-                          + (f" · {n} meshes" if n > 1 else "") + ".", f"/b/{key}", mid=first[0]["id"] if first else None), None
+    name, where = boulder_name(found["leaf"]) if path else key, ", ".join(str(a).strip("* ") for a in path[-3:-1][::-1])
+    return page(name, f"{name} in 3D" + (f" · {where}" if where else "") + (f" · {n} meshes" if n > 1 else "") + ".",
+                f"/b/{key}", first[0]["id"] if first else None, where)
+
+
+EMBED_FULL_ICON = ('<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">'
+                   '<path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>')
+
+
+def embed_overlay(about: dict, frm: str | None = None) -> str:
+    """What an embed of a link shows over its view (/embed/c/<name>, /embed/b/<name>, /embed/m/<id>: the link's view
+    alone, for another site's page to show in a frame), as markup for the page's <body>: the title of what it's of
+    (link_page()'s about), and a button with the site's name, each opening the link here in a new tab; and until it's
+    pressed, the picture of the mesh it opens, with a button to view it in 3D, so that the page's script and the mesh
+    only load for those who want them (index.html's embed loader). For none (about {}), a note, the site's start its
+    link. frm: the climb a boulder's mesh is seen from (/m/<id>?from=<name>), as a slug checked already."""
+    e = lambda v: html.escape(str(v), quote=True)    # noqa: E731
+    link = about["path"] + (f"?from={frm}" if frm else "") if about else "/"
+    bar = (f'<div id="ebar"><button id="efull" type="button" hidden aria-label="Full screen" title="Full screen">{EMBED_FULL_ICON}</button>'
+           f'<a id="esite" href="{e(link)}" target="_blank" rel="noopener" title="Open it on {SITE_NAME}: its climbs, and the photos and '
+           f'videos it was made from"><img src="/static/favicon.svg" alt="" width="18" height="18">{SITE_NAME}</a></div>')
+    if not about:
+        return f'<div id="embed"><div id="eplay" class="none"><span class="go">Not on {SITE_NAME}, or not any more</span></div>{bar}</div>\n'
+    pic = mesh_picture(about["mid"])
+    play = (f'<button id="eplay" type="button" aria-label="View {e(about["title"])} in 3D">' + (f'<img src="{e(pic)}" alt="">' if pic else "")
+            + '<span class="go"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3l8 5-8 5z" fill="currentColor"/></svg>View in 3D</span></button>'
+            if about["play"] else f'<div id="eplay" class="none"><span class="go">No mesh of it yet</span></div>')
+    title = (f'<a id="etitle" href="{e(link)}" target="_blank" rel="noopener" title="Open it on {SITE_NAME}">{e(about["title"])}'
+             + (f'<small>{e(about["where"])}</small>' if about["where"] else "") + "</a>")
+    return f'<div id="embed">{play}{title}{bar}</div>\n'
 
 
 class _Discard(io.RawIOBase):
@@ -14061,12 +14100,15 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""        # not the Python version
     timeout = 120           # seconds a connection may sit idle, so that stalled clients don't hold threads for ever
     head_only = False       # answering a HEAD request: once the headers have gone, nothing more is sent
+    frameable = False       # the answer may be shown in another site's frame (an embed's page: send_page()), this once
 
     # -- helpers ----------------------------------------------------------
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-        self.send_header("X-Frame-Options", "DENY")
+        if not self.frameable:
+            self.send_header("X-Frame-Options", "DENY")
+        self.frameable = False
         self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")   # the camera: Edit…'s Scan button
         super().end_headers()
         if self.head_only:
@@ -14077,11 +14119,21 @@ class Handler(BaseHTTPRequestHandler):
         headers = getattr(self, "headers", None)
         return (CLIENT_IP_HEADER and headers and headers.get(CLIENT_IP_HEADER)) or self.client_address[0]
 
-    def send_page(self, head: str | None = None, status: int = 200) -> None:
+    def send_page(self, head: str | None = None, status: int = 200, embed: str | None = None) -> None:
         """The page (page_parts()), with head (page_head()) for its title and preview: compressed here, as its
-        no-transform keeps Caddy and Cloudflare from doing it, and checked again on each visit by its ETag."""
-        body = page_parts()["html"].replace(f"<title>{SITE_NAME}</title>", head or page_head(SITE_NAME, SITE_TEXT, "/"), 1).encode()
+        no-transform keeps Caddy and Cloudflare from doing it, and checked again on each visit by its ETag. embed: the
+        markup over a link's embed (embed_overlay()), whose page any site may frame, with its module script only named
+        (<meta name="bm-app">), for the embed loader in index.html to load once the picture's button is pressed."""
+        page = page_parts()["html"].replace(f"<title>{SITE_NAME}</title>", head or page_head(SITE_NAME, SITE_TEXT, "/"), 1)
+        if embed is not None:     # named in the head, which is read before the loader runs
+            app = re.search(r'<script type="module" src="(/static/app\.[0-9a-f]{16}\.js)"></script>', page)
+            page = page.replace(app[0], "", 1).replace("</head>", f'<meta name="bm-app" content="{app[1]}">\n</head>', 1)
+            page = page.replace("<body>", '<body class="embed">\n' + embed, 1)
+        body = page.encode()
         tag, csp = f'"{hashlib.sha256(body).hexdigest()[:24]}"', page_csp()
+        if embed is not None:
+            self.frameable = True
+            csp = csp and csp.replace("frame-ancestors 'none'", "frame-ancestors *")
         headers = {"Cache-Control": "no-cache, no-transform", "ETag": tag, "Vary": "Accept-Encoding",
                    **({"Content-Security-Policy": csp} if csp else {})}
         if status == 200 and tag in (self.headers.get("If-None-Match") or ""):
@@ -14672,16 +14724,19 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/static/(app\.[0-9a-f]{16}\.(?:js|css))", p)
             if m:
                 return self.send_asset(m[1])
-            m = re.fullmatch(r"/([cbm])/([^/]+)/?", p)
-            if m:   # a climb's, a boulder's or a mesh's link: the page, which opens it
-                status, head, moved = link_page(m[1], unquote(m[2]))
+            m = re.fullmatch(r"/(embed/)?([cbm])/([^/]+)/?", p)
+            if m:   # a climb's, a boulder's or a mesh's link: the page, which opens it; or its embed, for another site's
+                # page to show in a frame: the view alone (embed_overlay())
+                status, head, moved, about = link_page(m[2], unquote(m[3]), embed=bool(m[1]))
                 if moved:
                     self.send_response(301)
-                    self.send_header("Location", moved + (f"?{u.query}" if u.query else ""))
+                    self.send_header("Location", ("/embed" if m[1] else "") + moved + (f"?{u.query}" if u.query else ""))
                     self.send_header("Cache-Control", "no-cache")
                     self.send_header("Content-Length", "0")
                     return self.end_headers()
-                return self.send_page(head, status)
+                frm = (qs.get("from") or [""])[0]
+                return self.send_page(head, status, embed_overlay(about, frm if re.fullmatch(r"[a-z0-9-]{1,120}", frm) else None)
+                                      if m[1] else None)
             m = re.fullmatch(r"/api/links/([cbm])/([^/]+)", p)
             if m:   # what the page opens for a link: a climb, a boulder's meshes, or what took a deleted mesh's place
                 # with rows: the meshes it opens, from the kept list (list_rows()), so that the page needn't wait for

@@ -39,7 +39,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.prefs-open #prefs{display:grid} #prefs .plabel{font-size:12px;color:var(--mute)} #prefs .seg{margin-left:0;justify-self:start}
   .prefsbtn[aria-expanded=true]{background:var(--line)}
   /* icons in buttons as tall as the words in their neighbours: the line keeps the height of a small button's text */
-  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg,#vshare svg,#vreport svg,.cardshare svg{width:14px;height:14px;vertical-align:-3px}
+  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg,#vshare svg,#vreport svg,.cardshare svg,.cardembed svg{width:14px;height:14px;vertical-align:-3px}
   #vinfo[aria-pressed=true]{background:var(--line)} #vinfo{position:relative}
   #vinfo.dot::after{content:'';position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--warn)}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
@@ -84,6 +84,29 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.thumb header,body.thumb aside,body.thumb .viewbar,body.thumb #vtitle,body.thumb #vcorner,body.thumb #vbeta,body.thumb #vextra,body.thumb #hud,
   body.thumb #viewnote,body.thumb #pieces,body.thumb #orient,body.thumb #nearby,body.thumb #map,body.thumb .toast,body.thumb #loading,
   body.thumb #linkmenu,body.thumb #srctip,body.thumb #prefs,body.thumb #tip,body.thumb #areamap,body.thumb dialog{display:none!important}
+  /* a link's embed (/embed/<c|b|m>/<key>, for another site's page to show in a frame): the view alone, under what the
+     server puts over it (embed_overlay()): its title and the site's button, each opening it here in a new tab, the
+     full screen button, and until it's pressed the mesh's picture, with a button to view it in 3D */
+  body.embed{grid-template-rows:1fr} body.embed main{grid-template-columns:minmax(0,1fr)} body.embed #right{display:grid;grid-template-rows:1fr}
+  body.embed header,body.embed aside,body.embed .viewbar,body.embed #vtitle,body.embed #vtop,body.embed #vcorner,body.embed #vbl,body.embed #vextra,
+  body.embed #vbetavids,body.embed #vlinedraw,body.embed #vbetadbg,body.embed #vvia,body.embed #localbar,body.embed #nearby,body.embed #hud,
+  body.embed #drop,body.embed #appbar,body.embed #map,body.embed #areamap,body.embed #linkmenu,body.embed #srctip,body.embed #prefs,
+  body.embed dialog{display:none!important}
+  #embed{display:none} body.embed #embed{display:block;position:fixed;inset:0;z-index:1500;pointer-events:none} #embed>*{pointer-events:auto}
+  #eplay{position:absolute;inset:0;display:grid;place-items:center;padding:0;border:0;border-radius:0;background:var(--deep);color:var(--fg);overflow:hidden}
+  #eplay img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  #eplay .go{position:relative;display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;background:var(--acc);color:var(--acc-fg);
+    font-size:15px;font-weight:600;box-shadow:0 2px 14px rgba(0,0,0,.45)}
+  #eplay .go svg{width:15px;height:15px} #eplay:hover .go,#eplay:focus-visible .go{filter:brightness(1.12)}
+  #eplay.none .go{background:var(--overlay);color:var(--mute);box-shadow:none} #eplay:disabled{opacity:1;cursor:progress} #eplay:disabled .go{opacity:.8}
+  #etitle{position:absolute;left:10px;top:10px;max-width:calc(100% - 20px);padding:5px 10px;border-radius:6px;background:var(--overlay-soft);color:var(--fg);
+    font-weight:600;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #etitle small{margin-left:8px;font-weight:400;color:var(--mute)} #etitle:hover{text-decoration:underline}
+  #ebar{position:absolute;right:10px;bottom:10px;display:flex;gap:6px;align-items:center}
+  #esite,#efull{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:0;border-radius:6px;background:var(--overlay-soft);
+    color:var(--fg);font-size:13px;font-weight:600;text-decoration:none}
+  #esite:hover,#efull:hover{background:var(--overlay)} #esite img{width:18px;height:18px} #efull svg{width:15px;height:15px} #efull[hidden]{display:none}
+  body.embed .toast{left:10px;right:auto;bottom:50px;max-width:calc(100% - 20px)}
   #vextra{position:absolute;right:12px;bottom:50px;z-index:3;display:flex;flex-direction:column;align-items:flex-end;gap:6px}  /* over Rate */
   #vnewest[hidden],#vothers[hidden]{display:none}
   #linkmenu .hint{font-size:11px;color:var(--mute)} #viewnote a.same{color:inherit;margin-left:6px;text-decoration:underline}
@@ -832,6 +855,28 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   <span class="seg notapp" id="theme" title="Colours: the browser's setting, or light or dark here"><button data-theme="system" class="on">System</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></span>
 </span>
 
+<script>
+// A link's embed (/embed/<c|b|m>/<key>: server.py's embed_overlay()), in another site's page: the mesh's picture, whose
+// button loads the page's module script (named in <meta name="bm-app">), which then opens the mesh; until then
+// nothing more, so that a page with many embeds stays light, and no 3D view is made for each. It counts as the page
+// opening (as the module script counts it elsewhere), with the site showing it.
+if (document.body.classList.contains('embed')) {
+  const app = document.querySelector('meta[name=bm-app]')?.content, go = document.getElementById('eplay'), full = document.getElementById('efull');
+  if (document.fullscreenEnabled) {      // only where the frame allows it (its allowfullscreen)
+    full.hidden = false;
+    full.onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => {});
+  }
+  if (app && go?.tagName === 'BUTTON') go.onclick = () => {
+    go.disabled = true; go.querySelector('.go').lastChild.textContent = 'Loading…';
+    const s = document.createElement('script'); s.type = 'module'; s.src = app; document.body.append(s);
+  };
+  let seen = true, ref = null;
+  try { seen = !!localStorage.getItem('bm_seen'); localStorage.setItem('bm_seen', '1'); } catch {}
+  try { const r = new URL(document.referrer); if (r.host !== location.host) ref = r.origin; } catch {}
+  fetch('/api/page-views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify({ path: location.pathname, ref, new: !seen, app: false, build: app?.match(/app\.([0-9a-f]{16})\.js/)?.[1] }) }).catch(() => {});
+}
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
@@ -880,6 +925,9 @@ const accountMay = url => /^\/api\/account\//.test(url) || (!!account && /^\/api
 // the server's renderer drawing a mesh's picture (backend/thumbs.py), at /m/<id>?thumb=auto or ?thumb=<a camera, as
 // JSON>: the view alone, its whole size, with no controls, notes or reports, from its preview copy without a splat
 const thumbMode = new URLSearchParams(location.search).get('thumb'), thumbFit = !!new URLSearchParams(location.search).get('fit');
+// a link's embed, in another site's page (the loader before Leaflet's script): the view alone, never an editor's, with
+// what the server put over it, opening its link's mesh once that's pressed
+const embedMode = /^\/embed\/[cbm]\//.test(location.pathname);
 // what a button that would change something says on a copy of the site this browser can't change, in place of
 // what it would do
 function viewOnlyNote(){
@@ -930,7 +978,7 @@ function ask(msg, may = editor){
   if (!may) { alert(viewOnlyNote()); return false; }
   return confirm(msg);
 }
-try { token = localStorage.getItem('bm_token'); } catch {}
+if (!embedMode) try { token = localStorage.getItem('bm_token'); } catch {}
 const api = async (url, opt={}) => {
   if (opt.json) { opt.body = JSON.stringify(opt.json); opt.headers = {'Content-Type':'application/json'}; delete opt.json; }
   if (!editor && opt.method && opt.method !== 'GET' && !accountMay(url)) throw new Error(viewOnlyNote());
@@ -1518,6 +1566,18 @@ async function shareLink(title, url, btn){
   if (!await copyText(url)) return toast(`Couldn't copy it: ${url}`, 10000);
   toast('Link copied: ' + url, 2500);
   btn.innerHTML = COPIED_ICON; setTimeout(() => { btn.innerHTML = SHARE_ICON; }, 1500);
+}
+// A card's embed button: the code for another site's page to show this climb's or mesh's view in a frame (path: its link,
+// /c/<name> or /m/<id>; server.py's embed_overlay()), copied, the button ticked for a moment. Not in the phone apps.
+const EMBED_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4.5L1.5 8 5 11.5M11 4.5L14.5 8 11 11.5M9.2 3l-2.4 10"/></svg>';
+const embeddable = linkable && !APP;
+const embedCode = (title, path) => `<iframe src="${location.origin}/embed${path}" title="${esc(title)} in 3D" width="640" height="400" `
+  + 'style="border:0;max-width:100%" allowfullscreen loading="lazy"></iframe>';
+async function copyEmbed(title, path, btn){
+  const code = embedCode(title, path);
+  if (!await copyText(code)) return toast(`Couldn't copy it: ${code}`, 15000);
+  toast('Embed code copied: paste it into your page\'s HTML where the 3D view should go. It shows the mesh\'s picture, which opens the view.', 6000);
+  btn.innerHTML = COPIED_ICON; setTimeout(() => { btn.innerHTML = EMBED_ICON; }, 1500);
 }
 function linkMenu(x, y){
   const choices = linkable ? shareChoices() : [];
@@ -3503,11 +3563,13 @@ function climbCard(c){
   const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : '') + (allHidden ? ' dim' : ''); d.dataset.id = c.id;
   d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(SOURCE_TAG[c.source] || c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${hiddenN?`<span class="tag" style="color:var(--bad)" title="${allHidden ? 'Every mesh of it is hidden from visitors as a failure: to them it has no mesh, and it isn\'t among the meshed climbs' : `${hiddenN} of its meshes ${hiddenN === 1 ? 'is' : 'are'} hidden from visitors as failures`}">${allHidden ? 'hidden: mesh failed' : `${hiddenN} mesh${hiddenN === 1 ? '' : 'es'} hidden`}</span>`:''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
       ${linkable && c.slug ? '<button class="sm sec cardshare" aria-label="Share" title="Share a link to this climb, which opens its newest mesh: on a phone, with its apps; elsewhere, copied for you to paste">' + SHARE_ICON + '</button>' : ''}
+      ${embeddable && c.slug && (c.n_links || c.n_boulder || c.n_shared) ? '<button class="sm sec cardembed" aria-label="Embed" title="Embed: copy the code that shows this climb\'s newest mesh in 3D on another site\'s page">' + EMBED_ICON + '</button>' : ''}
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
   d.querySelector('.cardshare')?.addEventListener('click', ev => { ev.stopPropagation(); shareLink(named(c), `${location.origin}/c/${c.slug}`, ev.currentTarget); });
+  d.querySelector('.cardembed')?.addEventListener('click', ev => { ev.stopPropagation(); copyEmbed(named(c), `/c/${c.slug}`, ev.currentTarget); });
   d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); guardedPress(ev, () => startClimbMesh(c.id, 'climb', climbHides())); };
   d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; guardedPress(ev, () => { c.id === openClimbId && openClimbEl || c.id === climbOpening?.id ? closeClimb() : openClimb(c.id); }); };
   return d;
@@ -5032,6 +5094,7 @@ function renderMeshes(filter = true){
         ${m.lat!=null?'<button class="sm sec fly">Map</button>':'<button class="sm sec setll">Set coords</button>'}
         <a class="dlbtn" href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download aria-label="Download this mesh" title="${m.cleanup?.hidden ? `Download this mesh, without its ${plural(m.cleanup.hidden, 'hidden stray piece')}. To get the whole mesh, remove the cleanup first.` : `Download this mesh (${esc(m.filename.split('.').pop().toUpperCase())}, ${fmtSize(m.size)})`}">${DOWNLOAD_ICON}</a>
         ${linkable ? '<button class="sm sec cardshare" aria-label="Share" title="Share a link to this exact mesh: on a phone, with its apps; elsewhere, copied for you to paste">' + SHARE_ICON + '</button>' : ''}
+        ${embeddable ? '<button class="sm sec cardembed" aria-label="Embed" title="Embed: copy the code that shows this exact mesh in 3D on another site\'s page">' + EMBED_ICON + '</button>' : ''}
         <button class="sm danger del">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
@@ -5065,6 +5128,7 @@ function renderMeshes(filter = true){
     }
     d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
     d.querySelector('.cardshare')?.addEventListener('click', ev => shareLink(meshTitle(m), location.origin + exactLink(m.id), ev.currentTarget));
+    d.querySelector('.cardembed')?.addEventListener('click', ev => copyEmbed(meshTitle(m), exactLink(m.id), ev.currentTarget));
     d.querySelector('.mthumb')?.addEventListener('click', () => viewMesh(m.id, null, 'meshes'));
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });
@@ -5168,6 +5232,7 @@ function viewLink(id, from){
 }
 // in the apps' viewer, its own parameters stay on the address, for a reload
 function setLink(id, from){
+  if (embedMode) return;      // its own address stays, to reload as the embed it is
   let u = viewLink(id, from);
   const q = new URLSearchParams(location.search), keep = APP ? ['app', 'notex', 'choose'].filter(k => q.has(k)) : [];
   if (keep.length) u += (u.includes('?') ? '&' : '?') + keep.map(k => `${k}=${encodeURIComponent(q.get(k))}`).join('&');
@@ -5185,9 +5250,9 @@ function newestOf(id){
 }
 // whether the page's address is still opening its own mesh (via 'link') though one was opened by hand since it began
 const addressGivenWay = via => via === 'link' && addressMeshLoads !== null && meshLoads > addressMeshLoads;
-// What the page's address opens as it starts: a climb's, a boulder's or a mesh's link, or an old #mesh= one
+// What the page's address opens as it starts: a climb's, a boulder's or a mesh's link (or its embed's), or an old #mesh= one
 async function openFromAddress(){
-  const m = location.pathname.match(/^\/([cbm])\/([^/]+?)\/?$/);
+  const m = location.pathname.match(/^\/(?:embed\/)?([cbm])\/([^/]+?)\/?$/);
   if (!m) return openLinked();
   const [, kind, key] = m;
   addressLoad = viewChosen;      // its mesh's load leaves the view alone if one is chosen before it's shown
@@ -5201,8 +5266,8 @@ async function openFromAddress(){
     if (addressGivenWay('link')) return;
     if (kind === 'm') return await openExact(key, new URLSearchParams(location.search).get('from'), r);
     if (kind === 'b') return pickBoulder(r, true);
-    if (!(await viewClimbMesh(r.id, 'link'))) { await pageListed; return openClimb(r.id); }
-    if (r.same?.length) {   // others of the same name have links of their own, with something added
+    if (!(await viewClimbMesh(r.id, 'link'))) { if (embedMode) return; await pageListed; return openClimb(r.id); }
+    if (r.same?.length && !embedMode) {   // others of the same name have links of their own, with something added
       viewNote(`${r.same.length === 1 ? 'Another climb is' : `${r.same.length} other climbs are`} also called ${r.name}:`);
       for (const c of r.same) {
         const a = document.createElement('a');
@@ -5295,7 +5360,8 @@ async function pickBoulder(r, fromLink = false){
   if (fromLink && addressGivenWay('link')) return;
   const items = r.meshes.filter(x => meshesById[x.id] && (editor || !(meshesById[x.id].old || meshesById[x.id].old_data))), names = Object.fromEntries(r.climbs.map(c => [c.id, named(c)]));
   const open = id => { linkedBoulder = { slug: r.slug, meshes: items.map(x => x.id) }; return viewMesh(id, null, fromLink ? 'link' : 'boulder'); };
-  if (fromLink && items.length === 1) return open(items[0].id);
+  if (fromLink && (items.length === 1 || embedMode && items.length)) return open(items[0].id);     // an embed's: its first, with none to pick from
+  if (embedMode) return toast('No mesh of it yet.', 8000);
   const what = { boulders: 'The boulder', groups: 'A group of its climbs', climbs: 'One climb' };
   const dlg = $('#bpick'), where = r.area.slice().reverse().join(', ');
   dlg.innerHTML = `<p><b>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" title="Its page on Mountain Project">${esc(r.name)}</a>` : esc(r.name)}</b>${where ? ` <small>· ${esc(where)}</small>` : ''}</p>
@@ -7638,7 +7704,8 @@ function sendView(body){
 }
 // The page opening, once: the server keeps roughly where from (Cloudflare's city for the address, not the address), for
 // the admin page's map. With the site that linked here (its host only), and whether this browser had opened it before.
-if (!thumbMode) {
+// An embed's loader sends its opening instead.
+if (!thumbMode && !embedMode) {
   let seen = true;
   try { seen = !!localStorage.getItem('bm_seen'); localStorage.setItem('bm_seen', '1'); } catch {}
   let ref = null;
@@ -8039,10 +8106,10 @@ if (APP) $('#appbar').append($('#detail'), $('#vshare'), $('#vprefs'));
 let statusCache = { env: {} };
 statusCache = await api('/api/status');
 if (statusCache.via_links === false) $('#c-no-via').closest('label').hidden = true;     // none shown anyway (the admin page's setting)
-editor = !!statusCache.editor;
+editor = !!statusCache.editor && !embedMode;      // the site may have editing open to all (no token): never in a frame
 document.body.classList.toggle('readonly', !editor);
 const inviteCode = new URLSearchParams(location.search).get('invite');
-if (statusCache.editing === 'token' && !thumbMode) {      // accounts are only on a site with an editing token
+if (statusCache.editing === 'token' && !thumbMode && !embedMode) {      // accounts are only on a site with an editing token
   try {
     accountInfo = await api('/api/account');
     if (APP) try { localStorage.setItem('bm_app_account', JSON.stringify(accountInfo)); } catch {}
@@ -8088,15 +8155,15 @@ if (accountInfo) {
     <p>Joined on a computer or another phone? There, press your name, then <i>Sign in another device</i>, and type its code in the app.</p>
     <div class="row" style="justify-content:flex-end"><button class="sm close">Close</button></div>`);
 }
-else if (inviteCode && !thumbMode) toast('This copy of the site has no accounts to join.', 8000);
+else if (inviteCode && !thumbMode && !embedMode) toast('This copy of the site has no accounts to join.', 8000);
 if (statusCache.admin) { $('#admin').style.display = ''; $('#admin').onclick = openAdmin; }
 if (/^https:\/\/\S+$/.test(statusCache.donate_url || '')) { $('#donate').href = $('#hdonate').href = statusCache.donate_url; $('#donatebox').hidden = $('#hdonate').hidden = false; }   // the admin page's site.donate_url
 if (statusCache.volunteer_url) { $('#volunteer').dataset.base = statusCache.volunteer_url + '/volunteer/'; volunteerLink(); $('#volunteer').style.display = ''; }
 if (!editor) $('#hud').textContent = 'Pick a mesh. Drag to orbit · scroll to zoom to the pointer · double-click to centre · right-drag to pan';
 // a page opened with no mesh, climb or boulder to show: the areas in place of the empty 3D view, the controls kept in view on a
 // phone; at once, from what this browser drew last, as the lists below can take seconds
-if (!thumbMode && !/^\/[cbm]\//.test(location.pathname) && !new URLSearchParams(location.hash.slice(1)).get('mesh')) showRight('areas', true);
-if (!thumbMode) {      // the areas list from this browser's last copy at once; then the new one, alongside the rest, for it and the map
+if (!thumbMode && !embedMode && !/^\/[cbm]\//.test(location.pathname) && !new URLSearchParams(location.hash.slice(1)).get('mesh')) showRight('areas', true);
+if (!thumbMode && !embedMode) {      // the areas list from this browser's last copy at once; then the new one, alongside the rest, for it and the map
   try { const kept = JSON.parse(localStorage.getItem('bm_campaigns') || 'null'); if (Array.isArray(kept)) refreshCampaigns(kept).catch(() => {}); } catch {}
   refreshCampaigns().catch(() => {});
 }
@@ -8105,6 +8172,12 @@ if (!thumbMode) {      // the areas list from this browser's last copy at once; 
 const linked = !thumbMode && /^\/[cbm]\//.test(location.pathname), linkCard = linked ? loading('the mesh in this link') : null;
 if (linkCard) $('#loading .detail').textContent = 'Finding it…';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); openFromAddress(); }
+else if (embedMode) {     // its picture's button pressed: its mesh, the picture kept under the loading card until it's in view
+  const card = loading('the mesh'); $('#loading .detail').textContent = 'Finding it…';
+  try { await openFromAddress(); } finally { card(); }
+  if (shownMesh && current) $('#eplay')?.remove();
+  else { $('#eplay').classList.add('none'); $('#eplay .go').textContent = 'Nothing to show here yet'; }
+}
 else {
   openSearchLink();      // before the list's first search, so it's this one
   pageListed = Promise.all([refreshClimbs(), refreshMeshes()]);     // together: each can take seconds
@@ -8151,7 +8224,7 @@ function showTips(tries = 0){
   tip.querySelector('.next').onclick = () => done(false);
   tip.querySelector('.skip')?.addEventListener('click', () => done(true));
 }
-if (!thumbMode && !APP) setTimeout(showTips, 1500);     // once the page has settled (and never in a mesh's picture)
+if (!thumbMode && !embedMode && !APP) setTimeout(showTips, 1500);     // once the page has settled (and never in a mesh's picture, or an embed)
 // how to move round a mesh, the first time one's shown in a browser (bm_tips_v1's controls), for a computer or a phone;
 // after any other tip that's showing, and not over a hidden viewer
 function controlsTip(tries = 0){
@@ -8159,7 +8232,9 @@ function controlsTip(tries = 0){
   const v = $('#viewer'), r = v.getBoundingClientRect();
   if (document.querySelector('#tip') || r.width < 50 || r.height < 50 || r.bottom < 0 || r.top > innerHeight) { if (tries < 30) setTimeout(() => controlsTip(tries + 1), 2000); return; }
   const tip = document.createElement('div'); tip.id = 'tip'; tip.setAttribute('role', 'dialog'); tip.className = 'flat';
-  tip.innerHTML = `<div>${phone.matches ? '<b>Moving round it:</b> drag with one finger to turn it · pinch to zoom · drag with two fingers to move it'
+  // an embed is as narrow as a phone's screen on any device: by its pointer there
+  const touch = embedMode ? matchMedia('(pointer: coarse)').matches : phone.matches;
+  tip.innerHTML = `<div>${touch ? '<b>Moving round it:</b> drag with one finger to turn it · pinch to zoom · drag with two fingers to move it'
     : '<b>Moving round it:</b> drag to turn it · scroll to zoom to the pointer · double-click a spot to centre on it · right-drag to move it'}</div>
     <div class="row"><button class="sm next">Got it</button></div>`;
   document.body.append(tip);
