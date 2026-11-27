@@ -558,7 +558,15 @@ def init_db() -> None:
                 continue
             con.execute("UPDATE projects SET status='queued', progress=NULL, job=? WHERE id=?", (json.dumps(job), r["id"]))
         busy = "status IN ('running','harvesting') OR (status='queued' AND job IS NULL)"
-        cut = con.execute(f"SELECT id, status, job FROM projects WHERE {busy}").fetchall()
+        cut = con.execute(f"SELECT id, status, job, harvest FROM projects WHERE {busy}").fetchall()
+        # those with nothing left of their work (job_through()) aren't interrupted, but harvested; nor those a restart
+        # marked so before (until Nov 26, 2026: 13 on Nov 19-20, in the Projects tab's Retry interrupted for a week)
+        through = {r["id"] for r in cut if job_through(con, r)}
+        cut = [r for r in cut if r["id"] not in through]
+        through |= {r["id"] for r in con.execute("SELECT id, status, job, harvest FROM projects WHERE status='interrupted'").fetchall()
+                    if job_through(con, r)}
+        for pid in through:
+            con.execute("UPDATE projects SET status='harvested', progress=NULL WHERE id=?", (pid,))
         for r in cut:
             job = json.loads(r["job"]) if r["job"] else None
             if job and r["status"] != "queued":
@@ -567,12 +575,41 @@ def init_db() -> None:
         con.execute("UPDATE projects SET job_started=NULL WHERE job_started IS NOT NULL")
         resumed = {r["id"] for r in started}
         waiting = con.execute("SELECT id FROM projects WHERE status='queued' AND job IS NOT NULL").fetchall()
+    for pid in through:
+        append_log(pid, "-- the server restarted after what this did was through (its harvest finished, and its area's climb "
+                        "is meshed, skipped or failed, or it wasn't to be meshed): left harvested, not interrupted")
     for r in cut:
         append_log(r["id"], "INTERRUPTED: the server restarted " + ("before this job started: Retry runs it" if r["status"] == "queued"
                                                                     else "during this job: Retry carries on from the last step it finished"))
     for r in waiting:
         append_log(r["id"], "-- the server restarted during this job: it's queued again, to carry on from the last step it finished"
                    if r["id"] in resumed else "-- the server restarted before this job started: it's queued again, as it was")
+
+
+def job_through(con, r) -> bool:
+    """Whether a project a restart found busy (or marked interrupted) had nothing left to do, so that it isn't
+    interrupted: its harvest finished (its harvest record kept) and either an area's climbs are what it was for, every
+    one of them through (meshed, skipped, failed or hidden: as with its boulder's mesh, made from it), with no job of its
+    own; or its own job was only a harvest, not to be meshed after, and the last its log says is that it finished.
+    r: the project's id, status, job and harvest."""
+    if not r["harvest"]:
+        return False
+    try:
+        job = json.loads(r["job"]) if r["job"] else None
+    except ValueError:
+        return False
+    if job is None:
+        items = con.execute("SELECT status FROM campaign_items WHERE project_id=?", (r["id"],)).fetchall()
+        return bool(items) and all(i["status"] in ("done", "skipped", "failed", "hidden") for i in items)
+    if job.get("type") != "harvest" or job.get("reconstruct"):
+        return False
+    try:
+        with open(PROJECTS / r["id"] / "job.log", "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - 4096))
+            lines = [x for x in f.read().decode(errors="replace").splitlines() if x.strip() and not x.startswith("INTERRUPTED: ")]
+    except OSError:
+        return False
+    return bool(lines) and lines[-1].startswith("harvest complete")
 
 
 BOULDERS_SQL = re.compile(r"\bboulders\b", re.I)    # a write to the boulders table: boulder_kinds() reads it again

@@ -771,6 +771,33 @@ with server.jobs.mutex:
     server.jobs.queue.clear()
 assert again == [{"type": "boulder", "pid": waited}, {"type": "reconstruct", "internet": True, "pid": later}], "in the order they were asked for"
 assert "queued again, as it was" in server.read_log(waited)
+# one with nothing left of its work isn't interrupted, but harvested: an area's climb's harvest whose climb is through
+# (meshed with its boulder, say) with no job of its own; a harvest only, not to be meshed, that had finished; and one
+# marked interrupted so before. One whose harvest hadn't finished still is interrupted
+def busy_harvest(job, last, status="harvesting"):
+    pid = server.new_id()
+    (server.PROJECTS / pid).mkdir(parents=True)
+    server.append_log(pid, last)
+    server.q("INSERT INTO projects(id,name,created,kind,status,harvest,job) VALUES(?,?,?,?,?,?,?)", pid, "h", time.time(), "harvest", status,
+             "{}", json.dumps(job) if job else None, write=True)
+    return pid
+
+
+of_area = busy_harvest(None, "harvested for its boulder's mesh, made from every photo of the climbs on it once they're all harvested")
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,project_id) VALUES('thru00000001','t1',1,'T1','skipped',?)",
+         of_area, write=True)
+checked = busy_harvest({"type": "harvest", "reconstruct": False, "again": True}, "harvest complete: 9 image(s), verdict poor")
+before = busy_harvest({"type": "harvest", "reconstruct": False}, "harvest complete: 4 image(s), verdict poor", status="interrupted")
+server.append_log(before, "INTERRUPTED: the server restarted during this job: Retry carries on from the last step it finished")
+partway = busy_harvest({"type": "harvest", "reconstruct": False}, "youtube: kept 12 frame(s) from a video")
+server.init_db()
+states = [server.q("SELECT status FROM projects WHERE id=?", p, one=True)["status"] for p in (of_area, checked, before, partway)]
+assert states == ["harvested", "harvested", "harvested", "interrupted"], states
+assert "left harvested, not interrupted" in server.read_log(checked)
+server.q("DELETE FROM campaign_items WHERE campaign_id='thru00000001'", write=True)
+server.q(f"DELETE FROM projects WHERE id IN ('{of_area}','{checked}','{before}','{partway}')", write=True)
+with server.jobs.mutex:
+    server.jobs.queue.clear()
 assert json.loads(server.q("SELECT job FROM projects WHERE id=?", ran, one=True)["job"])["resume"], "it had started: Retry carries on with it"
 # one that a worker here had started (job_started, run_job()) is queued again by itself, carrying on, ahead of those
 # asked for after it; one an area's climb runs as part of it (no job_started) isn't
