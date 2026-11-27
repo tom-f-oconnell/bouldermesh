@@ -550,7 +550,10 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
             missed.append(v.url)
             continue
         if progress:
-            progress(i / n_videos, f"downloading video {i + 1} of {n_videos}")
+            # what's being done, and where: a video here already has its frames taken on this server, whoever fetched it
+            if hasattr(progress, "at"):
+                progress.at("server" if have else "server+volunteers")
+            progress(i / n_videos, f"video {i + 1} of {n_videos}: " + ("here already, choosing its frames" if have else "downloading it"))
         tag = hashlib.sha1(v.url.encode()).hexdigest()[:8]
         tmp = out_dir / f"_video_{tag}"
         tmp.mkdir(parents=True, exist_ok=True)
@@ -572,7 +575,7 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                 vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
                 vid = youtube.cache_put(v.url, vid, details)
             if progress:
-                progress((i + 0.7) / n_videos, f"extracting frames from video {i + 1} of {n_videos}")
+                progress((i + (0.7 if not have else 0.1)) / n_videos, f"choosing frames from video {i + 1} of {n_videos}")
             stats: dict = {}
             frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats,   # a video that failed leaves its share
                                     start=getattr(v, "start", None), edits=True)
@@ -601,6 +604,10 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         why = refused or "no yt-dlp on PATH"
         if want:
             coming = [url for url in missed if want(url)]
+            if progress and coming:
+                if hasattr(progress, "at"):
+                    progress.at("server+volunteers")
+                progress(1.0, f"waiting for volunteers to fetch {len(coming)} video(s); frames taken from {n_videos - len(missed)}")
             if asked is not None:
                 asked += coming
             log(f"youtube: {why}: {len(coming)} of {len(missed)} video(s) asked of volunteers; this climb is harvested "
