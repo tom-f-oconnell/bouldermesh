@@ -2035,6 +2035,28 @@ via_was, server.youtube_mod.via = server.youtube_mod.via, "volunteers"
 assert not server.beta_ready(mid), "nothing new here, and only volunteers fetch videos"
 server.beta_mod.save(md, {"status": "queued", "videos": [{"url": url, "status": "failed: IndexError: x"}], "waiting_videos": [url2]})
 assert not server.beta_ready(mid), "one that failed here isn't sent again until another comes (Gerty, Nov 17: every 15 s)"
+# with volunteers: it waits while they're to bring one; once none is coming, it runs, and leaves out those they can't
+# bring (not YouTube's: an Instagram post; or one whose fetch failed for good lately) rather than wait for good
+helper = server.VOLUNTEERS.add("Beta Helper")
+try:
+    assert server.VOLUNTEERS.want("video", "bbbbbbbbbbb", "beta", mid)
+    assert not server.beta_ready(mid), "url2 is coming from volunteers"
+    server.VOLUNTEERS.q("UPDATE tasks SET state='failed', finished=? WHERE kind='video' AND video_id='bbbbbbbbbbb'", time.time())
+    assert server.beta_ready(mid), "nothing it waits for is coming: it runs"
+    insta = "https://www.instagram.com/p/CKsSy0SFvA2"
+    server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}},
+                                        url2: {"tag": "bbbbbbbb", "title": "t", "uploader": "u", "frames": {"yt_bbbbbbbb_000.jpg": {}}},
+                                        insta: {"tag": "cccccccc", "title": "t", "uploader": "u", "frames": {"yt_cccccccc_000.jpg": {}}}}
+    server.beta_mod.save(md, {"status": "queued", "videos": [{"url": url, "status": "done"}], "waiting_videos": [url2, insta], "resume": True})
+    server.run_beta(mid)
+    rec = server.beta_mod.load(md)
+    assert rec["status"] == "done" and not rec["waiting_videos"], rec
+    left_out = {v["url"]: v["status"] for v in rec["videos"] if v["status"].startswith("failed: can't be had")}
+    assert left_out == {url2: "failed: can't be had: volunteers' fetches of it failed",
+                        insta: "failed: can't be had: volunteers fetch only YouTube's videos"}, rec["videos"]
+finally:
+    server.VOLUNTEERS.q("DELETE FROM volunteers WHERE id=?", helper["id"])
+    server.VOLUNTEERS.q("DELETE FROM tasks WHERE video_id='bbbbbbbbbbb'")
 server.youtube_mod.via = via_was
 server.beta_mod.videos = lambda d: {url: {"tag": "aaaaaaaa", "title": "t", "uploader": "u", "frames": {"yt_aaaaaaaa_000.jpg": {}}}}
 server.beta_mod.save(md, {"status": "done", "videos": []})
@@ -4147,15 +4169,39 @@ try:
     server.q("UPDATE meshes SET rules=0 WHERE id='dd0000000001'", write=True)
     server._steps_left["at"] = 0
     assert "cc0000000001" not in server.steps_left(), "made under older rules"
-    server.q("UPDATE meshes SET rules=?, old_data=1 WHERE id='dd0000000001'", server.MESH_RULES, write=True)
+    server.q("UPDATE meshes SET rules=?, old_data='dd0000000002' WHERE id='dd0000000001'", server.MESH_RULES, write=True)
     server._steps_left["at"] = 0
-    assert "cc0000000001" not in server.steps_left(), "covered by a newer mesh"
+    assert "cc0000000001" not in server.steps_left(), "covered by a newer mesh (old_data: its id)"
 finally:
     server.beta_mod.videos, server.beta_mod.load, server.scale_mod.load = real
     server.q("DELETE FROM projects WHERE id='cc0000000001'", write=True)
     server.q("DELETE FROM meshes WHERE id='dd0000000001'", write=True)
     server._steps_left["at"] = 0
 print("steps still to do OK")
+
+# a mesh's beta and size stopped as it was old, queued again once it isn't (old by data no more, or made current again)
+server.q("INSERT INTO meshes(id,name,filename,source,created,rules,old_data) VALUES('dv0000000001','Revived','m.glb','project:cv0000000001',?,?,"
+         "'dv0000000002')", time.time(), server.MESH_RULES, write=True)
+rd = server.MESHES / "dv0000000001"
+rd.mkdir(parents=True, exist_ok=True)
+(rd / "cameras.json").write_text("[]")
+server.beta_mod.save(rd, {"status": "stopped", "videos": [{"url": "u1"}], "note": server.OLD_NOTE})
+server.scale_mod.save(rd, {"status": "stopped", "note": server.OLD_NOTE})
+with server.jobs.mutex:
+    server.jobs.queue.clear()
+try:
+    assert server.revive_steps("dv0000000001") == [], "still old"
+    server.q("UPDATE meshes SET old_data=NULL WHERE id='dv0000000001'", write=True)
+    assert server.revive_steps("dv0000000001") == ["beta", "size"]
+    b = server.beta_mod.load(rd)
+    assert b["status"] == "queued" and b["resume"] and b["videos"] == [{"url": "u1"}], b
+    assert server.scale_mod.load(rd)["status"] == "queued" and list(server.jobs.queue) == [{"type": "scale", "mid": "dv0000000001"}]
+    assert server.revive_steps("dv0000000001") == [], "once"
+finally:
+    with server.jobs.mutex:
+        server.jobs.queue.clear()
+    server.q("DELETE FROM meshes WHERE id='dv0000000001'", write=True)
+print("steps stopped as old, queued again OK")
 
 # what's changed of a meshed project's photos since its mesh, for Reconstruct: nothing; one added; one put back as
 # another; nothing known without a record of what it was given

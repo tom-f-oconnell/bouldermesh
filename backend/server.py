@@ -1842,6 +1842,7 @@ def make_current(mid: str) -> None:
         take_over(mid, pid, lambda line: append_log(pid, line), demo=bool(m["demo"]))
     else:
         settle_versions(mid)
+        revive_steps(mid)
     meshes_changed()
 
 
@@ -4300,6 +4301,8 @@ def old_by_data(log=print) -> dict:
     for m in rows:
         if (m["old_data"] or None) != flags.get(m["id"]):
             q("UPDATE meshes SET old_data=? WHERE id=?", flags.get(m["id"]), m["id"], write=True)
+            if m["old_data"] and not flags.get(m["id"]):
+                revive_steps(m["id"])   # not old by data any more: what was stopped for it goes on
     q("UPDATE meshes SET old_data=NULL WHERE old_data IS NOT NULL AND (replaced_by IS NOT NULL OR source NOT LIKE 'project:%')", write=True)
     _old_data.update(at=time.time(), decide=decide, flagged=len(flags))
     if flags or decide:
@@ -9804,11 +9807,21 @@ def run_beta(mid: str) -> None:
         rec = beta_mod.load(mesh_dir) or {}
         done = {v["url"] for v in rec.get("videos", [])}
         missing = [u for u in beta_mod.videos(mesh_dir) if u not in done and not youtube_mod.cached(u)]
-        if missing:     # it waits for them, which volunteers, if any, are asked for
-            for u in missing if want else []:
-                want(u)
-            beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "at": None, "waiting_videos": missing})
-            log(f"beta: {len(missing)} video(s) " + ("asked of volunteers" if want else "to wait for: there are no volunteers to ask"))
+        # those volunteers can't bring (not YouTube's, or their fetches failed for good lately: want() says) aren't
+        # waited for, but noted as not to be had; until Nov 26, 2026, a mesh waited for them for good, as beta to come
+        # (Joshua Tree: Instagram posts, and a video volunteers got 403s for)
+        coming = [u for u in missing if want and want(u)] if want else missing
+        gone = [u for u in missing if u not in coming]
+        if gone:
+            rec["videos"] = rec.get("videos", []) + [{"url": u, "status": "failed: can't be had: " + (
+                "volunteers fetch only YouTube's videos" if not youtube_mod.video_id(u) else "volunteers' fetches of it failed")} for u in gone]
+            log(f"beta: {len(gone)} video(s) left out, as volunteers can't bring them: {', '.join(gone)}")
+        if coming:      # it waits for them, which volunteers, if any, are asked for
+            beta_mod.save(mesh_dir, {**rec, "status": "queued", "progress": None, "at": None, "waiting_videos": coming})
+            log(f"beta: {len(coming)} video(s) " + ("asked of volunteers" if want else "to wait for: there are no volunteers to ask"))
+        elif gone:
+            beta_mod.save(mesh_dir, {**rec, "status": "done", "progress": None, "at": None, "waiting_videos": [], "finished": time.time(),
+                                     "note": f"{plural(len(gone), 'video')} left out: volunteers can't bring them"})
     except pullwork.NotTaken as e:      # to the back of the queue, so the next isn't held up behind it
         log(f"beta: {e}: tried again later")
         beta_mod.save(mesh_dir, {**(beta_mod.load(mesh_dir) or {"videos": []}), "status": "queued", "progress": None, "at": None, "resume": True,
@@ -9926,9 +9939,45 @@ def beta_ready(mid: str) -> bool:
                 return True
         except Exception:  # noqa: BLE001 - as before: it waits
             pass
-    if youtube_mod.via == "volunteers":
-        return not waiting
+    if youtube_mod.via == "volunteers":     # nor while volunteers are still to bring any it waits for; once none is,
+        # it runs, to ask again or to leave out those they can't bring (run_beta())
+        return not waiting or (video_wanter("beta", mid) is not None
+                               and not any(VOLUNTEERS.coming(youtube_mod.video_id(u) or "") for u in waiting))
     return not youtube_mod.refused()
+
+
+OLD_NOTE = "not looked for: the mesh is old"     # a mesh's beta or size, stopped as it was old (beta_queue(), run_scale())
+
+
+def revive_steps(mid: str) -> list[str]:
+    """A mesh's beta and size stopped as it was old (OLD_NOTE) queued again, now it isn't (mesh_old()): one old by data
+    can be current again, as the newer one's verdict changes or an older version is made current again. Until Nov 26,
+    2026 they stayed stopped, as beta or size to come that never came (Caveman Boulder's beta). Returns those queued."""
+    if mesh_old(mid):
+        return []
+    d, out = MESHES / mid, []
+    rec = beta_mod.load(d) or {}
+    if rec.get("status") == "stopped" and rec.get("note") == OLD_NOTE:
+        beta_mod.save(d, {**rec, "status": "queued", "progress": None, "at": None, "resume": True, "queued": time.time(), "ahead": False,
+                          "note": None})
+        _beta_wake.set()
+        out.append("beta")
+    size = scale_mod.load(d) or {}
+    if size.get("status") == "stopped" and size.get("note") == OLD_NOTE and queue_scale(mid):
+        out.append("size")
+    return out
+
+
+def revive_all() -> int:
+    """revive_steps() for every current mesh that isn't old, as the server starts: for one that stopped being old while
+    nothing said so (as before Nov 26, 2026). Returns how many had anything queued again."""
+    n = 0
+    for m in q(f"SELECT m.id FROM meshes m WHERE m.replaced_by IS NULL AND NOT {OLD_MESH} AND m.old_data IS NULL AND m.source LIKE 'project:%'"):
+        try:
+            n += bool(revive_steps(m["id"]))
+        except Exception as e:  # noqa: BLE001 - one unreadable record isn't a reason to stop
+            print(f"revive {m['id']}: {e!r}", flush=True)
+    return n
 
 
 def beta_queue() -> list[str]:
@@ -9938,8 +9987,7 @@ def beta_queue() -> list[str]:
     for d in MESHES.iterdir() if MESHES.exists() else []:
         rec = beta_mod.brief(d)
         if rec and rec["status"] == "queued" and mesh_old(d.name):
-            beta_mod.save(d, {**(beta_mod.load(d) or rec), "status": "stopped", "progress": None, "at": None,
-                              "note": "not looked for: the mesh is old"})
+            beta_mod.save(d, {**(beta_mod.load(d) or rec), "status": "stopped", "progress": None, "at": None, "note": OLD_NOTE})
         elif rec and rec["status"] == "queued":
             found.append(((not rec.get("ahead"), rec.get("queued") or 0), d.name))
     return [mid for _, mid in sorted(found)]
@@ -10260,8 +10308,7 @@ def run_scale(mid: str) -> None:
         return
     mesh_dir, pid = MESHES / mid, m["source"].split(":", 1)[1]
     if mesh_old(mid):   # became old while queued: what replaces it gets its own
-        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None,
-                                  "note": "not looked for: the mesh is old"})
+        scale_mod.save(mesh_dir, {**(scale_mod.load(mesh_dir) or {}), "status": "stopped", "progress": None, "note": OLD_NOTE})
         return
 
     def log(line: str) -> None:
@@ -13288,13 +13335,14 @@ def steps_left() -> dict[str, list[str]]:
     """What's still to do for each meshed project, by its id, beyond meshing: finding beta in its mesh's videos (all of
     those placed in it, or those still to look at) and finding its size, each as words for the projects tab ("beta: 2
     of 5 videos", "size"). Old meshes (mesh_old()) aren't listed, as neither is found in them: until Nov 26, 2026, those
-    under older rules were, as beta to come that never came (The Tramway's 9 from Nov 9). Kept STEPS_LEFT_EVERY seconds."""
+    under older rules were, as beta to come that never came (The Tramway's 9 from Nov 9), and those old by data (whose
+    old_data, the newer mesh's id, was read as a number) till later that day. Kept STEPS_LEFT_EVERY seconds."""
     now = time.time()
     if now - _steps_left["at"] < STEPS_LEFT_EVERY:
         return _steps_left["by"]
     by: dict[str, list[str]] = {}
     for r in q("SELECT p.id AS pid, m.id AS mid FROM projects p JOIN meshes m ON m.id = p.mesh_id WHERE m.replaced_by IS NULL "
-               f"AND NOT {OLD_MESH} AND NOT COALESCE(m.old_data, 0)"):
+               f"AND NOT {OLD_MESH} AND m.old_data IS NULL"):
         d, left = MESHES / r["mid"], []
         if not d.is_dir():
             continue
@@ -17392,6 +17440,9 @@ def main() -> None:
     threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()
     threading.Thread(target=clip_sweep, daemon=True, name="clip-sweep").start()    # current meshes' photos, by today's CLIP   # storyboards' checks, by today's comparison
     again = requeue_waiting() + resume_back()
+    revived = revive_all()
+    if revived:
+        print(f"{plural(revived, 'mesh', 'meshes')} no longer old: their beta or size queued again", flush=True)
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()

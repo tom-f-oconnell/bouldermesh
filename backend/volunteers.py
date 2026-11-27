@@ -345,6 +345,11 @@ class Broker:
             return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL LIMIT 1"))
         return bool(self.q("SELECT 1 FROM volunteers WHERE revoked IS NULL AND COALESCE(status,'approved')!='provisional' LIMIT 1"))
 
+    def coming(self, video_id: str) -> bool:
+        """Whether a video is still to come from volunteers: queued or being fetched."""
+        return bool(video_id) and bool(self.q("SELECT 1 FROM tasks WHERE kind='video' AND video_id=? AND state IN ('queued','assigned') LIMIT 1",
+                                              video_id))
+
     # -- what's wanted --------------------------------------------------------------------------------------------
     def next_task(self, kinds: list[str], v: dict | None = None, ip: str = "", fresh: bool = True) -> dict | None:
         """The queued task of these kinds to give next: storyboards first (quick, and their addresses may not last),
