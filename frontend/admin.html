@@ -619,11 +619,11 @@ function renderBackup(b){
       + (rep?.kept?.length ? (rep?.archive != null ? ' By night: its databases (kept a year) and the rest of what that night\'s copy replaced or deleted here (kept 30 days).'
         : ' What it keeps by night, each for 30 days: that night\'s databases, and what that night\'s copy replaced or deleted here.') : '')
     : 'No good copy confirmed yet.';
-  // each night is named by the backup machine's date when its copy began (UTC on the server), which here is often the evening before
-  const lastDay = b.confirmed ? new Date(b.confirmed * 1000).toISOString().slice(0, 10) : null;
-  $('#backupdays').innerHTML = rep?.kept?.length ? '<tr><th>Night (UTC date)</th><th>Databases</th><th>Replaced or deleted</th><th></th></tr>'
-    + rep.kept.slice().reverse().map(k => `<tr><td>${esc(k.day)}</td><td>${size(k.db || 0)}</td><td>${size(k.changed || 0)}</td>`
-      + `<td>${k.day === lastDay ? `the last good copy, begun ${when(b.confirmed)}` : ''}</td></tr>`).join('') : '';
+  // the newest night is the last good copy's when the latest report is of it (nights are named in the server's time zone)
+  const lastOk = rep?.status === 'ok' && rep.began === b.confirmed;
+  $('#backupdays').innerHTML = rep?.kept?.length ? '<tr><th>Night</th><th>Databases</th><th>Replaced or deleted</th><th></th></tr>'
+    + rep.kept.slice().reverse().map((k, i) => `<tr><td>${esc(k.day)}</td><td>${size(k.db || 0)}</td><td>${size(k.changed || 0)}</td>`
+      + `<td>${!i && lastOk ? `the last good copy, begun ${when(b.confirmed)}` : ''}</td></tr>`).join('') : '';
 }
 
 // What the backup's manifests say (offload.py): when the last came, what it confirmed and checked, and what it lost;

@@ -51,6 +51,11 @@ warn_free=$(( ${WARN_FREE_GB:-200} * 1073741824 ))
 urgent_free=$(( ${URGENT_FREE_GB:-50} * 1073741824 ))
 key=${BACKUP_KEY:-$HOME/.ssh/bouldermesh_backup}
 hkey=${BACKUP_HANDSHAKE_KEY:-$HOME/.ssh/bouldermesh_handshake}
+# nights are named by the date in the server's own time zone (its .env's TZ, as copied last time), unless TZ is set here
+if [ -z "${TZ:-}" ]; then
+    TZ=$(sed -n 's/^TZ=["'"'"']\{0,1\}\([A-Za-z0-9_+/-]*\).*/\1/p' "$dest/current/.env" 2>/dev/null | tail -1)
+    [ -n "$TZ" ] && export TZ || unset TZ
+fi
 day=$(date +%F)
 if [ -n "${BACKUP_MOUNT:-}" ] && ! mountpoint -q "$BACKUP_MOUNT"; then
     # and no report: its room left would be the server's own disk's
