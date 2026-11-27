@@ -193,7 +193,7 @@
       <button class="sec" id="tier-clip" title="Make again, at low priority, the meshes made from photos their filter now rejects (judged again by today's CLIP, as since Nov 25: concerts, merchandise and namesakes found by searches for a climb's name), from what it keeps">Remake the filtered</button>
       <button class="sec" id="tier-vggt" title="Make again, at low priority, the meshes whose photos needed VGGT (COLMAP's mapper placed too few) where it couldn't run: on a machine whose GPU has room for it">Remake where VGGT runs</button>
       <button class="sec" id="tier-frames" title="Harvest again and rebuild, at low priority, the climbs with a video cut together from several shots, or over 15 minutes long: such a video's frames now go to the views it has rather than its minutes (a video of one shot is framed as before, so its meshes aren't touched). Their boulders, and the climbs their photos match, are meshed again with them.">Remake by shots</button>
-      <button class="sec" id="frames-check" title="Look at each video framed the old way for cuts, from small copies of its frames: a few seconds a video, one at a time at low priority, about an hour for a thousand. Those cut from several shots put their meshes in the tier. Videos offloaded to the backup are left.">Look for cuts</button>
+      <button class="sec" id="frames-check" title="Look at each video framed the old way, from small copies of its keyframes, for what choosing by shots would add: a couple of seconds for most videos, up to a minute for some, one at a time at low priority. A video whose shots would get 2 frames or more that they didn&#39;t puts its meshes in the tier; cuts alone (a title card, a close-up insert) don&#39;t. Videos offloaded to the backup are left.">Look for cuts</button>
       <button class="sec" id="tier-roi" title="Make again the meshes OpenMVS cropped to a region it guessed (Nov 15-24), from their cameras as they were: only the dense, mesh and texture steps, their beta, size and climbs' places carried over. The most cut first, at low priority, once no one's own job and no area's climb waits; from scratch those that kept no cameras">Remake the cropped</button>
     </div>
     <div class="note">A boulder's mesh tries the photos it leaves out again against itself. Of what's still left, each set
@@ -525,7 +525,7 @@ function tiersNote(t){
     <li><b>${t.roi ?? 0}</b> densified while OpenMVS cropped to a region it guessed (Nov 15-24): ${t.roi_urgent ?? 0} lost over 20% of their dense points, ${t.roi_flagged ?? 0} over 10% (tagged "cropped" to editors)${t.roi_unknown ? `, ${t.roi_unknown} by how much isn't known (no job log of them)` : ''}${t.roi_replace ? `; ${t.roi_replace} more couldn't be made again from their cameras (each one's log says why), and need their photos placed again` : ''}</li>
     <li><b>${t.collapsed ?? 0}</b> placed some photos collapsed (cameras shrunk with their points to a speck), to be placed again from scratch</li>
     <li><b>${t.clip ?? 0}</b> made from photos their filter now rejects${t.clip_waits ? `; ${t.clip_waits} more whose photos still wait to be judged by today's CLIP, one at a time` : ''}</li>
-    <li><b>${t.frames ?? 0}</b> with a video cut from several shots, or over 15 min, whose frames would be chosen by its shots now${t.frames_unchecked ? `; ${t.frames_unchecked} video(s) haven't been looked at for cuts` : ''}${t.frames_check?.state === 'running' ? ` (looking now: ${t.frames_check.done} of ${t.frames_check.of}${t.frames_check.away ? `, ${t.frames_check.away} offloaded and left` : ''})` : ''}</li>
+    <li><b>${t.frames ?? 0}</b> with a video cut from several shots, or over 15 min, whose shots would get frames they didn't${t.frames_unchecked ? `; ${t.frames_unchecked} video(s) haven't been looked at` : ''}${t.frames_check?.state === 'running' ? ` (looking now: ${t.frames_check.done} of ${t.frames_check.of}${t.frames_check.away ? `, ${t.frames_check.away} offloaded and left` : ''})` : ''}</li>
     <li><b>${t.vggt ?? 0}</b> whose photos needed VGGT (COLMAP placed too few), which couldn't run where they were made (no room on its GPU, or not there)</li></ul>${addsNote(t.adds)}`;
 }
 // a confirmation for what can't be taken back: a dialog whose red button goes on (resolves true), as the site's page has
@@ -1254,7 +1254,7 @@ async function loadAsks(){
 $('#asks-load').onclick = loadAsks;
 $('#frames-check').onclick = async () => {
   const n = state?.tiers?.frames_unchecked || 0;
-  if (!n || !confirm(`Look at ${n} video(s) for cuts? A few seconds each, one at a time at low priority: about ${Math.max(1, Math.round(n * 4 / 60))} min in all.`)) return;
+  if (!n || !confirm(`Look at ${n} video(s) for what choosing their frames by shots would add? A couple of seconds each for most, up to a minute for some, one at a time at low priority: about ${Math.max(1, Math.round(n * 6 / 60))} min in all. Those offloaded to the backup are left.`)) return;
   try { msg((await call('/api/admin/actions/frames-check', {})).result, 10000); refresh(); } catch (e) { msg(e.message, 8000); }
 };
 $('#texagain').onclick = async () => { try { msg((await call('/api/admin/actions/texture-again', { ids: $('#texagain-ids').value })).result, 8000); refresh(); } catch (e) { msg(e.message, 8000); } };

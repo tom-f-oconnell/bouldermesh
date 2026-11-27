@@ -295,30 +295,44 @@ INTERRUPTED: the server restarted during this job: Retry carries on from the las
     harvested(mesh("unlooked", made=current, tex=tex_now), {"url": yt(4), "frames": 20})
     harvested(mesh("newway", made=current, tex=tex_now), {"url": yt(5), "frames": 20, "frames_version": 2, "shots": 5, "duration": 4000})
     mesh("itsboulder", kind="boulder", made=current, tex=tex_now, leaf='["A", "Rock"]', climbs={"c1": ["pcuts"], "c2": ["ptripod"]})
-    server.q("INSERT INTO video_shots(url, shots, seconds, checked) VALUES(?,4,200,0),(?,1,100,0)", yt(1), yt(2), write=True)
+    # looked at already: one whose shots would get 5 frames they didn't (with 1 video sharing the harvest's frames), one of one shot
+    server.q("INSERT INTO video_shots(url, shots, seconds, checked, gain) VALUES(?,4,200,0,?),(?,1,100,0,'{}')", yt(1),
+             json.dumps({"1": 5, "2": 5, "6": 0}), yt(2), write=True)
+    assert server.frames_differ({"url": yt(1), "frames": 12}, {yt(1): {"gain": json.dumps({"1": 5, "6": 0})}}, {}, 6) is False, "nothing gained when six share"
     server.save_video({"url": yt(3), "duration": 2000.0})
     t = server.mesh_tiers(fresh=True)
     assert sorted(t["ids"]["frames"]) == ["cuts", "itsboulder", "longvid"] and t["frames"] == 3, t["ids"]["frames"]
     assert t["frames_unchecked"] == 1 and t["frames_check"]["state"] == "idle", (t["frames_unchecked"], t["frames_check"])
-    # looking at the one not looked at: a video of two shots, in the cache
+    # looking at the one not looked at, in the cache: 12 s from a tripod, 8 s going round the rock, something else, the
+    # tripod again. By its minutes the 8 s get a frame or two; by its shots, most of its share
     with tempfile.TemporaryDirectory() as td:
-        for name, seed in (("a", 1), ("b", 2)):
+        def rock(seed: int) -> Image.Image:
             rng = np.random.default_rng(seed)
             img = sum(w * np.kron(rng.uniform(-1, 1, (360 // c + 1, 640 // c + 1)), np.ones((c, c)))[:360, :640] for c, w in ((64, 60), (16, 40), (4, 25)))
-            Image.fromarray(np.clip(128 + img, 0, 255).astype(np.uint8)).convert("RGB").save(f"{td}/{name}.png")
+            return Image.fromarray(np.clip(128 + img, 0, 255).astype(np.uint8)).convert("RGB")
+        a, b = rock(1), rock(2)
+        parts = [(a, 12)] + [(a.transform(a.size, Image.PERSPECTIVE, (1 + 0.06 * k, 0.02 * k, -15 * k, 0.01 * k, 1 + 0.03 * k, -4 * k, 0.00024 * k, 0.00012 * k),
+                                          resample=Image.BILINEAR), 1) for k in range(1, 9)] + [(b, 4), (a, 6)]
+        lines = []
+        for i, (img, secs) in enumerate(parts):
+            img.save(f"{td}/p{i:03d}.png")
+            lines += [f"file '{td}/p{i:03d}.png'", f"duration {secs}"]
+        pathlib.Path(td, "list.txt").write_text("\n".join(lines + [lines[-2]]) + "\n")
         server.youtube_mod.VIDEO_CACHE.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["ffmpeg", "-loglevel", "error", "-loop", "1", "-t", "4", "-i", f"{td}/a.png", "-loop", "1", "-t", "4", "-i", f"{td}/b.png",
-                        "-filter_complex", "[0][1]concat=n=2:v=1", "-r", "5", "-pix_fmt", "yuv420p",
-                        str(server.youtube_mod.VIDEO_CACHE / "frames00004.mp4")], check=True, timeout=120)
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", f"{td}/list.txt", "-vf", "fps=2", "-g", "2", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", str(server.youtube_mod.VIDEO_CACHE / "frames00004.mp4")], check=True, timeout=120)
     assert "1 video" in server.admin_frames_check({})["result"]
-    for _ in range(100):
+    for _ in range(300):
         if server._frames_check["state"] == "idle":
             break
         time.sleep(0.1)
-    seen = server.q("SELECT shots, seconds FROM video_shots WHERE url=?", yt(4), one=True)
-    assert seen and seen["shots"] == 2 and 7 < seen["seconds"] < 9, seen
+    seen = server.q("SELECT shots, seconds, gain FROM video_shots WHERE url=?", yt(4), one=True)
+    gain = json.loads(seen["gain"])
+    assert seen["shots"] == 3 and gain["6"] >= 2 and gain["1"] == 0, (seen, "with all 150 frames to itself, its minutes cover every view")
     t = server.mesh_tiers(fresh=True)
-    assert sorted(t["ids"]["frames"]) == ["cuts", "itsboulder", "longvid", "unlooked"] and t["frames_unchecked"] == 0, t["ids"]["frames"]
+    assert sorted(t["ids"]["frames"]) == ["cuts", "itsboulder", "longvid"] and t["frames_unchecked"] == 0, (t["ids"]["frames"], "the one looked at has its frames to itself")
+    harvested("punlooked", {"url": yt(4), "frames": 20}, *({"url": yt(20 + i), "frames": 5, "frames_version": 2} for i in range(5)))
+    assert "unlooked" in server.mesh_tiers(fresh=True)["ids"]["frames"], "six videos share its harvest's frames: its shots gain"
     # remaking the tier: each climb whose harvest has such a video is harvested again and rebuilt, at low priority
     server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('fr','Frames','999','popularity',0,'done')", write=True)
     for i, pid in enumerate(("pcuts", "ptripod", "plongvid")):

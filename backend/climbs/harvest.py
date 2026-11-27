@@ -360,8 +360,9 @@ def find_shots(frames: list[Path], log: Log) -> list[list[Path]]:
     geometry (SHOT_MATCHES, which a camera moving fast within one shot still gives). A frame that can't be judged
     (black, blurred to nothing) stays with the shot before it, and the next is held against the last that could be,
     so that a fade through black is a cut. A shot that comes back to a view an earlier one ended on (SHOT_LOOKBACK
-    shots back: an edit going between two tripods) carries that one on, so that its view is counted once. Without
-    OpenCV, the small copies decide alone."""
+    shots back: an edit going between two tripods) carries that one on, so that its view is counted once: by their
+    small copies (VIEW_ALIKE), or by their features matching with no parallax (diversity.pair()'s same shot), which
+    holds when the climber has moved on and the camera hasn't. Without OpenCV, the small copies decide alone."""
     if not frames:
         return []
     small = {f: _small(f) for f in frames}
@@ -387,7 +388,13 @@ def find_shots(frames: list[Path], log: Log) -> list[list[Path]]:
         if first is not None:
             for earlier in reversed(merged[-SHOT_LOOKBACK:]):
                 end = next((f for f in reversed(earlier) if small[f] is not None), None)
-                if earlier is not came_from and end is not None and _alike(small[end], small[first]) >= VIEW_ALIKE:
+                if earlier is came_from or end is None:
+                    continue
+                if _alike(small[end], small[first]) >= VIEW_ALIKE:
+                    back = earlier
+                    break
+                got = feats.pair(end, first) if feats.available else None    # the climber has moved, but the camera hasn't
+                if got is not None and got[1]:
                     back = earlier
                     break
         if back is not None:

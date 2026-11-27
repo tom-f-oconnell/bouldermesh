@@ -294,7 +294,7 @@ def init_db() -> None:
         -- a video whose frames were chosen the old way (before harvest.FRAMES_VERSION 2), looked at for cuts
         -- (frames_check()): how many shots it has, and its length, which say whether its frames would be chosen
         -- differently now (frames_differ())
-        CREATE TABLE IF NOT EXISTS video_shots(url TEXT PRIMARY KEY, shots INTEGER, seconds REAL, checked REAL);
+        CREATE TABLE IF NOT EXISTS video_shots(url TEXT PRIMARY KEY, shots INTEGER, seconds REAL, checked REAL, gain TEXT);
         -- climbers to ask for footage that's only on Instagram (asks_listed()): where each ask has got to, and the climbs
         -- it covered when it was marked asked (names, JSON), so that a climber is asked once, not once a climb
         CREATE TABLE IF NOT EXISTS asks(climber TEXT PRIMARY KEY, status TEXT, note TEXT, updated REAL, climbs TEXT);
@@ -4597,30 +4597,81 @@ def tiers_changed() -> None:
 
 # ---- videos whose frames would be chosen differently now. Since harvest.FRAMES_VERSION 2 a video cut together from
 # several shots, or longer than harvest.LONG_SECONDS, gives its frames to the views it has rather than its minutes; a
-# video of one shot is framed as before, frame for frame. So only meshes with a video of several shots, or a long one,
-# would come out different, and which those are is told without remaking them: by each old-way video's length, and a
-# look at small copies of its frames for cuts (frames_check(), a few seconds a video, asked for on the admin page).
+# video of one shot is framed as before, frame for frame. Which meshes would come out different is told without
+# remaking them, by a look at each old-way video (frames_check(), asked for on the admin page). Cuts alone don't say:
+# of 40 ordinary videos looked at on Nov 26, 2026, 11 had cuts, nearly all title cards, close-up inserts or a second
+# tripod, which give the same frames either way. So the look chooses frames both ways, from small copies, and counts
+# what the new way adds: frames in shots the old way gave fewer (frames_gain()). Only a video that gains GAIN_MIN,
+# or a long one, puts its meshes in the tier.
 _frames_check: dict = {"state": "idle", "done": 0, "of": 0, "away": 0}
+GAIN_MIN = 2            # frames the new way must add, in shots the old way gave fewer, for a video's meshes to be remade
+FRAME_BUDGET = 150      # a harvest's frames, shared by its videos (harvest.video_frames()'s max_frames and max_videos)
+FRAME_VIDEOS = 6
 
 
-def frames_differ(v: dict, shots: dict[str, dict], lengths: dict[str, float]) -> bool | None:
-    """Whether a harvest's video (as its record has it) would be framed differently now: False if it gave no frames,
-    was framed the new way already, or is one shot and not long; True if it's long or has cuts; None if it hasn't been
-    looked at for cuts (frames_check())."""
+def frames_gain(video: Path) -> tuple[int, float | None, dict[str, int]]:
+    """What choosing a video's frames by its shots would add to choosing them by its minutes, worked out on small
+    copies of its frames: its keyframes, where its decoder can skip the rest (30 times quicker, and the same answer
+    for 39 of 40 videos tried), a frame a second at most, or harvest.MAX_CANDIDATES of a long one.
+
+    Returns:
+        (how many shots it has that aren't title cards; its length in seconds; {how many videos share the harvest's
+        frames, "1" to "6": the frames gained}, empty for a video of one shot).
+    """
+    secs = harvest_mod.video_seconds(video)
+    fps = min(1.0, harvest_mod.MAX_CANDIDATES / secs) if secs and secs > harvest_mod.LONG_SECONDS else 1.0
+    quiet = lambda s: None  # noqa: E731
+    with tempfile.TemporaryDirectory(prefix="shots-", dir=str(DATA)) as td:
+        jobctl.run(["ffmpeg", "-loglevel", "error", "-threads", "1", "-skip_frame", "nokey", "-i", str(video),
+                    "-vf", f"fps={fps:g},scale=640:-2", "-q:v", "4", str(Path(td) / "f%05d.jpg")], timeout=900)
+        frames = sorted(Path(td).glob("f*.jpg"))
+        shots = harvest_mod.find_shots(frames, quiet)
+
+        def card(shot: list[Path]) -> bool:
+            try:
+                return all(relevance_mod.flat_share(f) > relevance_mod.FLAT_MAX for f in shot[::max(1, len(shot) // 3)][:3])
+            except Exception:  # noqa: BLE001
+                return False
+        real = [i for i, shot in enumerate(shots) if not card(shot)]
+        if len(real) <= 1:
+            return len(real), secs, {}
+        of = {f: i for i, shot in enumerate(shots) for f in shot}
+        sharp: dict[Path, float] = {}
+        gain = {}
+        for n in range(1, FRAME_VIDEOS + 1):
+            keep = FRAME_BUDGET // n
+            old = harvest_mod.drop_repeats(harvest_mod._sharpest(frames, keep, quiet, sharp), sharp, quiet)
+            new = harvest_mod.drop_repeats(harvest_mod.by_shots(shots, keep, quiet, sharp)[0], sharp, quiet)
+            had, got = collections.Counter(of[f] for f in old), collections.Counter(of[f] for f in new)
+            gain[str(n)] = sum(max(0, got[i] - had[i]) for i in real)
+        return len(real), secs, gain
+
+
+def frames_differ(v: dict, shots: dict[str, dict], lengths: dict[str, float], sharing: int = FRAME_VIDEOS) -> bool | None:
+    """Whether a harvest's video (as its record has it) would be framed differently now, enough to matter: False if it
+    gave no frames, was framed the new way already, or the new way adds under GAIN_MIN frames to it; True if it's long,
+    or gains that many, with `sharing` videos sharing the harvest's frames; None if it hasn't been looked at
+    (frames_check())."""
     if not v.get("frames") or v.get("frames_version") or not v.get("url"):
         return False
     secs = v.get("duration") or lengths.get(v["url"]) or (shots.get(v["url"]) or {}).get("seconds")
     if secs and secs > harvest_mod.LONG_SECONDS:
         return True
     seen = shots.get(v["url"])
-    return None if seen is None else (seen["shots"] or 0) > 1
+    if seen is None:
+        return None
+    try:
+        gain = json.loads(seen.get("gain") or "{}")
+    except ValueError:
+        gain = {}
+    return (gain.get(str(max(1, min(FRAME_VIDEOS, sharing)))) or 0) >= GAIN_MIN
 
 
 def frames_tier() -> dict:
     """What the admin page's "frames" tier is worked out from: {differ: {harvest's project id: how many of its videos
     would be framed differently now}, unchecked: [the URLs of old-way videos not looked at for cuts yet]}, over every
     harvest an area's climb has."""
-    shots = {r["url"]: r for r in q("SELECT url, shots, seconds FROM video_shots")}
+    shots = {r["url"]: r for r in q("SELECT url, shots, seconds, gain FROM video_shots")}
     lengths = {r["url"]: r["duration"] for r in q("SELECT url, duration FROM videos WHERE duration IS NOT NULL")}
     differ, unchecked = {}, {}
     for p in q("SELECT id, harvest FROM projects WHERE kind='harvest' AND harvest IS NOT NULL AND harvest LIKE '%\"videos\"%'"):
@@ -4628,8 +4679,9 @@ def frames_tier() -> dict:
             videos = json.loads(p["harvest"]).get("videos") or []
         except (TypeError, ValueError):
             continue
+        sharing = sum(bool(v.get("frames")) for v in videos)
         for v in videos:
-            d = frames_differ(v, shots, lengths)
+            d = frames_differ(v, shots, lengths, sharing)
             if d:
                 differ[p["id"]] = differ.get(p["id"], 0) + 1
             elif d is None:
@@ -4645,21 +4697,11 @@ def mesh_harvests(rec: dict) -> list[str]:
     return [rec["project"]] if rec.get("project") else []
 
 
-def shots_of(video: Path) -> tuple[int, float | None]:
-    """How many shots a video has, as the harvest would find them (harvest.find_shots(), over a frame a second, or
-    harvest.MAX_CANDIDATES of a long one), from small copies of its frames; and its length in seconds."""
-    secs = harvest_mod.video_seconds(video)
-    fps = min(1.0, harvest_mod.MAX_CANDIDATES / secs) if secs and secs > harvest_mod.LONG_SECONDS else 1.0
-    with tempfile.TemporaryDirectory(prefix="shots-", dir=str(DATA)) as td:
-        jobctl.run(["ffmpeg", "-loglevel", "error", "-threads", "1", "-i", str(video), "-vf", f"fps={fps:g},scale=640:-2", "-q:v", "4",
-                    str(Path(td) / "f%05d.jpg")], timeout=900)
-        return len(harvest_mod.find_shots(sorted(Path(td).glob("f*.jpg")), lambda s: None)), secs
-
-
 def frames_check() -> None:
-    """Look at every old-way video not looked at yet (frames_tier()'s unchecked) for cuts, one at a time at low
-    priority, keeping what's found (video_shots): those here in the cache; one offloaded to the backup is left, and
-    counted ("away"). On a thread of its own, started from the admin page (admin_frames_check())."""
+    """Look at every old-way video not looked at yet (frames_tier()'s unchecked) for what the new way of choosing
+    frames would add (frames_gain()), one at a time at low priority, keeping what's found (video_shots): those here in
+    the cache; one offloaded to the backup is left, and counted ("away"). On a thread of its own, started from the
+    admin page (admin_frames_check())."""
     try:
         os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), BETA_NICE)
     except OSError:
@@ -4675,8 +4717,9 @@ def frames_check() -> None:
                 _frames_check["away"] += 1
                 continue
             try:
-                n, secs = shots_of(video)
-                q("INSERT OR REPLACE INTO video_shots(url, shots, seconds, checked) VALUES(?,?,?,?)", url, n, secs, time.time(), write=True)
+                n, secs, gain = frames_gain(video)
+                q("INSERT OR REPLACE INTO video_shots(url, shots, seconds, checked, gain) VALUES(?,?,?,?,?)", url, n, secs, time.time(),
+                  json.dumps(gain), write=True)
             except Exception as e:  # noqa: BLE001 - this video stays unchecked
                 print(f"frames check: {url}: {type(e).__name__}: {e}", flush=True)
             _frames_check["done"] += 1
@@ -4696,8 +4739,9 @@ def admin_frames_check(_: dict) -> dict:
         raise ValueError("every video whose frames were chosen the old way has been looked at")
     _frames_check.update(state="running", done=0, of=n, away=0)
     threading.Thread(target=frames_check, daemon=True, name="frames-check").start()
-    return {"result": f"looking at {n} video(s) for cuts, a few seconds each, at low priority: those with several shots, or longer than "
-                      f"{harvest_mod.LONG_SECONDS / 60:.0f} min, put their meshes in the tier"}
+    return {"result": f"looking at {n} video(s), a couple of seconds each for most and up to a minute for some, at low priority: those "
+                      f"whose shots would get {GAIN_MIN} frames or more that they didn't, or longer than {harvest_mod.LONG_SECONDS / 60:.0f} min, "
+                      "put their meshes in the tier; those offloaded to the backup are left"}
 
 
 def queue_reframes(mids: list[str]) -> dict:
