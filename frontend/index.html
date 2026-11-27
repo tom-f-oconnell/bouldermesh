@@ -177,7 +177,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .bpanel .brow.why b{text-decoration:underline dotted}
   .status.offloaded{color:var(--climb)}
   .statcol{display:inline-flex;flex-direction:column;align-items:flex-end;gap:3px}   /* a state, and below it "data offloaded" */   /* orange: some of its data is in the backup, brought back on resuming */
-  .status.done,.status.harvested{color:var(--ok)} .status.failed{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
+  .status.done,.status.harvested{color:var(--ok)} .status.failed,.status.astopped{color:var(--bad)} .status.running,.status.queued,.status.harvesting,.status.interrupted{color:var(--warn)}
   .thumbs{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
   .thumbs img{width:44px;height:44px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
   .thumbs img.big{width:92px;height:92px}
@@ -1285,12 +1285,14 @@ $('#vmap').onclick = () => {
 // was drawn last is kept in this browser (AREAS_KEPT) and drawn at once, until the lists come, which can take seconds.
 let amap = null, areaLayer = null, areaFitted = false, areaKey = '', meshesReady = false, campaignsCache = null;
 const AREAS_KEPT = 'bm_areas';
-const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: green only for done, and no red or orange (bad, warnings)
-  [['running', 'stopping', 'jobs running'], '#3f6fe0', 'active'],
+const AREA_LOOKS = [      // [the states it covers, colour, what the legend says]: as the Areas tab's list has them, green
+  // only for an area meshed whole with nothing left, grey for one run only partway, and red for stopped (the user's, Nov 26)
+  [['running', 'stopping', 'jobs running', 'finishing'], '#3f6fe0', 'active'],
   [['queued', 'waiting', 'jobs waiting'], '#e0b84a', 'waiting its turn'],
   [['low priority'], '#9a5fe0', 'low priority: remaking old meshes'],
-  [['stopped', 'data offloaded'], '#8a8f98', 'stopped'],
-  [['done', 'partial'], '#2e9e57', 'done: nothing left to do'],
+  [['stopped', 'data offloaded'], '#d64545', 'stopped'],
+  [['partial'], '#8a8f98', 'partial: run only partway'],
+  [['done'], '#2e9e57', 'done: nothing left to do'],
 ];
 const areaState = st => AREA_LOOKS.find(x => x[0].includes(st)) || null;
 // An area whose own run is stopped or done, with its projects still being meshed or waiting to be (asked for on their
@@ -1302,6 +1304,13 @@ function areaJobs(c, st){
   const said = j.running ? `${remake ? 'remaking' : 'meshing'} ${j.running}${j.waiting ? `, ${j.waiting} waiting` : ''}`
     : `${j.waiting} waiting to be ${remake ? 'remade' : 'meshed'}`;
   return { st: j.running ? 'jobs running' : 'jobs waiting', said: `${said} (area run ${run})` };
+}
+// What's still going on for an area whose own run is done (or partial), beyond jobs (areaJobs()): machines at work for
+// its projects, its meshes' beta or size to come, or climbs harvested for a boulder's or pool's mesh; null if nothing is
+function areaFinishing(c, st){
+  if (!c || !['done', 'partial'].includes(st)) return null;
+  const atWork = (areasAtWork.get(c.id) || []).length, toCome = areasLeft.get(c.id) || 0, harvested = c.counts?.harvested || 0;
+  return atWork || toCome || harvested ? { atWork, toCome, harvested } : null;
 }
 const plural2 = (n, one, many = one + 'es') => `${n} ${n === 1 ? one : many}`;
 function areaMap(){
@@ -1383,7 +1392,7 @@ function areaPoints(){
     const ms = at[a] || [], c = byName[a];
     const lat = ms.length ? ms.reduce((t, m) => t + m.lat, 0) / ms.length : c?.lat, lng = ms.length ? ms.reduce((t, m) => t + m.lng, 0) / ms.length : c?.lng;
     const st = c ? (c.state === 'done' && !c.complete ? 'partial' : c.state || c.status) : null, jobs = areaJobs(c, st);
-    return { a, lat, lng, n: ms.length, st: jobs?.st || st, ...(jobs ? { note: jobs.said } : {}) };
+    return { a, lat, lng, n: ms.length, st: jobs?.st || (areaFinishing(c, st) ? 'finishing' : st), ...(jobs ? { note: jobs.said } : {}) };
   }).filter(x => x.lat != null && x.lng != null);
 }
 function drawAreas(){
@@ -4157,11 +4166,13 @@ function currentHtml(c){
 async function refreshCampaigns(kept = null){
   // low priority (only remaking old meshes) under the rest; within each, those whose projects machines are working for (a
   // mesh's size or beta, say) first, the rest in their order (#place)
-  // three bands, as projects: going on; low priority (set so, or only remaking old meshes), even while machines work for it,
-  // as it only takes what the others leave; then stopped and done (or finishing)
+  // four bands: going on, as projects; low priority (set so, or only remaking old meshes), even while machines work for it,
+  // as it only takes what the others leave; then done or partial with work still going for it (areaFinishing()); then
+  // stopped, and done or partial with nothing left
   const band = c => {
     const st = c.state || c.status, jobs = areaJobs(c, st);
-    return !jobs && ['stopped', 'done'].includes(st) ? 6 : c.low_priority || st === 'low priority' ? 3 : 0;
+    if (jobs || !['stopped', 'done'].includes(st)) return c.low_priority || st === 'low priority' ? 3 : 0;
+    return areaFinishing(c, st === 'done' && !c.complete ? 'partial' : st) ? 6 : 9;
   };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const fresh = kept || await api('/api/campaigns');
@@ -4216,8 +4227,9 @@ async function refreshCampaigns(kept = null){
         : state === 'done' && !c.complete ? { label: 'partial', cls: '', tip: sumUp }
         : state === 'done' && atWork.length ? { label: 'finishing: machines still at work', cls: 'running', tip: sumUp }
         : state === 'done' && toCome ? { label: `meshed; ${toCome} with beta or size to come`, cls: 'running', tip: sumUp }
+        : state === 'done' && n.harvested ? { label: `meshed; ${n.harvested} harvested, waiting for their mesh`, cls: 'running', tip: sumUp }
         : { label: state === 'low priority' ? 'low priority: remaking old meshes' : state,
-            cls: ['stopped', 'queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running',
+            cls: state === 'stopped' ? 'astopped' : ['queued', 'waiting'].includes(state) ? '' : state === 'low priority' ? 'lowp' : state === 'done' ? 'done' : 'running',
             tip: [tip, sumUp].filter(Boolean).join(' ') };
       d.innerHTML = `<div class="row"><span class="grow campname">${title}${atWork.length ? ` <span class="tag" title="${esc(atWork.map(w => `${w.what.replace(/ (of|for)$/, '')}${w.state === 'running' ? ` on ${w.machine || 'a machine'}` : ', waiting'}`).join('; '))}">machines at work: ${atWork.length}</span>` : ''}</span>${c.place ? `<small class="meta" title="Its place in the order areas are taken: as entered, top first">#${c.place}</small>` : ''}<span class="statcol"><span class="status ${st.cls}" title="${esc(st.tip)}">${esc(st.label)}</span>${c.low_priority ? `<span class="tag low" title="${LOW_TIP}">low priority</span>` : ''}${offloadedTag(c.away_bytes, "its climbs' photos and videos were", 'Resuming')}</span></div>
         <div class="meta">${ORDER_NAMES[c.ord] || ''}${c.max_meshes ? `, up to ${c.max_meshes} mesh${c.max_meshes === 1 ? '' : 'es'}${c.count_failures ? ` or failure${c.max_meshes === 1 ? '' : 's'}` : ''} (${c.made} made)` : ''}</div>

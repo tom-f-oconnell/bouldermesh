@@ -3779,6 +3779,36 @@ try:
     assert server.campaign_status(c["id"]) == "done"
     server._settled.clear()
     assert server.settle_clusters(c["id"], got["Marie"]["boulder"]) == 0, "not again from the same climbs"
+    # one of them harvested again after the area was done (its videos came from volunteers), left to join the pool
+    # (join_climb()): through with the pool's mesh, as its photos are the same; or the pool made again if they changed;
+    # done areas settled too (settle_finished()), as only running areas' were before (The Tramway, Nov 26)
+    rose = got["Rose"]
+    server.q("UPDATE campaign_items SET status='harvested', note=?, mesh_id=NULL WHERE campaign_id=? AND source_id=?",
+             server.JOINED_NOTE, c["id"], rose["source_id"], write=True)
+    server._settled.clear()
+    server.settle_finished()
+    now_rose = items(c["id"])["Rose"]
+    assert now_rose["status"] == "done" and now_rose["mesh_id"] == proj["mesh_id"], now_rose
+    assert server.campaign_status(c["id"]) == "done", "nothing queued: still done"
+    server.q("UPDATE campaign_items SET status='harvested', note=?, mesh_id=NULL WHERE campaign_id=? AND source_id=?",
+             server.JOINED_NOTE, c["id"], rose["source_id"], write=True)
+    real_same = server.pooled_same
+    server.pooled_same = lambda p, key: False     # Rose's photos changed since they were pooled
+    try:
+        server._settled.clear()
+        server.settle_finished()
+    finally:
+        server.pooled_same = real_same
+    queued = server.q("SELECT name, redo, pool FROM campaign_items WHERE campaign_id=? AND redo IS NOT NULL", c["id"])
+    assert [(r["redo"], r["pool"]) for r in queued] == [("cluster", pool["key"])], queued
+    assert server.campaign_status(c["id"]) == "running", "queued: running again"
+    # put back as it was, for what follows
+    server.q("UPDATE campaign_items SET redo=NULL, pool=NULL, retry=0, status=COALESCE(was, status) WHERE campaign_id=? AND redo IS NOT NULL",
+             c["id"], write=True)
+    server.q("UPDATE campaign_items SET status='done', mesh_id=?, note=? WHERE campaign_id=? AND source_id=?",
+             proj["mesh_id"], rose["note"], c["id"], rose["source_id"], write=True)
+    server.q("UPDATE campaigns SET status='done', only_retries=0 WHERE id=?", c["id"], write=True)
+    server._settled.clear()
     # a climb joining later (as a limit is raised): no mesh of its own, its photos added to the pool's model
     first_pool = proj["mesh_id"]
     MATCH[("Bleau", "Rose")] = 4
@@ -4036,7 +4066,8 @@ print("machines' work by project OK")
 # what's still to do for a meshed project: beta in its videos (so many of so many done), its size; nothing once done
 server.q("INSERT INTO projects(id,name,created,kind,status,mesh_id) VALUES('cc0000000001','Left Boulder (boulder)',?,'boulder','done','dd0000000001')",
          time.time(), write=True)
-server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('dd0000000001','Left Boulder','m.glb','project:cc0000000001',?)", time.time(), write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created,rules) VALUES('dd0000000001','Left Boulder','m.glb','project:cc0000000001',?,?)",
+         time.time(), server.MESH_RULES, write=True)
 (server.MESHES / "dd0000000001").mkdir(parents=True, exist_ok=True)
 real = (server.beta_mod.videos, server.beta_mod.load, server.scale_mod.load)
 beta_rec, size_rec = {"status": "queued", "videos": [{"holds": []}], "waiting_videos": ["u3"]}, {"status": "queued"}
@@ -4054,6 +4085,13 @@ try:
     beta_rec.update(videos=[{}, {}])     # done before a third video was placed in it
     server._steps_left["at"] = 0
     assert server.steps_left()["cc0000000001"] == ["beta not looked for yet: 2 of 3 video(s) done"]
+    # an old mesh's beta is never looked for (queue_beta()): nothing to come for it
+    server.q("UPDATE meshes SET rules=0 WHERE id='dd0000000001'", write=True)
+    server._steps_left["at"] = 0
+    assert "cc0000000001" not in server.steps_left(), "made under older rules"
+    server.q("UPDATE meshes SET rules=?, old_data=1 WHERE id='dd0000000001'", server.MESH_RULES, write=True)
+    server._steps_left["at"] = 0
+    assert "cc0000000001" not in server.steps_left(), "covered by a newer mesh"
 finally:
     server.beta_mod.videos, server.beta_mod.load, server.scale_mod.load = real
     server.q("DELETE FROM projects WHERE id='cc0000000001'", write=True)

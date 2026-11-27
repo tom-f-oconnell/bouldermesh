@@ -1331,23 +1331,29 @@ def boulder_unchanged(boulder: str) -> str | None:
     if not proj or proj["status"] != "done" or not proj["mesh_id"] or not q(
             f"SELECT 1 FROM meshes m WHERE id=? AND replaced_by IS NULL AND NOT {OLD_MESH}", proj["mesh_id"]):
         return None     # nor an old one (MESH_RULES), made again under the rules from the same photos
+    return proj["mesh_id"] if pooled_same(proj, boulder) else None
+
+
+def pooled_same(proj: dict, boulder: str) -> bool:
+    """Whether a boulder's (or pool's) project last pooled the photos its climbs' harvests hold now: the same harvests
+    of the same climbs, none harvested again since; however its job went."""
     try:
         record = json.loads((PROJECTS / proj["id"] / CLIMBS_FILE).read_text())
         then, pooled_at = {c["id"]: sorted(c["projects"]) for c in record["climbs"]}, float(record["created"])
     except (OSError, ValueError, KeyError, TypeError):
-        return None
+        return False
     if {c["id"]: sorted(climb_harvests(c["id"])) for c in boulder_climbs(boulder)} != then:
-        return None
+        return False
     for h in {h for hs in then.values() for h in hs}:
         photos = PROJECTS / h / "photos"
         if photos_away(h):      # offloaded to the backup, as they were
             continue
         try:
             if max([photos.stat().st_mtime] + [f.stat().st_mtime for f in photos.iterdir()]) > pooled_at:
-                return None     # harvested again since
+                return False    # harvested again since
         except OSError:
-            return None
-    return proj["mesh_id"]
+            return False
+    return True
 
 
 def boulder_area_work(boulder: str) -> list[dict]:
@@ -8521,6 +8527,18 @@ def snapshot_worker() -> None:
         time.sleep(SNAPSHOT_EVERY)
 
 
+def settle_finished() -> None:
+    """The boulders and pools (settle_boulder(), settle_all_clusters()) of each area that's done with climbs still
+    harvested for them: each queued sets its area running again. Until Nov 26, 2026, only running areas' were settled,
+    so a climb harvested again after its area was done (its videos come from volunteers, say) waited for good."""
+    rows = q("SELECT DISTINCT ci.campaign_id, ci.boulder FROM campaign_items ci JOIN campaigns c ON c.id=ci.campaign_id "
+             "WHERE c.status='done' AND ci.status='harvested'")
+    for r in rows:
+        settle_boulder(r["campaign_id"], r["boulder"])
+    for camp_id in {r["campaign_id"] for r in rows}:
+        settle_all_clusters(camp_id)
+
+
 def _claim(w: Worker, low: bool | None = None):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
     climb, from the area fewest other workers are on; within it, first one on a boulder (meshed whole) another worker
@@ -8533,6 +8551,7 @@ def _claim(w: Worker, low: bool | None = None):
         (area, climb), or None.
     """
     others = [x for x in _workers if x is not w]
+    settle_finished()
     camps = q("SELECT * FROM campaigns WHERE status='running' ORDER BY priority, created")     # as entered, top first
     why = full()
     for camp in camps:      # paused, not stopped: they carry on once there's room
@@ -9387,7 +9406,16 @@ def settle_clusters(camp_id: str, leaf: str, kinds: dict | None = None, items: l
             then = None
         again = old_pool(proj) or pool_asked_again(key, proj)
         if then == set(group) and not again:  # pooled from these before, however it went
-            continue
+            # one of them harvested again since and left to join it (join_climb()), as after volunteers' videos came:
+            # pooled again if that changed its photos, else through with its mesh, or on its own if that isn't made or
+            # places none of its own (cluster_meshed()). Until Nov 26, 2026, it was left harvested, its area done
+            if not any(i["status"] == "harvested" and not i["redo"] and i["climb_id"] in group for i in items):
+                continue
+            if pooled_same(proj, key):
+                current = proj["status"] == "done" and proj["mesh_id"] and q(
+                    f"SELECT 1 FROM meshes m WHERE id=? AND replaced_by IS NULL AND NOT {OLD_MESH}", proj["mesh_id"])
+                queued += cluster_meshed(camp_id, group, proj["mesh_id"] if current else None)
+                continue
         # one that grew, with a current mesh: the new climbs' photos added to its model, re-solved in full only where
         # incremental.py's gates say (or it kept no features); until Nov 24, 2026, each climb joining meant a full remake
         grows = bool(then and then < set(group) and not again and proj["status"] == "done" and proj["mesh_id"]
@@ -13110,12 +13138,14 @@ STEPS_LEFT_EVERY = 60       # seconds the steps left are kept between workings o
 def steps_left() -> dict[str, list[str]]:
     """What's still to do for each meshed project, by its id, beyond meshing: finding beta in its mesh's videos (all of
     those placed in it, or those still to look at) and finding its size, each as words for the projects tab ("beta: 2
-    of 5 videos", "size"). Meshes made old by a newer one aren't listed. Kept STEPS_LEFT_EVERY seconds."""
+    of 5 videos", "size"). Old meshes (mesh_old()) aren't listed, as neither is found in them: until Nov 26, 2026, those
+    under older rules were, as beta to come that never came (The Tramway's 9 from Nov 9). Kept STEPS_LEFT_EVERY seconds."""
     now = time.time()
     if now - _steps_left["at"] < STEPS_LEFT_EVERY:
         return _steps_left["by"]
     by: dict[str, list[str]] = {}
-    for r in q("SELECT p.id AS pid, m.id AS mid FROM projects p JOIN meshes m ON m.id = p.mesh_id WHERE m.replaced_by IS NULL"):
+    for r in q("SELECT p.id AS pid, m.id AS mid FROM projects p JOIN meshes m ON m.id = p.mesh_id WHERE m.replaced_by IS NULL "
+               f"AND NOT {OLD_MESH} AND NOT COALESCE(m.old_data, 0)"):
         d, left = MESHES / r["mid"], []
         if not d.is_dir():
             continue
