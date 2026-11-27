@@ -8597,7 +8597,8 @@ def _claim(w: Worker, low: bool | None = None):
     """Choose this worker's next climb, and mark it as running, under _claim_lock: an area's next waiting
     climb, from the area fewest other workers are on; within it, first one on a boulder (meshed whole) another worker
     is on, so that its climbs are harvested side by side and its mesh starts sooner, before any other boulder is
-    begun (their filters still go in the area's order: FilterTurns). Areas with nothing left are settled here. With low False, only regular areas';
+    begun (their filters still go in the area's order: FilterTurns). Every running area is settled here, and those
+    with nothing left marked done (or stopped), whichever it takes from. With low False, only regular areas' climbs;
     with low True, only low-priority areas' (set_area_low()), then climbs remade as their meshes are old (_claim_old());
     with None, any, regular areas' first.
 
@@ -8614,15 +8615,17 @@ def _claim(w: Worker, low: bool | None = None):
             q("UPDATE campaigns SET note=? WHERE id=? AND COALESCE(note,'')!=COALESCE(?,'')", note, camp["id"], note, write=True)
     if why:
         return None
-    if low is not None:
-        camps = [c for c in camps if bool(c.get("low_priority")) == low]
     camps.sort(key=lambda c: (bool(c.get("low_priority")), sum(x.campaign == c["id"] for x in others)))
     for camp in camps:
+        # every running area is settled, and marked done once through, whichever this worker takes from: until Nov 26,
+        # 2026, a low-priority one was looked at only when a worker had nothing regular to do, so with others always
+        # busy it stayed running with nothing to go (Joshua Tree, "waiting" with 0 to go)
+        mine = low is None or bool(camp.get("low_priority")) == low
         if shutil.disk_usage(DATA).free < CAMPAIGN_MIN_FREE:
             q("UPDATE campaigns SET status='stopped', note=? WHERE id=?",
               f"stopped: under {CAMPAIGN_MIN_FREE / 2**30:.0f} GB of disk left", camp["id"], write=True)
             continue
-        if camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
+        if mine and camp["ord"] == "data" and not camp["only_retries"] and not any(x.campaign for x in others):
             read_ahead(camp)
         settle_waiting(camp["id"])
         for b in q("SELECT DISTINCT boulder FROM campaign_items WHERE campaign_id=? AND status='harvested'", camp["id"]):
@@ -8634,7 +8637,7 @@ def _claim(w: Worker, low: bool | None = None):
             items = [i for i in items if i["retry"]]
         active = {x.boulder for x in others if x.boulder}     # boulders being harvested: theirs first (funnelled)
         free = [i for i in items if i["boulder"] and i["boulder"] in active] or items
-        if not free:
+        if not free or not mine:
             if not items and not any(x.campaign == camp["id"] for x in others):
                 own = "AND COALESCE(old_rerun, 0)=0"     # what's queued again at low priority doesn't hold it up
                 held = q(f"SELECT count(*) AS n FROM campaign_items WHERE campaign_id=? AND status='waiting' {own}", camp["id"], one=True)["n"]

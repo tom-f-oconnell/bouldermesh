@@ -4290,6 +4290,18 @@ finally:
     server.q("DELETE FROM projects WHERE id LIKE 'lp00000000%'", write=True)
     server.q("DELETE FROM meshes WHERE id='lm0000000001'", write=True)
     server.low_projects(fresh=True)
+# a low-priority area with nothing left to go is marked done by a worker taking regular areas' climbs too, not only
+# once one has nothing regular to do (Joshua Tree, Nov 26: "waiting", 0 to go, while other areas kept every worker busy)
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,low_priority) VALUES('lw0000000002','Low Done','0','popularity',?,'running',1)",
+         time.time(), write=True)
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status) VALUES('lw0000000002','l2',1,'L2','done')", write=True)
+try:
+    with server._claim_lock:
+        server._claim(server.Worker("regular"), low=False)
+    assert server.campaign_status("lw0000000002") == "done"
+finally:
+    server.q("DELETE FROM campaign_items WHERE campaign_id='lw0000000002'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='lw0000000002'", write=True)
 print("an area at low priority OK")
 # each limit and order an area is run with is noted, and said per order with the most it went to; an area is "complete"
 # (done, not partial) only when its list finished with no limit and something was meshed
