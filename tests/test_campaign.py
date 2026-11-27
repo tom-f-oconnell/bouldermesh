@@ -4079,9 +4079,19 @@ try:
         if server.q("SELECT name FROM meshes WHERE id='aa0000000001'", one=True) else d["what"] == "finding the size of aa0000000001", d
     assert server.describe_job("reconstruct", "bb0000000002")["what"] == "meshing Worked Climb (harvest)"
     assert server.describe_job("filter", "filter: Worked Climb (harvest)") == {"what": "filtering photos of Worked Climb (harvest)"}
+    # the areas' list has what machines do for each area's projects itself (the Areas tab keeps it fresh with that list),
+    # not the one kept from before a restart
+    server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('wk0000000001','Worked Area','0','popularity',?,'done')",
+             time.time(), write=True)
+    server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,project_id) VALUES('wk0000000001','w2',1,'Worked Climb',"
+             "'done','bb0000000002')", write=True)
+    listed = next(c for c in server.campaigns_listed() if c["id"] == "wk0000000001")
+    assert [w["task"] for w in listed["at_work"]] == ["filter", "reconstruct"] and listed["to_come"] == 0, listed["at_work"]
 finally:
     server.MACHINES.state = real_state
     server.q("DELETE FROM projects WHERE id IN ('bb0000000001','bb0000000002')", write=True)
+    server.q("DELETE FROM campaign_items WHERE campaign_id='wk0000000001'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='wk0000000001'", write=True)
 print("machines' work by project OK")
 
 # what's still to do for a meshed project: beta in its videos (so many of so many done), its size; nothing once done

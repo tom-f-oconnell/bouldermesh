@@ -11143,13 +11143,25 @@ def _campaigns_listed() -> list[dict]:
     order = [c["id"] for c in sorted((c for c in camps if c["status"] == "running"), key=lambda c: (c.get("priority") or 0, c["created"]))]
     busy = q("SELECT 1 FROM projects WHERE status IN ('queued','running','harvesting') LIMIT 1") or \
         q("SELECT 1 FROM again_marks WHERE kind='project' AND ended IS NULL LIMIT 1")
-    areas = project_areas() if busy else {}     # read once, for both
-    jobs, again = area_jobs(areas), again_progress(areas)
+    # what machines are doing for each area's projects, and how many of its meshes have beta or size still to come:
+    # here, as the Areas tab keeps them fresh with this list (it had them from the projects list, which it doesn't
+    # fetch again while the Projects tab isn't shown: a machine's tag stayed on an area long after it was done)
+    work, left = machine_work(), steps_left()
+    areas = project_areas() if busy or work or left else {}     # read once, for all of them
+    jobs, again = area_jobs(areas if busy else {}), again_progress(areas if busy else {})
+    of_area: dict[str, set[str]] = {}
+    for pid, on in areas.items():
+        for a in on:
+            if a.get("id"):
+                of_area.setdefault(a["id"], set()).add(pid)
     out = []
     for c in camps:
         v = campaign_view(c)
         v["jobs"] = jobs.get(c["id"])
         v["again_progress"] = again.get(c["id"])
+        pids = of_area.get(c["id"], set())
+        v["at_work"] = [w for pid in sorted(pids) for w in work.get(pid, []) if not w.get("kept")]
+        v["to_come"] = sum(pid in left for pid in pids)
         v["state"] = (("running" if c["id"] in active else "queued" if v["next"] else "waiting") if c["status"] == "running"
                       else c["status"])
         own_going = c["status"] == "stopping" or (c["status"] == "running" and v["next"])

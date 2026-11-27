@@ -1295,15 +1295,18 @@ const AREA_LOOKS = [      // [the states it covers, colour, what the legend says
   [['done'], '#2e9e57', 'done: nothing left to do'],
 ];
 const areaState = st => AREA_LOOKS.find(x => x[0].includes(st)) || null;
-// An area whose own run is stopped or done, with its projects still being meshed or waiting to be (asked for on their
-// own, as remakes): what's going on, for its label and state; null if nothing is
+// An area whose own run is stopped or done, or running with none of its climbs to take now ("waiting"), with its
+// projects still being meshed or waiting to be (asked for on their own, as remakes, or its boulders' meshes made again
+// with photos that came late): what's going on, for its label and state; null if nothing is. Until Nov 26, 2026, a
+// running one said only "waiting" while a machine meshed one of its boulders (Joshua Tree, on disco)
 function areaJobs(c, st){
   const j = c?.jobs;
-  if (!j || !['stopped', 'data offloaded', 'done', 'partial'].includes(st) || !(j.running || j.waiting)) return null;
-  const remake = j.remaking >= j.running + j.waiting, run = ['done', 'partial'].includes(st) ? 'done' : 'stopped';
+  if (!j || !['stopped', 'data offloaded', 'done', 'partial', 'waiting'].includes(st) || !(j.running || j.waiting)) return null;
+  const remake = j.remaking >= j.running + j.waiting;
+  const run = st === 'waiting' ? 'none of its climbs to go now' : `area run ${['done', 'partial'].includes(st) ? 'done' : 'stopped'}`;
   const said = j.running ? `${remake ? 'remaking' : 'meshing'} ${j.running}${j.waiting ? `, ${j.waiting} waiting` : ''}`
     : `${j.waiting} waiting to be ${remake ? 'remade' : 'meshed'}`;
-  return { st: j.running ? 'jobs running' : 'jobs waiting', said: `${said} (area run ${run})` };
+  return { st: j.running ? 'jobs running' : 'jobs waiting', said: `${said} (${run})` };
 }
 // What's still going on for an area whose own run is done (or partial), beyond jobs (areaJobs()): machines at work for
 // its projects, its meshes' beta or size to come, or climbs harvested for a boulder's or pool's mesh; null if nothing is
@@ -3751,8 +3754,8 @@ $('#m-export').onchange = async ev => {
 // ---------------------------------------------------------------- projects
 let active = null;
 const projectCards = new Map();
-let areasAtWork = new Map();     // area id: what machines are doing for its projects (refreshProjects()), for the areas list
-let areasLeft = new Map();       // area id: how many of its meshed projects have steps still to come (beta, size)
+let areasAtWork = new Map();     // area id: what machines are doing for its projects (/api/campaigns at_work), for the areas list
+let areasLeft = new Map();       // area id: how many of its meshed projects have steps still to come (beta, size: to_come)
 // what a project's status says, in words for what's happening: never "done" while a machine still works for it (its
 // mesh's beta or size, say), and "harvested" as what it is, photos gathered and not (yet) meshed
 const PROJECT_NAMES = { new: 'new', queued: 'queued to mesh', harvesting: 'gathering photos', harvested: 'photos gathered',
@@ -3790,10 +3793,6 @@ async function refreshProjects(){
     p.kept = (p.work || []).filter(w => w.kept); p.work = (p.work || []).filter(w => !w.kept);
     return [p, i];
   }).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
-  areasAtWork = new Map();
-  for (const p of list) for (const a of (p.work || []).length ? p.areas || [] : []) areasAtWork.set(a.id, [...(areasAtWork.get(a.id) || []), ...p.work]);
-  areasLeft = new Map();
-  for (const p of list) for (const a of (p.left || []).length ? p.areas || [] : []) areasLeft.set(a.id, (areasLeft.get(a.id) || 0) + 1);
   const el = $('#projects'); el.innerHTML = list.length ? '' : '<div class="status">No projects yet.</div>';
   projectCards.clear();
   const cut = list.filter(p => p.status === 'interrupted').length;
@@ -4197,6 +4196,9 @@ async function refreshCampaigns(kept = null){
   };
   const busy = c => band(c) + ((areasAtWork.get(c.id) || []).some(w => w.state === 'running') ? 0 : areasAtWork.has(c.id) ? 1 : 2);
   const fresh = kept || await api('/api/campaigns');
+  // what machines are doing for each area's projects, and its meshes with beta or size to come, as this list has them
+  areasAtWork = new Map(fresh.filter(c => (c.at_work || []).length).map(c => [c.id, c.at_work]));
+  areasLeft = new Map(fresh.filter(c => c.to_come).map(c => [c.id, c.to_come]));
   $('#campaigns').classList.toggle('stale', !!kept); $('#areas-loading').hidden = !kept;
   if (!kept) {
     campaignsCache = fresh; drawAreas();
@@ -4205,7 +4207,8 @@ async function refreshCampaigns(kept = null){
   const list = fresh.map((c, i) => [c, i]).sort((a, b) => busy(a[0]) - busy(b[0]) || a[1] - b[1]).map(x => x[0]);
   const el = $('#campaigns');
   // progress moves constantly: only rebuild when something else changed, which would close open lists
-  const key = JSON.stringify([...areasAtWork, ...areasLeft]) + JSON.stringify(list.map(c => ({ ...c, current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
+  const still = w => ({ ...w, minutes: null });     // a machine's minutes move constantly too
+  const key = JSON.stringify([...areasLeft]) + JSON.stringify(list.map(c => ({ ...c, at_work: (c.at_work || []).map(still), current: c.current && { ...c.current, progress: null, boulder_panel: null, updated: null }, running: (c.running || []).map(r => r.name) })));
   const typing = el.contains(document.activeElement) && document.activeElement.matches('input[type=number]');
   if (key === campaignShown || typing) {
     for (const c of list) { const n = el.querySelector(`[data-camp="${c.id}"] .now`); if (n) n.innerHTML = currentHtml(c); }
