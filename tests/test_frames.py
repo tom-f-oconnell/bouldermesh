@@ -136,8 +136,10 @@ with tempfile.TemporaryDirectory() as td:
         going_round = lambda ts: sum(40 <= t < 50 for t in ts)  # noqa: E731
         assert stats["way"] == "shots" and stats["shots"] == 3 and stats["views"] >= 8, (stats, logged[-3:])
         assert going_round(t_new) >= 5 > going_round(t_old), (t_old, t_new)
-        assert sum(t < 40 or t >= 58 for t in t_new) == 1 and sum(50 <= t < 58 for t in t_new) == 1, t_new   # the tripod once, though it's cut back to
-        assert stats["chosen"] == 8 and len(by_shot) == 8 - stats["repeats"], stats
+        assert sum(t < 40 or t >= 58 for t in t_new) <= 2 and sum(50 <= t < 58 for t in t_new) == 1, t_new   # the tripod, though it's cut back to, not once a stretch
+        # several shots: twice its places to choose from, as the filter takes out what isn't the rock; its share is still 8
+        assert stats["chosen"] == 8 and len(by_shot) <= 8 * harvest.EDIT_SPARE and len(by_shot) > 8, (stats, len(by_shot))
+        assert sorted(set(stats["shot_of"].values())) == [0, 1, 2] and set(stats["shot_of"]) == {f.name for f in by_shot}, stats["shot_of"]
         print(f"an edit's frames go to its views OK (round the rock: {going_round(t_old)} of {len(t_old)} by its minutes, {going_round(t_new)} of {len(t_new)} by its shots)")
 
         # a fade through black is a cut; a blurred frame within a shot isn't
@@ -173,7 +175,7 @@ with tempfile.TemporaryDirectory() as td:
                             + [(frame(round_the_rock(rock, k), blur=0.6, seed=80 + k), 4) for k in range(1, 6)] + [(frame(other, blur=0.6, seed=64), 30)])
             stats = {}
             got = harvest.extract_frames(long_one, tmp / "w8", 6, logged.append, fps=1, stats=stats, edits=True)
-            assert stats["way"] == "shots" and len(list((tmp / "w8").glob("f*.jpg"))) == len(got) <= 6, stats
+            assert stats["way"] == "shots" and len(list((tmp / "w8").glob("f*.jpg"))) == len(got) <= 6 * harvest.EDIT_SPARE, stats
             assert any("through 4" in line and "of its 2 min" in line for line in logged[-4:]), logged[-4:]
             assert sum(70 <= t < 90 for t in stats["times"].values()) >= 3, stats["times"]
         finally:

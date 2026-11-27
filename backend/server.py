@@ -6315,7 +6315,7 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                                               rejudge=add and rejudge)
                 videos = summary.pop("videos", [])
                 record_videos(proj["climb_id"], videos, log)
-                summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license", "duration",
+                summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license", "duration", "kept",
                                                              "way", "shots", "views", "span", "start", "frames_version")}
                                      for v in videos]
                 if add:     # the harvest before's videos and frames, with what's new
@@ -10388,7 +10388,7 @@ def filter_here(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
 
 def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[str] | None = None, progress=None,
                   more_anchors: list[Path] | None = None, prior: dict | None = None, anchors: None = None,
-                  assess=None) -> dict:
+                  assess=None, unsure: dict[str, str] | None = None) -> dict:
     """relevance.filter_photos() on a machine that connects here: its photos, the other harvests' anchors, and what
     this server's cache knows of them go; its report and the pairs it matched come back (kept in the cache here),
     and the photos it rejects are moved to rejected here. With assess (a progress), the machine also checks the
@@ -10409,7 +10409,7 @@ def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[s
                 progress.at("waiting")
             progress(0.0)
         args = {"methods": methods, "more": sorted(more), "prior": prior, "matcher": relevance_mod.MATCHER,
-                "diversity": assess is not None, "order": [p.name for p in paths]}
+                "diversity": assess is not None, "order": [p.name for p in paths], **({"unsure": unsure} if unsure else {})}
         _, back = MACHINES.task("filter", files, args, f"filter: {name or pid or 'photos'}", log,
                                 tracker=_StepProgress(progress, {"diversity": assess} if assess else None),
                                 version=FILTER_VERSION, take_within=FILTER_TAKE,

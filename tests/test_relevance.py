@@ -521,4 +521,28 @@ if "same-rock" in relevance.available():
         print("climbs of one rock OK")
 else:
     print("climbs of one rock skipped: no OpenCV")
+# --- frames of a video cut together from several shots aren't taken on trust: each must match a photo known to show the
+# rock, or failing that a frame of another shot of its own video
+with tempfile.TemporaryDirectory() as td:
+    photos = pathlib.Path(td)
+    page = view_of(photos, "mountainproject_a.jpg", 300, 200)                     # the climb's own page: trusted
+    tripod = view_of(photos, "yt_11111111_000.jpg", 350, 250)                     # a video of one shot: trusted as ever
+    on_rock = view_of(photos, "yt_22222222_000.jpg", 250, 150)                    # an edit's shot of the rock
+    tent = view_of(photos, "yt_22222222_001.jpg", 300, 200, make_rock(11))        # and its tent, once
+    river_a = view_of(photos, "yt_22222222_002.jpg", 300, 200, make_rock(12))     # a moving shot of the river: two frames of one shot
+    river_b = view_of(photos, "yt_22222222_003.jpg", 340, 220, make_rock(12))
+    far_a = view_of(photos, "yt_22222222_004.jpg", 300, 200, make_rock(13))       # the rock's far side, in two shots: matches nothing
+    far_b = view_of(photos, "yt_22222222_005.jpg", 360, 240, make_rock(13))       # known, but each other
+    unsure = {"yt_22222222_000.jpg": "22222222:0", "yt_22222222_001.jpg": "22222222:1", "yt_22222222_002.jpg": "22222222:2",
+              "yt_22222222_003.jpg": "22222222:2", "yt_22222222_004.jpg": "22222222:3", "yt_22222222_005.jpg": "22222222:4"}
+    logged = []
+    got = relevance.filter_photos(sorted(photos.glob("*.jpg")), None, logged.append, methods=["same-rock"], unsure=unsure)
+    assert sorted(got["kept"]) == ["mountainproject_a.jpg", "yt_11111111_000.jpg", "yt_22222222_000.jpg", "yt_22222222_004.jpg",
+                                   "yt_22222222_005.jpg"], (got["kept"], got["rejected"])
+    assert got["rejected"] == {"yt_22222222_001.jpg": "nomatch", "yt_22222222_002.jpg": "nomatch", "yt_22222222_003.jpg": "nomatch"}, got["rejected"]
+    assert got["scores"]["yt_22222222_004.jpg"].get("own_video") and not got["scores"]["yt_22222222_000.jpg"].get("own_video")
+    assert any("2 of them match another shot of their own video" in line for line in logged), logged
+    # without being told they're an edit's, they're kept on trust as before
+    assert len(relevance.filter_photos(sorted(photos.glob("*.jpg")), None, logged.append, methods=["same-rock"])["kept"]) == 8
+print("an edit's frames must match OK")
 print("ALL RELEVANCE TESTS PASSED")

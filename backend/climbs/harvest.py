@@ -232,6 +232,7 @@ VIEW_ALIKE = 0.9            # and a candidate this like a view's kept frame show
 SHOT_MATCHES = 15           # else they're one shot if this many of their features match with one geometry (diversity.pair())
 SHOT_LOOKBACK = 8           # a shot showing what one of this many shots before it ended on carries that shot on
 VIEW_LOOKBACK = 2           # within a shot, a frame is held against this many of the views before it
+EDIT_SPARE = 2              # a video of several shots is given this many times its places, as the filter takes out what isn't the rock
 
 
 def video_seconds(video: Path) -> float | None:
@@ -295,14 +296,19 @@ def extract_frames(video: Path, work: Path, keep: int, log: Log, fps: float | No
         chosen = drop_repeats(sharpest, sharpness, log)
         took, way, views = len(sharpest), "stretches", None
     else:
-        picked, views = by_shots(shots, keep, log, sharpness)
+        # an edit of several shots shows much besides the rock, which the off-topic filter takes out (its frames have to
+        # match, as relevance.filter_photos()'s unsure): so it's given EDIT_SPARE times its places to choose from
+        several = len(shots) > 1
+        picked, views = by_shots(shots, keep * EDIT_SPARE if several else keep, log, sharpness)
         chosen = drop_repeats(picked, sharpness, log)       # the same view come back to after other shots
         took, way = min(keep, len(frames)), "shots"
         log(f"frames: {len(shots)} shot(s) with {views} distinct view(s)"
             + (f", from {t0:.0f} s to {t0 + length:.0f} s (its link points to {start:.0f} s)" if moment else "")
             + (f", through {len(frames)} frames of its {length / 60:.0f} min" if long else "") + f": {len(chosen)} kept")
     if stats is not None:
-        stats.update(chosen=took, repeats=took - len(chosen), times={f.name: times[f.name] for f in chosen}, way=way,
+        of = {f: i for i, shot in enumerate(shots or []) for f in shot}
+        stats.update(chosen=took, repeats=max(0, took - len(chosen)), times={f.name: times[f.name] for f in chosen}, way=way,
+                     shot_of={f.name: of[f] for f in chosen} if way == "shots" and len(shots) > 1 else None,
                      shots=len(shots) if shots is not None else None, views=views,
                      span=[round(t0, 2), round(t0 + length, 2)] if length else None)
     for f in set(frames) - set(chosen):
@@ -571,14 +577,16 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
             frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats,   # a video that failed leaves its share
                                     start=getattr(v, "start", None), edits=True)
             used += stats.get("chosen", len(frames))
-            times = {}
+            times, unsure = {}, {}
             for j, f in enumerate(frames):
                 dst = out_dir / f"yt_{tag}_{j:03d}.jpg"
                 shutil.move(str(f), dst)
                 saved.append(dst)
                 times[dst.name] = (stats.get("times") or {}).get(f.name)
+                if stats.get("shot_of"):
+                    unsure[dst.name] = f"{tag}:{stats['shot_of'][f.name]}"
             if infos is not None:
-                infos.setdefault(v.url, {}).update(frames=len(frames), times=times, way=stats.get("way"), shots=stats.get("shots"),
+                infos.setdefault(v.url, {}).update(frames=len(frames), times=times, unsure=unsure, way=stats.get("way"), shots=stats.get("shots"),
                                                    views=stats.get("views"), span=stats.get("span"), start=getattr(v, "start", None),
                                                    frames_version=FRAMES_VERSION)
             log(f"youtube: kept {len(frames)} frame(s) from {v.url}")
@@ -928,6 +936,8 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             info = infos.get(v.url) or {}
             manifest.append({"file": f.name, "url": v.url, "page": v.url, "kind": "video-frame", "source": "youtube",
                              "t": (info.get("times") or {}).get(f.name),     # seconds into its video (None before FRAMES_VERSION 2)
+                             # for a frame of a video of several shots: which video and shot, as the filter needs it to match
+                             **({"shot": info["unsure"][f.name]} if (info.get("unsure") or {}).get(f.name) else {}),
                              "found_by": "search" if v.source == "youtube-search" else "page",
                              "title": info.get("title") or v.title, "credit": info.get("uploader") or v.credit,
                              "license": info.get("license") or "frame from linked beta video; licence not recorded"})
@@ -960,8 +970,11 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                 log(f"relevance: judging every photo again from scratch ({back} rejected before put back to judge)")
                 paths = diversity.dedupe(photos_dir, log)
                 prior = {"put_back": (prior or {}).get("put_back") or []}
+            here = {p.name for p in paths}
+            unsure = {m["file"]: m["shot"] for m in manifest if m.get("shot") and m.get("file") in here}
             filtered = relevance.run_filter(paths, project_dir / "rejected", log, progress=progress("filter"),
-                                            more_anchors=more, prior=prior, assess=progress("diversity") or (lambda f=0.0, d=None: None))
+                                            more_anchors=more, prior=prior, assess=progress("diversity") or (lambda f=0.0, d=None: None),
+                                            **({"unsure": unsure} if unsure else {}))
             report = filtered.pop("diversity", None)    # checked on the machine that filtered them, if it was one
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
             paths = [p for p in paths if p.name in set(filtered["kept"])]
@@ -977,7 +990,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
             "video_frames": sum(f.exists() for f in frames), "queries": queries, "diversity": report,
             "videos": [{"url": v.url, "found_by": "search" if v.source == "youtube-search" else "page", "title": v.title,
                         "uploader": v.credit, "frames": 0,
-                        **{k: x for k, x in infos.get(v.url, {}).items() if k != "times"}} for v in videos],
+                        **{k: x for k, x in infos.get(v.url, {}).items() if k not in ("times", "unsure")}} for v in videos],
             "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked,
             "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")}),
             **({"youtube_method": youtube.SEARCH_METHOD} if yt["checked"] and yt.get("words") else {})}

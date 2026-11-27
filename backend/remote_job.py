@@ -126,7 +126,8 @@ def filter_task(job: Path, log) -> int:
                              ([("diversity", "Check viewpoint diversity", 1)] if args.get("diversity") else []))
     try:
         report = relevance.filter_photos(photos, None, log, methods=args.get("methods"), more_anchors=more,
-                                         progress=lambda f=0.0, d=None: tracker.update("filter", f, d), prior=args.get("prior"))
+                                         progress=lambda f=0.0, d=None: tracker.update("filter", f, d), prior=args.get("prior"),
+                                         unsure=args.get("unsure"))
     except Exception as e:
         print(f"FAILED: {type(e).__name__}: {e}", flush=True)
         return 1

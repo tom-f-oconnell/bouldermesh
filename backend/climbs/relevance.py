@@ -626,6 +626,28 @@ def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None
 RUNNER: Callable[..., dict] | None = None
 
 
+def among_shots(frames: dict[Path, str], log: Log, cache_only: bool = False) -> set[Path]:
+    """Of an edited video's frames that matched nothing else ({frame: its video and shot}), those that match a frame
+    of another shot of the same video (as same_rock() takes a match, at SELF_MIN_INLIERS): an edit comes back to its
+    rock from other sides, and shows its tent, its coffee and its drive once each. Two frames of one shot matching
+    says nothing, as any moving shot's do."""
+    photos = _Photos(list(frames), cache(), cache_only)
+    passed: set[Path] = set()
+    try:
+        items = [p for p in frames if photos.usable(p)]
+        for i, a in enumerate(items):
+            video = frames[a].split(":")[0]
+            for b in items[i + 1:]:
+                if frames[b] == frames[a] or frames[b].split(":")[0] != video or (a in passed and b in passed):
+                    continue
+                k, cover = photos.match(a, b)
+                if k >= SELF_MIN_INLIERS and cover >= MIN_COVERAGE:
+                    passed |= {a, b}
+    finally:
+        photos.save()
+    return passed
+
+
 def run_filter(paths: list[Path], rejected: Path | None, log: Log, assess: Callable[..., None] | None = None, **kw) -> dict:
     """filter_photos(), where RUNNER says. With assess (the viewpoint check's progress), a machine doing the filtering
     also checks the photos it keeps (diversity.assess_unique()), whose report then comes back as the report's
@@ -707,7 +729,8 @@ def reusable(prior: dict | None) -> bool:
 
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
                   anchors: list[Path] | None = None, progress: Progress | None = None,
-                  more_anchors: list[Path] | None = None, prior: dict | None = None, cache_only: bool = False) -> dict:
+                  more_anchors: list[Path] | None = None, prior: dict | None = None, cache_only: bool = False,
+                  unsure: dict[str, str] | None = None) -> dict:
     """Filter photos, moving the rejected ones to `rejected` (None: only report).
 
     Args:
@@ -723,6 +746,10 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             or not a boulder, which depend only on the photo. One it found matching nothing is matched only against
             photos it wasn't then (anchors and photos kept since), and kept if one matches. Its "put_back", photos
             someone put back by hand, are kept whatever, even when the rest of it can't be used.
+        unsure: frames of videos cut together from several shots, {name: "<video>:<shot>"}: such a video shows much
+            besides the rock (of a 19-minute film's 156 shots, 54 were of it, Nov 2026), so its frames aren't taken on
+            trust as other videos' are. Each has to match a photo known to show the rock, as a search's photos do, or
+            failing that a frame of another shot of its own video (among_shots()).
         cache_only: work out nothing that isn't in the cache (CLIP, SIFT, matching), raising Uncached where that's
             needed, as for what a mesh would be made from now (meshinputs.py). Every method counts as installed.
 
@@ -786,7 +813,9 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             log(f"relevance: CLIP check failed ({e}); skipping it")
     kept_before = [p for p in paths if p.name in stood and stood[p.name] is None and p.name not in why]
     if "same-rock" in methods and alive:
-        anchor_list = [p for p in (anchors if anchors is not None else alive) if p in alive and (anchors is not None or is_trusted(p))]
+        unsure = unsure or {}
+        anchor_list = [p for p in (anchors if anchors is not None else alive)
+                       if p in alive and (anchors is not None or (is_trusted(p) and p.name not in unsure))]
         candidates = [p for p in alive if p not in anchor_list]
         names = {a.name for a in anchor_list}
         for p in more_anchors or []:     # the same photo can be on more than one problem's page
@@ -804,6 +833,14 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
                     scores[p.name].update(inliers=r["inliers"], coverage=round(r["coverage"], 3), match=r["match"])
                 if r["inliers"] < (MIN_INLIERS if anchor_list or kept_before else SELF_MIN_INLIERS) or r["coverage"] < MIN_COVERAGE:
                     why[p.name] = "nomatch"
+            alone = {p: unsure[p.name] for p in candidates if p.name in unsure and why.get(p.name) == "nomatch"}
+            if alone:
+                back = among_shots(alone, log, cache_only)
+                for p in back:
+                    why.pop(p.name, None)
+                    scores[p.name]["own_video"] = True
+                log(f"relevance: {len(alone)} frame(s) of edited videos matched no known photo of the rock; {len(back)} of them match "
+                    "another shot of their own video, and are kept")
     elif "same-rock" in methods:
         for p in alive:
             if p.name in again:
