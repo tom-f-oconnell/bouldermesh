@@ -2643,11 +2643,32 @@ try:
     raise AssertionError("should wait")
 except server.PhotosAway as e:
     assert "in the backup" in str(e) and isinstance(e, server.compute.ComputeUnavailable)
+    assert sorted(e.paths) == [f"projects/{'d1' * 6}/masks", f"projects/{'d1' * 6}/photos"], e.paths
+    away_paths = e.paths
 assert (D / "offload-wanted.list").read_text().split() == [f"projects/{'d1' * 6}/masks", f"projects/{'d1' * 6}/photos"]
+# a Reconstruct someone asked for, stopped as they were away (run_job()): queued again by itself once they're back,
+# not while they're still away
+had = server.q("SELECT status, job FROM projects WHERE id=?", "d1" * 6, one=True)
+if not had:
+    server.q("INSERT INTO projects(id,name,created,kind,status) VALUES(?,?,?,?,?)", "d1" * 6, "Away (harvest)", time.time(), "harvest",
+             "stopped", write=True)
+asked_job = {"type": "reconstruct", "pid": "d1" * 6, "internet": True}
+server.q("UPDATE projects SET status='stopped', job=?, back_wait=? WHERE id=?", json.dumps(asked_job),
+         json.dumps({"paths": away_paths, "since": time.time()}), "d1" * 6, write=True)
+assert server.resume_back() == 0, "still away"
+queued_before = server.jobs.qsize()
 pooled_at = time.time()
 f = put(f"restore-inbox/projects/{'d1' * 6}/photos/a.jpg", age=30 * day)
 put(f"restore-inbox/projects/{'d1' * 6}/masks/a.png", 1000, age=30 * day)
 assert sorted(server.offload_step()["back"]) == [f"projects/{'d1' * 6}/masks", f"projects/{'d1' * 6}/photos"]
+row = server.q("SELECT status, back_wait FROM projects WHERE id=?", "d1" * 6, one=True)
+assert row["status"] == "queued" and row["back_wait"] is None and server.jobs.qsize() == queued_before + 1, (row, server.jobs.qsize())
+with server.jobs.mutex:     # taken out again, for what follows
+    server.jobs.queue = type(server.jobs.queue)(j for j in server.jobs.queue if j.get("pid") != "d1" * 6)
+if had:
+    server.q("UPDATE projects SET status=?, job=? WHERE id=?", had["status"], had["job"], "d1" * 6, write=True)
+else:
+    server.q("DELETE FROM projects WHERE id=?", "d1" * 6, write=True)
 assert (D / f"projects/{'d1' * 6}/photos/a.jpg").exists() and not server.photos_away("d1" * 6)
 assert (D / f"projects/{'d1' * 6}/photos").stat().st_mtime < pooled_at - 29 * day, "its folder looks as it did"
 assert not (D / "offload-wanted.list").read_text().strip() and not list((D / "restore-inbox").rglob("*.jpg"))

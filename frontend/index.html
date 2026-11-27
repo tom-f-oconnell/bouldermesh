@@ -3769,6 +3769,8 @@ function projectState(p){
   // what a machine is doing for it now, else what's still to do for its mesh (beta in its videos, its size): /api/projects' left
   const running = (p.work || []).filter(w => w.state === 'running'), queued = (p.work || []).filter(w => w.state !== 'running');
   const doing = (running.length ? running : queued).map(w => w.what.replace(/ (of|for)$/, '')).join(', ');
+  if (p.status === 'stopped' && p.back_wait) return { label: 'waiting for its photos from the backup', cls: 'queued',
+    tip: 'Its photos were in the backup and have been asked for back (the backup sends them within about 5 minutes): it carries on by itself once they\'re here. Stop leaves it stopped' };
   const base = PROJECT_NAMES[p.status] || p.status, left = p.left || [];
   if (['running', 'harvesting'].includes(p.status) || (!doing && !left.length)) return { label: base, cls: p.status, tip: PROJECT_TIPS[p.status] || '' };
   if (doing) return { label: `${base}; ${doing}${running.length ? '' : ' (waiting for a machine)'}`, cls: running.length ? 'running' : 'queued',
@@ -3810,7 +3812,7 @@ async function refreshProjects(){
         <label class="file"><button class="sec sm" type="button">Add photos or videos</button><input type="file" multiple accept="image/jpeg,image/png,video/*"></label>
         ${editor && ['held', 'queued', 'running', 'stopped', 'failed', 'interrupted'].includes(p.status) ? `<button class="next sm sec" title="Mesh it next, on the machines: ahead of everything else waiting for one, without stopping what's running">Mesh next</button>` : ''}
         ${RETRYABLE.includes(p.status) ? `<button class="retry sm" title="Tries again from the last step it finished, rather than from the start${(p.areas || []).some(a => a.kind === 'climb') ? '. In its area it goes next, resumed if it was paused; a stopped area runs only what\'s asked for again, and stops' : ''}">Retry</button>` : ''}
-        ${busy ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
+        ${busy || p.back_wait ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
         <button class="rec sm ${recLook(p).sec ? 'sec' : ''}" title="${esc(recLook(p).tip)}" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
@@ -3940,7 +3942,7 @@ function recLook(p){
   const busyNote = (p.work || []).length || still ? `\n\nMachines are still ${still ? `finding its mesh's ${still}` : 'working for its mesh'}: that work would go to a mesh about to be replaced.` : '';
   // its photos in the backup: asked back first, never meshed without them (it stops, saying so: Retry once they're here)
   const backNote = s?.lost ? '\n\nIts photos were lost from the backup: it waits until the admin page says whether to go on without them.'
-    : s?.away ? '\n\nIts photos are in the backup: they\'re asked for back first (within about 5 minutes), and it\'s never meshed without them. It stops until they\'re here: press Retry then.' : '';
+    : s?.away ? '\n\nIts photos are in the backup: they\'re asked for back first (within about 5 minutes), and it\'s never meshed without them. It waits for them, and carries on by itself once they\'re here.' : '';
   const where = s?.lost ? ' Its photos were lost from the backup.' : s?.away ? ' Its photos are in the backup: asked back first.' : '';
   if (s?.changed) return { sec: false, tip: `Makes a new mesh from the start, with what's changed since its mesh: ${s.said}.${where}`, ask: backNote ? `Make a new mesh of "${p.name}" from the start?${backNote}` : '' };
   if (s) return { sec: true, tip: `Same photos as its mesh: a new one would probably come out the same.${where} Asks first`,

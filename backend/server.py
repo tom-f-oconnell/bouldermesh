@@ -372,6 +372,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE projects ADD COLUMN next_at REAL")
         if "job_started" not in {r[1] for r in con.execute("PRAGMA table_info(projects)")}:   # its job (projects.job) is
             con.execute("ALTER TABLE projects ADD COLUMN job_started REAL")                    # running now (run_job())
+        if "back_wait" not in {r[1] for r in con.execute("PRAGMA table_info(projects)")}:     # its job waits for what's
+            con.execute("ALTER TABLE projects ADD COLUMN back_wait TEXT")                      # in the backup (resume_back())
         now_sql = "(julianday('now') - 2440587.5) * 86400.0"
         for table, kind in (("campaigns", "area"), ("projects", "project")):
             con.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_stopped AFTER UPDATE OF status ON {table}
@@ -3171,6 +3173,36 @@ def queue_job(job: dict) -> None:
     jobs.put(job)
 
 
+def resume_back() -> int:
+    """Queue again, as it was asked for, each job someone asked for that stopped as what it needs was in the backup
+    (run_job()'s PhotosAway), once none of that is away any more; or, where the backup lost some, leave it stopped,
+    saying so (the admin page says whether to go on without it). One retried or stopped by hand since is left as it
+    is. After each restore from the backup (take_restores()), and as the server starts. Returns how many were queued."""
+    n = 0
+    for r in q("SELECT id, status, job, back_wait FROM projects WHERE back_wait IS NOT NULL"):
+        try:
+            paths = json.loads(r["back_wait"])["paths"]
+        except (ValueError, KeyError, TypeError):
+            paths = []
+        if any(offload_mod.away(q, p) and not offload_mod.lost(q, [p]) for p in paths):
+            continue    # still on its way
+        q("UPDATE projects SET back_wait=NULL WHERE id=?", r["id"], write=True)
+        if offload_mod.lost(q, paths):
+            append_log(r["id"], "-- what it needs was lost from the backup: it waits for the admin page to say whether to go on without it")
+            continue
+        if r["status"] != "stopped" or not r["job"]:
+            continue
+        try:
+            job = json.loads(r["job"])
+        except ValueError:
+            continue
+        append_log(r["id"], "-- what it needed is back from the backup: queued again")
+        q("UPDATE projects SET status='queued' WHERE id=?", r["id"], write=True)
+        queue_job(job)
+        n += 1
+    return n
+
+
 def requeue_waiting() -> int:
     """As the server starts: the jobs people asked for that a restart found still queued (init_db() leaves their
     projects queued), queued again in the order they were. Returns how many."""
@@ -5519,7 +5551,8 @@ def kept_cameras(mid: str, pdir: Path, remote: bool, log) -> Path:
         if not offload_mod.away(q, path) or offload_mod.lost(q, [path]):
             raise KeptUnusable(f"mesh {mid} kept no reconstruction, so its cameras aren't known")
         if offload_mod.want(DATA, q, [path]):
-            raise PhotosAway(f"making mesh {mid} again from its cameras: its reconstruction is in the backup, and has been asked for back")
+            raise PhotosAway(f"making mesh {mid} again from its cameras: its reconstruction is in the backup, and has been asked for back",
+                             [path])
     try:
         gone = modelcheck.collapsed_kept(d) or []
     except Exception as e:  # noqa: BLE001 - what can't be read can't be taken either
@@ -5619,7 +5652,7 @@ def kept_for_add(mid: str, pdir: Path, remote: bool, log) -> Path | None:
         log(f"mesh {mid}'s features were lost from the backup: every photo is placed")
         return None
     if offload_mod.want(DATA, q, [path]):
-        raise PhotosAway(f"adding photos to mesh {mid}: its features are in the backup, and have been asked for back")
+        raise PhotosAway(f"adding photos to mesh {mid}: its features are in the backup, and have been asked for back", [path])
     if not remote:
         return d
     kept = pdir / "kept"
@@ -7889,7 +7922,12 @@ OFFLOAD_KINDS = ("rejected photos", "videos", "photos", "features", "older meshe
 
 
 class PhotosAway(compute.ComputeUnavailable):
-    """What a job needs is in the backup: it's been asked for back, and the job waits for it, as for a machine."""
+    """What a job needs is in the backup: it's been asked for back, and the job waits for it, as for a machine. paths:
+    those asked for (offloads.path), for a job someone asked for to be queued again once they're back (resume_back())."""
+
+    def __init__(self, message: str, paths: list[str] = ()):
+        super().__init__(message)
+        self.paths = list(paths)
 
 
 class LostData(Exception):
@@ -7915,7 +7953,7 @@ def need_back(pids, what: str) -> None:
         since = offload_mod.waited_since(q, asked)
         waited = f", {fmt_wait(time.time() - since)} ago" if since and time.time() - since >= 60 else ""
         raise PhotosAway(f"{what}: its photos are in the backup, and have been asked for back{waited}, which the backup's "
-                         "next run brings (every 5 min, with deploy/bouldermesh-restore.timer)")
+                         "next run brings (every 5 min, with deploy/bouldermesh-restore.timer)", asked)
 
 
 def fmt_wait(seconds: float) -> str:
@@ -8472,7 +8510,12 @@ RESTORE_LOOK = 15.0     # seconds between looks in the restore inbox, for what t
 def take_restores() -> list[str]:
     """Put back what the backup sent back (offload.take_restores()), one thread at a time."""
     with _restore_lock:
-        return offload_mod.take_restores(DATA, q, log_server, came=archive_came)
+        back = offload_mod.take_restores(DATA, q, log_server, came=archive_came)
+    if back:
+        n = resume_back()
+        if n:
+            log_server(f"offload: {plural(n, 'job')} waiting for what came back queued again")
+    return back
 
 
 def watch_restores() -> None:
@@ -8760,6 +8803,10 @@ def stop_project(pid: str) -> tuple[dict, int]:
             pause_item(i["campaign_id"], i["source_id"])
         return {"paused": [{"area": i["area"], "climb": i["name"]} for i in held]}, 200
     waiting, on = halt_job(pid, stop=False)
+    if not waiting and not on and proj.get("back_wait"):    # waiting for the backup: not queued again once that's here
+        q("UPDATE projects SET back_wait=NULL WHERE id=?", pid, write=True)
+        append_log(pid, "-- stopped by hand: it won't carry on by itself once its photos are back; Retry carries on with it")
+        return {"stopped": True}, 200
     if not waiting and not on:
         return {"error": "nothing of it is queued or running"}, 409
     job = json.loads(proj["job"]) if proj["job"] else (on[0].job["job"] if on else waiting[0])
@@ -8873,6 +8920,8 @@ def project_effects(pid: str) -> dict | None:
                     "last step it finished; one it was partway through starts again.")
     elif not held and queued:
         stop.append("It leaves the queue, and Retry queues it again.")
+    elif not held and proj.get("back_wait"):
+        stop.append("It no longer carries on by itself once its photos are back from the backup; Retry carries on with it.")
 
     busy = next((i for i in work if i["status"] == "running"), None)
     blocked = (f"{busy['name']} is in progress in {busy['area']}, in this project: stop it first (which pauses it there)" if busy
@@ -11302,6 +11351,14 @@ def run_job(job: dict) -> None:
         outcome = "stopped"
         if job.get("pid"):
             q("UPDATE projects SET status='stopped' WHERE id=? AND status!='superseded'", job["pid"], write=True)
+    except PhotosAway as e:     # what it needs was asked back from the backup: queued again once that's here (resume_back())
+        outcome = f"waiting for the backup: {e}"[:300]
+        if job.get("pid") and e.paths:
+            q("UPDATE projects SET status='stopped', back_wait=? WHERE id=? AND status!='superseded'",
+              json.dumps({"paths": e.paths, "since": time.time()}), job["pid"], write=True)
+            append_log(job["pid"], f"-- {e}; it carries on by itself once they're here")
+        else:
+            append_log(job.get("pid", "?"), f"worker error: {e!r}")
     except Exception as e:  # never let the worker die
         outcome = f"error: {e!r}"[:300]
         append_log(job.get("pid", "?"), f"worker error: {e!r}")
@@ -14567,7 +14624,7 @@ class Handler(BaseHTTPRequestHandler):
             # ---- projects
             if p == "/api/projects":
                 every, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,boulder,user_id,approved,deleted_at,"
-                                "harvest IS NOT NULL AS has_harvest FROM projects ORDER BY created DESC"), project_areas()
+                                "harvest IS NOT NULL AS has_harvest, back_wait IS NOT NULL AS back_wait FROM projects ORDER BY created DESC"), project_areas()
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in every if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
@@ -17274,7 +17331,7 @@ def main() -> None:
     threading.Thread(target=stall_watch, daemon=True, name="stall-watch").start()
     threading.Thread(target=VOLUNTEERS.recompare, daemon=True, name="recompare-checks").start()
     threading.Thread(target=clip_sweep, daemon=True, name="clip-sweep").start()    # current meshes' photos, by today's CLIP   # storyboards' checks, by today's comparison
-    again = requeue_waiting()
+    again = requeue_waiting() + resume_back()
     if again:
         print(f"{plural(again, 'job')} people asked for, still waiting when the server stopped, queued again", flush=True)
     threading.Thread(target=worker, daemon=True).start()
