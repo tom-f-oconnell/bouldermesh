@@ -593,6 +593,7 @@ def run(B: str, tmp: Path) -> None:
     assert st == 201 and len(ke["imported"]) == 2, ke
     st, lst = req(B, "GET", "/api/climbs?q=egg")
     assert len(lst) == 1 and lst[0]["name"] == "The Egg"
+    assert lst[0]["slug"] == "the-egg", "its link's name, for its card's Share, even just added"
     assert [c["name"] for c in req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("index egg"))[1]] == ["The Egg"], "each word, anywhere"
     assert [c["name"] for c in req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("problem test"))[1]] == ["Test Problem"]
     assert req(B, "GET", "/api/climbs?q=" + urllib.parse.quote("egg nowhere"))[1] == [], "every word has to match"

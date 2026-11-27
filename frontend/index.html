@@ -39,7 +39,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.prefs-open #prefs{display:grid} #prefs .plabel{font-size:12px;color:var(--mute)} #prefs .seg{margin-left:0;justify-self:start}
   .prefsbtn[aria-expanded=true]{background:var(--line)}
   /* icons in buttons as tall as the words in their neighbours: the line keeps the height of a small button's text */
-  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg,#vshare svg,#vreport svg{width:14px;height:14px;vertical-align:-3px}
+  .prefsbtn .gear{font-size:15px;line-height:0;vertical-align:-1px} #vinfo svg,#vshare svg,#vreport svg,.cardshare svg{width:14px;height:14px;vertical-align:-3px}
   #vinfo[aria-pressed=true]{background:var(--line)} #vinfo{position:relative}
   #vinfo.dot::after{content:'';position:absolute;top:2px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--warn)}
   .seg button{background:transparent;color:var(--mute);border:0;border-radius:0;padding:3px 8px;font-size:12px} .seg button.on{color:var(--fg);background:var(--line)}
@@ -1507,6 +1507,18 @@ function shareChoices(){
 // (the Android app's WebView has no navigator.share: its page is given BoulderMeshApp.share() for the phone's sheet instead)
 const appShare = window.BoulderMeshApp?.share ? (title, url) => window.BoulderMeshApp.share(title || '', url) : null;
 const linkable = /^https?:$/.test(location.protocol);     // not the iPhone app's copy kept for no signal, whose addresses are its own
+const SHARE_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="3.5" r="1.9"/><circle cx="4" cy="8" r="1.9"/><circle cx="12" cy="12.5" r="1.9"/><path d="M5.7 7.1l4.6-2.6M5.7 8.9l4.6 2.6"/></svg>';
+// A card's share button (a climb's or a mesh's): its link to the phone's share sheet (or the Android app's), else
+// copied, the button ticked for a moment
+async function shareLink(title, url, btn){
+  if (appShare) return appShare(title, url);
+  if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+    try { return await navigator.share({ title, url }); } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  if (!await copyText(url)) return toast(`Couldn't copy it: ${url}`, 10000);
+  toast('Link copied: ' + url, 2500);
+  btn.innerHTML = COPIED_ICON; setTimeout(() => { btn.innerHTML = SHARE_ICON; }, 1500);
+}
 function linkMenu(x, y){
   const choices = linkable ? shareChoices() : [];
   if (!choices.length) return;
@@ -3490,10 +3502,12 @@ function climbCard(c){
   const hiddenN = (c.n_links_hidden || 0) + (c.n_boulder_hidden || 0), allHidden = !!hiddenN && hiddenN === meshes && (c.n_shared_hidden || 0) === (c.n_shared || 0);
   const d = document.createElement('div'); d.className = 'card' + (c.id === openClimbId ? ' open' : '') + (multi ? ' multi' : '') + (allHidden ? ' dim' : ''); d.dataset.id = c.id;
   d.innerHTML = `<div class="row"><span class="name grow">${esc(namedParts(c).name)} <small>${esc(gradeLeft(c))}</small>${c.kind==='area'?'<span class="tag">area</span>':''}<span class="tag src">${esc(SOURCE_TAG[c.source] || c.source)}</span>${ownN>0?`<span class="tag ok">${ownN} mesh</span>`:''}${!c.n_links && c.n_shared?`<span class="tag" title="Not meshed on its own: an area linked it to the mesh made for ${esc(c.shared_of)}, as it's on the same boulder (before areas meshed every climb). That mesh may not show this climb's side.">no mesh of its own · via ${esc(c.shared_of)}</span>`:''}${boulderN>0?'<span class="tag ok" title="Its boulder has a mesh of its own, from the photos of every climb on it">boulder mesh</span>':''}${hiddenN?`<span class="tag" style="color:var(--bad)" title="${allHidden ? 'Every mesh of it is hidden from visitors as a failure: to them it has no mesh, and it isn\'t among the meshed climbs' : `${hiddenN} of its meshes ${hiddenN === 1 ? 'is' : 'are'} hidden from visitors as failures`}">${allHidden ? 'hidden: mesh failed' : `${hiddenN} mesh${hiddenN === 1 ? '' : 'es'} hidden`}</span>`:''}${oldN?`<span class="tag" title="Made before the rules for what an area meshes last changed (which climbs make one boulder, which photos the filter keeps): to be made again under them">${oldN} old mesh${oldN === 1 ? '' : 'es'}</span>`:''}${multi?`<span class="tag" title="Its own meshes, and pools of it with others: ${c.n_links}; its boulder's: ${c.n_boulder}">${meshes} meshes</span>`:''}${c.coords_doubt?`<span class="tag bad" title="${esc(c.coords_doubt.why)}">⚠ coordinates</span>`:''}</span>
+      ${linkable && c.slug ? '<button class="sm sec cardshare" aria-label="Share" title="Share a link to this climb, which opens its newest mesh: on a phone, with its apps; elsewhere, copied for you to paste">' + SHARE_ICON + '</button>' : ''}
       <button class="sm ${shownClimbs().has(c.id) ? '' : 'sec '}viewmesh" ${c.n_links || c.n_boulder || c.n_shared ? '' : 'disabled'} title="${c.n_links ? 'Show its newest mesh' : c.n_boulder ? 'Show its boulder\'s mesh, from where its own photos were taken' : c.n_shared ? 'Show the mesh of another climb on its boulder' : 'No mesh is linked to it yet'}">View</button></div>
     <div class="meta">${esc(c.boulder_name && c.boulder_name!==c.name ? c.boulder_name + ' · ' : '')}${esc((c.area_path||[]).slice(-3).join(' › '))}</div>
     <div class="meta">📍 <b>${fmtLL(c.lat,c.lng)}</b> ${c.coord_source?`<small>(${esc(c.coord_source)})</small>`:'<small>no coordinates</small>'} · ${c.n_images} photo(s) · ${c.n_videos} video(s)</div>
     ${c.coords_doubt ? `<div class="meta bad">Coordinates look wrong: ${esc(c.coords_doubt.why)}.${c.url ? ` <a href="${esc(c.url)}" target="_blank" rel="noopener">Put them right on ${esc(SOURCE_NAME[c.source] || c.source)} ↗</a>, then paste its link above to import it again.` : ''}</div>` : ''}`;
+  d.querySelector('.cardshare')?.addEventListener('click', ev => { ev.stopPropagation(); shareLink(named(c), `${location.origin}/c/${c.slug}`, ev.currentTarget); });
   d.querySelector('.viewmesh').onclick = ev => { ev.stopPropagation(); guardedPress(ev, () => startClimbMesh(c.id, 'climb', climbHides())); };
   d.onclick = ev => { if (ev.target.closest('button, a, select, input, label')) return; guardedPress(ev, () => { c.id === openClimbId && openClimbEl || c.id === climbOpening?.id ? closeClimb() : openClimb(c.id); }); };
   return d;
@@ -5001,6 +5015,7 @@ function renderMeshes(filter = true){
         <button class="sm view">View</button>
         ${m.lat!=null?'<button class="sm sec fly">Map</button>':'<button class="sm sec setll">Set coords</button>'}
         <a class="dlbtn" href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download aria-label="Download this mesh" title="${m.cleanup?.hidden ? `Download this mesh, without its ${plural(m.cleanup.hidden, 'hidden stray piece')}. To get the whole mesh, remove the cleanup first.` : `Download this mesh (${esc(m.filename.split('.').pop().toUpperCase())}, ${fmtSize(m.size)})`}">${DOWNLOAD_ICON}</a>
+        ${linkable ? '<button class="sm sec cardshare" aria-label="Share" title="Share a link to this exact mesh: on a phone, with its apps; elsewhere, copied for you to paste">' + SHARE_ICON + '</button>' : ''}
         <button class="sm danger del">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
@@ -5033,6 +5048,7 @@ function renderMeshes(filter = true){
       }
     }
     d.querySelector('.view').onclick = () => viewMesh(m.id, null, 'meshes');
+    d.querySelector('.cardshare')?.addEventListener('click', ev => shareLink(meshTitle(m), location.origin + exactLink(m.id), ev.currentTarget));
     d.querySelector('.mthumb')?.addEventListener('click', () => viewMesh(m.id, null, 'meshes'));
     d.querySelector('.fly')?.addEventListener('click', () => flyTo(m.lat, m.lng));
     d.querySelector('.setll')?.addEventListener('click', async () => { const ll = parseLL(prompt('lat, lng')); if (!ll) return; await api('/api/meshes/'+m.id, {method:'PATCH', json:{lat:ll[0], lng:ll[1]}}); refreshMeshes(); });

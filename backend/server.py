@@ -15105,7 +15105,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "limit and offset are whole numbers"}, 400)
                 sql += " ORDER BY " + ", ".join(order + ["created DESC"]) + f" LIMIT {limit} OFFSET {offset}"
                 ids = [r["id"] for r in q(sql, *args, *([SHARED + "%"] if qs.get("multi") else []), *(oargs if text else []))]
-                return self.send_json([{**r, "coords_doubt": doubts.get(r["id"])} for r in climb_rows(ids, no_old=no_old, no_via=no_via, visitor=visitor)])
+                slugs = climb_slugs(ids)
+                return self.send_json([{**r, "coords_doubt": doubts.get(r["id"]), "slug": slugs.get(r["id"])}
+                                       for r in climb_rows(ids, no_old=no_old, no_via=no_via, visitor=visitor)])
             if p == "/api/climbs/count":
                 return self.send_json({"climbs": q("SELECT count(*) AS n FROM climbs", one=True)["n"], "doubtful": len(coord_doubts()),
                                        "multi": q(f"SELECT count(*) AS n FROM climbs WHERE {MESH_COUNT} > 1", SHARED + "%", one=True)["n"]})
@@ -15996,6 +15998,21 @@ def link_names(force: bool = False) -> tuple[dict[str, str], dict[str, str]]:
     sync_links(force)
     with _db_lock, db() as con:
         return links_mod.current(con, "c"), links_mod.current(con, "b")
+
+
+def climb_slugs(ids: list[str]) -> dict[str, str]:
+    """{climb id: the current name in its link (/c/<name>)} for these climbs, for their cards' Share, naming any added
+    since the last sync_links() first."""
+    if not ids:
+        return {}
+    for force in (False, True):
+        sync_links(force)
+        with _db_lock, db() as con:
+            rows = con.execute(f"SELECT ref, slug FROM slugs WHERE kind='c' AND current=1 AND ref IN ({','.join('?' * len(ids))})",
+                               ids).fetchall()
+        if len(rows) == len(set(ids)):
+            break
+    return {r[0]: r[1] for r in rows}
 
 
 def find_link(kind: str, slug: str) -> dict | None:
