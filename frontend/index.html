@@ -555,7 +555,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
       </section>
       <section>
         <h2>Climbs <small id="c-count"></small></h2>
-        <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade"></div>
+        <div class="row" style="margin-bottom:6px"><input type="text" id="c-filter" class="grow" placeholder="search every climb: name, boulder, area, grade" title="Each word in a climb's name, boulder, area or grade. A source's name (climbing-history.org, OpenBeta, Kaya) finds every climb from there too; Mountain Project's doesn't, as nearly all are from it."><button class="sm sec cardshare" id="c-share" type="button" hidden aria-label="Share this search" title="Share a link to this search, which opens the Climbs tab with it: on a phone, with its apps; elsewhere, copied for you to paste"></button></div>
         <div class="checks" style="margin-bottom:6px"><label><input type="checkbox" id="c-meshed" checked autocomplete="off"> Hide climbs without meshes</label></div>
         <details id="c-more" style="margin-bottom:8px"><summary>More options</summary>
           <div class="checks" style="margin-top:6px;flex-direction:column;gap:4px">
@@ -3522,8 +3522,24 @@ function renderClimbs(){
   climbsTail(el, searching ? climbsFoundMore : climbsMore);
   if (openClimbEl && openClimbId) placeClimb(openClimbEl, openClimbId);   // the list was made again around it
 }
-$('#c-filter').oninput = () => { clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
+$('#c-filter').oninput = () => { searchShown(); clearTimeout(searchT); searchT = setTimeout(searchClimbs, 250); };
 $('#c-meshed').onchange = () => searchClimbs();
+// a search's own link, /#climbs=<its words>&meshed=<1 or 0, its "Hide climbs without meshes" box>: opens the Climbs tab with it
+const searchShown = () => { $('#c-share').hidden = !linkable || !$('#c-filter').value.trim(); };
+$('#c-share').innerHTML = SHARE_ICON;
+$('#c-share').onclick = ev => {
+  const text = $('#c-filter').value.trim(), h = new URLSearchParams({ climbs: text, meshed: $('#c-meshed').checked ? '1' : '0' });
+  shareLink(`Climbs: ${text}`, `${location.origin}/#${h}`, ev.currentTarget);
+};
+function openSearchLink(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (!h.has('climbs')) return false;
+  $('#c-filter').value = h.get('climbs');
+  if (h.has('meshed')) $('#c-meshed').checked = h.get('meshed') !== '0';
+  searchShown(); setFull(false);
+  document.querySelector('.tabs button[data-tab=climbs]').click();
+  return true;
+}
 // the Meshes tab's "Search by name": the Climbs tab, its search box ready to type in
 $('#m-byname').onclick = ev => { ev.preventDefault(); document.querySelector('.tabs button[data-tab=climbs]').click(); $('#c-filter').focus(); };
 $('#c-doubtful').onchange = () => searchClimbs();
@@ -8090,6 +8106,7 @@ const linked = !thumbMode && /^\/[cbm]\//.test(location.pathname), linkCard = li
 if (linkCard) $('#loading .detail').textContent = 'Finding it…';
 if (thumbMode) { detailChoice = 'preview'; await refreshMeshes(); openFromAddress(); }
 else {
+  openSearchLink();      // before the list's first search, so it's this one
   pageListed = Promise.all([refreshClimbs(), refreshMeshes()]);     // together: each can take seconds
   // a link's mesh as soon as its lookup says which (openFromAddress()), not after the lists
   const opened = linked ? openFromAddress() : null;
@@ -8098,7 +8115,7 @@ else {
   if (!linked) openFromAddress();
   await refreshProjects(); poll(); campaignLoop();
 }
-addEventListener('hashchange', openLinked);
+addEventListener('hashchange', () => { if (openSearchLink()) searchClimbs(); else openLinked(); });
 $('#vnewest').onclick = () => { const n = newestOf(shownMesh); if (n && n !== shownMesh) viewMesh(n, null, 'newest', viewedClimb); };
 $('#vothers').onclick = ev => guardedPress(ev, async () => {
   const b = meshesById[shownMesh]?.boulder_link, el = $('#vothers');

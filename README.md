@@ -71,6 +71,12 @@ Mountain Project here is linked to it by name and position: the Mountain Project
 its boulder is meshed the usual way too. The admin page's *Footage to ask for* lists the climbers whose footage is only
 on Instagram, with a message drafted for each, to send yourself. `design.md` has the rest.
 
+The Climbs tab's search finds every climb from a source by its name (*climbing-history.org*, *climbing history*,
+*OpenBeta*, *Kaya*), as well as those it names; Mountain Project's name doesn't, as nearly every climb is from it. The
+share button beside the box copies a link to that search, which opens the Climbs tab with it, its *Hide climbs without
+meshes* box as it was: e.g. `https://boulderme.sh/#climbs=climbing-history&meshed=0` lists every climbing-history.org
+climb here.
+
 Videos' frames: a video of one shot gives the sharpest frame of each equal stretch of it. One cut together from several
 shots, over 15 minutes, or linked at a moment (`?t=2900`) gives its frames to the distinct views it has, from that moment
 where there is one. The admin page's *frames* tier counts the meshes that would come out different (*Look for cuts*

@@ -1009,6 +1009,12 @@ def coord_doubts(fresh: bool = False) -> dict[str, dict]:
     return out
 
 
+# a search's words that name where climbs came from match every climb from there (/api/climbs's q), as well as by name:
+# not Mountain Project's, nearly every climb here
+SOURCE_WORDS = {"climbinghistory": "climbinghistory", "openbeta": "openbeta", "kaya": "kaya"}
+SOURCE_PHRASE = re.compile(r"climbing[\s.-]*history(\.org)?", re.I)
+
+
 def climb_rows(ids: list[str], data: bool = False, no_old: bool = False, no_via: bool = False,
                visitor: bool = False) -> list[dict]:
     """Climbs as their cards show them, in the order given (those not found left out): each with its counts of
@@ -15077,9 +15083,11 @@ class Handler(BaseHTTPRequestHandler):
                     conds.append(f"id IN ({','.join('?' * len(doubts)) or 'NULL'})")
                     args += list(doubts)
                 text = (qs.get("q") or [""])[0].strip()
-                for word in text.split()[:8]:
-                    conds.append("(name LIKE ? OR boulder_name LIKE ? OR area_path LIKE ? OR grade LIKE ?)")
-                    args += [f"%{word}%"] * 4
+                for word in SOURCE_PHRASE.sub("climbing-history", text).split()[:8]:
+                    src = SOURCE_WORDS.get(re.sub(r"(org|com|io)$", "", re.sub(r"[^a-z]", "", word.lower())))
+                    conds.append("(name LIKE ? OR boulder_name LIKE ? OR area_path LIKE ? OR grade LIKE ?"
+                                 + (" OR source=?)" if src else ")"))
+                    args += [f"%{word}%"] * 4 + [src] * bool(src)
                 if text:
                     order, oargs = ["lower(name)=lower(?) DESC", "name LIKE ? DESC"], [text, f"%{text}%"]
                 if qs.get("source"):
