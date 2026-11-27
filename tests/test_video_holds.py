@@ -145,6 +145,14 @@ try:
         assert ranks[("beta", "m-new")] == 2 and server.volunteer_rank("beta", "unknown") == 2
     finally:
         server.low_projects = real_low
+    # in the order areas take their climbs: the climb higher on its list first, though the one below asked long before
+    server.q("INSERT INTO campaigns(id,name,ord,created,status,priority) VALUES('zl','List','list',?,'running',9)", now, write=True)
+    for rank, pid in ((1, "ztop"), (2, "zlow")):
+        server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,project_id,status) VALUES('zl',?,?,?,?,'waiting')", pid, rank, pid, pid, write=True)
+    wants = [{"ref": "ztop", "t": now - 10}, {"ref": "zlow", "t": now - 5000}, {"ref": "own", "t": now - 1}]
+    server.VOLUNTEERS.q = lambda sql, *a, one=False: wants
+    server._focus["at"] = 0
+    assert server.volunteer_focus("own") < server.volunteer_focus("ztop") < server.volunteer_focus("zlow") < 0.1, "someone's own, then by rank"
     print("a boulder at a time, harvests before beta OK")
     print("ALL VIDEO HOLD TESTS PASSED")
 finally:

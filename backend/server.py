@@ -16273,9 +16273,12 @@ FOCUS_EVERY = 60    # seconds volunteer_focus()'s reading is kept
 
 
 def volunteer_focus(ref: str) -> float:
-    """Where a harvest's wanted videos come among others of the same rank, as a fraction under 0.1: its boulder's (or,
-    where it has none, its climb's) earliest wanted video first, so that all of one boulder's go before the next's,
-    and the boulder waiting longest is meshed first. Read again at most every FOCUS_EVERY seconds."""
+    """Where a harvest's wanted videos come among others of the same rank, as a fraction under 0.1: a boulder's (or,
+    where it has none, a climb's) all together, so that all of one's go before the next's; and the boulders in the
+    order their areas would take them: by the area's place, then the climb's rank in its list, then whichever has
+    waited longest. Until Nov 26, 2026 it was only by who had waited longest, so a climb at the top of its list,
+    back for the last video its search found, waited behind the first asks of the climbs below it (Exodia, behind
+    Burden of Dreams' and Soudain Seul's). Read again at most every FOCUS_EVERY seconds."""
     if time.time() - _focus["at"] > FOCUS_EVERY:
         first = {r["ref"]: r["t"] for r in VOLUNTEERS.q(
             "SELECT w.ref, min(w.created) AS t FROM wants w JOIN tasks t ON t.id=w.task WHERE w.purpose='harvest' "
@@ -16284,13 +16287,19 @@ def volunteer_focus(ref: str) -> float:
         for r in q(f"SELECT p.id, c.area_path FROM projects p LEFT JOIN climbs c ON c.id=p.climb_id WHERE p.id IN "
                    f"({','.join('?' * len(first)) or 'NULL'})", *first):
             group[r["id"]] = r["area_path"] or r["id"]
-        earliest: dict = {}
+        # where each harvest comes in the order areas take their climbs: its area's place (as entered, top first), then
+        # its climb's rank there; one nobody's area asked for (someone's own) before them all
+        place = {r["project_id"]: (r["priority"] or 0.0, r["rank"] or 0) for r in q(
+            f"SELECT ci.project_id, ca.priority, ci.rank FROM campaign_items ci JOIN campaigns ca ON ca.id=ci.campaign_id "
+            f"WHERE ci.project_id IN ({','.join('?' * len(first)) or 'NULL'}) ORDER BY ca.priority DESC, ci.rank DESC", *first)}
+        key: dict = {}
         for pid, t in first.items():
             g = group.get(pid, pid)
-            earliest[g] = min(earliest.get(g, t), t)
-        _focus.update(at=time.time(), of={pid: earliest[group.get(pid, pid)] for pid in first})
-    t = _focus["of"].get(ref)
-    return min(0.0999, t / 1e11) if t else 0.0999
+            mine = (*place.get(pid, (-1.0, 0)), t)
+            key[g] = min(key.get(g, mine), mine)
+        order = {g: i for i, g in enumerate(sorted(key, key=key.get))}
+        _focus.update(at=time.time(), of={pid: 0.0999 * order[group.get(pid, pid)] / max(1, len(order)) for pid in first})
+    return _focus["of"].get(ref, 0.0999)
 
 
 VOLUNTEERS = volunteers_mod.Broker(DATA / "volunteers.sqlite", DATA / "volunteers", volunteer_delivered, volunteer_ready,
