@@ -13200,6 +13200,40 @@ def steps_left() -> dict[str, list[str]]:
     return by
 
 
+_since_mesh: dict[str, tuple] = {}     # project id -> (key it was worked out for, when, what since_mesh() said)
+SINCE_MESH_POOLS_EVERY = 120    # seconds a boulder's or pool's pooled_same() is kept, as it reads its climbs' harvests
+
+
+def since_mesh(proj: dict) -> dict | None:
+    """What has changed of a meshed project's photos since its mesh was made, for the Projects tab's Reconstruct:
+    {changed, said} (said as "3 photos added, 1 left out"), from the photos its mesh was given (meshinputs) against those
+    in its folder now (uploads, frames of videos, photos put back or judged again by the filter); for a boulder's or a
+    pool's, also whether its climbs' harvests are those it pooled (pooled_same()). None where that can't be told: no
+    record of what it was given, or its photos offloaded to the backup. Kept per project until its folder changes."""
+    pid, mid = proj["id"], proj.get("mesh_id")
+    folder = PROJECTS / pid / "photos"
+    try:
+        key = (mid, folder.stat().st_mtime_ns)
+    except OSError:
+        return None
+    now = time.time()
+    kept = _since_mesh.get(pid)
+    pool = proj.get("kind") == "boulder" and proj.get("boulder")
+    if kept and kept[0] == key and not (pool and now - kept[1] > SINCE_MESH_POOLS_EVERY):
+        return kept[2]
+    out = None
+    given = ((meshinputs.load(MESHES / mid) or {}) if mid else {}).get("photos")
+    if given and given.get("files") and not photos_away(pid):
+        diff = meshinputs.same_photos(given, {f.name: f for f in meshinputs.photos_in(folder)}) or {}
+        said = [f"{plural(len(diff[k]), 'photo')} {w}" for k, w in (("added", "added"), ("removed", "left out"), ("contents", "changed"))
+                if diff.get(k)]
+        if pool and not said and not pooled_same(proj, proj["boulder"]):
+            said = ["its climbs' photos changed since they were pooled"]
+        out = {"changed": bool(said), "said": ", ".join(said)}
+    _since_mesh[pid] = (key, now, out)
+    return out
+
+
 def phone_apps() -> dict:
     """Where an account gets the phone apps: the Android app's latest build, and the iPhone app's public TestFlight link
     (the admin page's apps.testflight_url), if there is one. Shown only to accounts (and invitees, as they join)."""
@@ -14478,7 +14512,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(deploy_state())
             # ---- projects
             if p == "/api/projects":
-                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,user_id,approved,deleted_at FROM projects ORDER BY created DESC"), project_areas()
+                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,boulder,user_id,approved,deleted_at FROM projects ORDER BY created DESC"), project_areas()
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
@@ -14494,6 +14528,8 @@ class Handler(BaseHTTPRequestHandler):
                         r["work"] = work[r["id"]]
                     if r["id"] in left:
                         r["left"] = left[r["id"]]
+                    if r["status"] == "done" and r["mesh_id"]:     # for Reconstruct: whether it has anything new to mesh
+                        r["since_mesh"] = since_mesh(r)
                     if r["status"] in ("stopped", "failed", "interrupted", "harvested", "waiting"):
                         away = gone.get(f"projects/{r['id']}/photos", 0) + gone.get(f"projects/{r['id']}/masks", 0)
                         if away:    # its data was offloaded: resuming brings it back first

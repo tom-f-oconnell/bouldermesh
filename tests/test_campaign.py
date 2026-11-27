@@ -4098,6 +4098,26 @@ finally:
     server.q("DELETE FROM meshes WHERE id='dd0000000001'", write=True)
     server._steps_left["at"] = 0
 print("steps still to do OK")
+
+# what's changed of a meshed project's photos since its mesh, for Reconstruct: nothing; one added; one put back as
+# another; nothing known without a record of what it was given
+pdir, mdir = server.PROJECTS / "se0000000001", server.MESHES / "sf0000000001"
+(pdir / "photos").mkdir(parents=True, exist_ok=True)
+mdir.mkdir(parents=True, exist_ok=True)
+for n in ("a.jpg", "b.jpg"):
+    (pdir / "photos" / n).write_bytes(n.encode())
+server.meshinputs.save(mdir, {"photos": server.meshinputs.photo_files(sorted((pdir / "photos").iterdir()))})
+sp = {"id": "se0000000001", "mesh_id": "sf0000000001", "kind": "harvest"}
+assert server.since_mesh(sp) == {"changed": False, "said": ""}, server.since_mesh(sp)
+time.sleep(0.01)
+(pdir / "photos" / "c.jpg").write_bytes(b"c")
+assert server.since_mesh(sp) == {"changed": True, "said": "1 photo added"}, server.since_mesh(sp)
+(pdir / "photos" / "a.jpg").unlink()
+assert server.since_mesh(sp) == {"changed": True, "said": "1 photo added, 1 photo left out"}, server.since_mesh(sp)
+(server.MESHES / "sf0000000001" / server.meshinputs.FILE).unlink()
+(pdir / "photos" / "d.jpg").write_bytes(b"d")
+assert server.since_mesh(sp) is None, "no record of what it was given"
+print("photos changed since a mesh OK")
 # how far an area's work done again has got: climbs queued again, and its climbs' projects retried on their own, from
 # when the latest stretch of it began; a project counted with its climb isn't counted twice
 server.q("DELETE FROM again_marks", write=True)

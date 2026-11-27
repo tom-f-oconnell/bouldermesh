@@ -3811,7 +3811,7 @@ async function refreshProjects(){
         ${editor && ['held', 'queued', 'running', 'stopped', 'failed', 'interrupted'].includes(p.status) ? `<button class="next sm sec" title="Mesh it next, on the machines: ahead of everything else waiting for one, without stopping what's running">Mesh next</button>` : ''}
         ${RETRYABLE.includes(p.status) ? `<button class="retry sm" title="Tries again from the last step it finished, rather than from the start${(p.areas || []).some(a => a.kind === 'climb') ? '. In its area it goes next, resumed if it was paused; a stopped area runs only what\'s asked for again, and stops' : ''}">Retry</button>` : ''}
         ${busy ? '<button class="stop sm sec" title="Stops its job now, or takes it out of the queue; Retry carries on from the last step it finished. An area\'s climb in progress is paused on the Areas tab instead">Stop</button>' : ''}
-        <button class="rec sm ${RETRYABLE.includes(p.status) ? 'sec' : ''}" title="Makes a new mesh from the start" ${busy?'disabled':''}>Reconstruct</button>
+        <button class="rec sm ${recLook(p).sec ? 'sec' : ''}" title="${esc(recLook(p).tip)}" ${busy?'disabled':''}>Reconstruct</button>
         ${p.mesh_id?'<button class="sec sm view">View mesh</button>':''}
         ${p.climb_id?`<button class="sec sm climb">Climb</button>`:''}
         <span class="grow"></span><button class="danger sm del" title="Delete project">✕</button>
@@ -3834,6 +3834,8 @@ async function refreshProjects(){
       catch(e){ toast('Upload failed: ' + e.message, 8000); }
     };
     d.querySelector('.rec').onclick = async () => {
+      const sure = recLook(p).ask;
+      if (sure && !confirm(sure)) return;
       if (p.climb_id && p.kind === 'harvest') {
         let b = null;
         try { b = (await api(`/api/climbs/${p.climb_id}`)).boulder; } catch {}
@@ -3929,6 +3931,19 @@ async function showArea(id){
   document.querySelector(`#campaigns [data-camp="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' });
 }
 // before stopping or deleting a project, what that does: to its job, its meshes, and the areas' climbs it's for
+// Reconstruct, on a project's card: the main button where there's something new to mesh (photos added, left out or put
+// back since its mesh, its climbs' photos changed) or it failed, stopped or was interrupted (then beside Retry); else a
+// quiet one, asked about first, as a mesh from the same photos would probably come out the same (/api/projects since_mesh)
+function recLook(p){
+  if (p.status !== 'done' || !p.mesh_id) return { sec: RETRYABLE.includes(p.status), tip: 'Makes a new mesh from the start' };
+  const s = p.since_mesh, still = [...new Set((p.left || []).map(x => x.split(' ')[0]))].join(' and ');
+  const busyNote = (p.work || []).length || still ? `\n\nMachines are still ${still ? `finding its mesh's ${still}` : 'working for its mesh'}: that work would go to a mesh about to be replaced.` : '';
+  if (s?.changed) return { sec: false, tip: `Makes a new mesh from the start, with what's changed since its mesh: ${s.said}` };
+  if (s) return { sec: true, tip: 'Same photos as its mesh: a new one would probably come out the same. Asks first',
+                  ask: `"${p.name}" has the same photos as its mesh: a new mesh from them would probably come out the same. Make one from the start anyway?${busyNote}` };
+  return { sec: true, tip: 'It\'s meshed already: makes a new mesh from the start. Asks first',
+           ask: `"${p.name}" is meshed already. Make a new mesh from the start?${busyNote}` };
+}
 async function projectSure(p, what){
   if (!editor) return ask('');
   let fx;
