@@ -1386,7 +1386,8 @@ function areaPoints(){
   const at = {};
   for (const m of meshesCache) {
     if (m.lat == null || m.lng == null || m.replaced_by) continue;
-    for (const a of new Set(meshAreas(m))) if (a !== NO_AREA) (at[a] ||= []).push(m);
+    // a list of the hardest's climbs are the world over: no circle for it, the main map shows each
+    for (const a of new Set(meshAreas(m))) if (a !== NO_AREA && !m.off_map?.includes(a)) (at[a] ||= []).push(m);
   }
   const camps = editor ? campaignsCache || [] : [];
   const byName = Object.fromEntries(camps.map(c => [c.name, c]));

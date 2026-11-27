@@ -275,6 +275,9 @@ assert json.loads(got["Alphane"]["boulder"]) == ["Switzerland", "Ticino", "Chiro
 assert not json.loads(got["Alphane"]["data"])["raw"].get("stub") and seen_videos == {"Alphane": 1, "Burden of Dreams": 7}, seen_videos
 assert server.campaign_status(camp["id"]) == "done" and server.campaign_view(server.q("SELECT * FROM campaigns WHERE id=?", camp["id"], one=True))["made"] == 2
 assert server.q("SELECT COUNT(*) n FROM meshes", one=True)["n"] == 2 and server.q("SELECT lat FROM climbs WHERE id=?", got["Alphane"]["climb_id"], one=True)["lat"] == 46.43064
+rows = [r for r in server._mesh_list(True, None, {}) if r["areas"]]
+assert len(rows) == 2 and all(r["off_map"] == r["areas"] == [camp["name"]] for r in rows), \
+    [(r["areas"], r.get("off_map")) for r in rows]     # the areas map draws no circle for the list, its climbs being the world over
 print("hardest N OK")
 
 # --- raising N goes on down the list; a page that can't be read fails only its climb; a page without a grade keeps the list's

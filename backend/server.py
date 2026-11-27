@@ -5897,6 +5897,12 @@ def timings_brief(rec: dict | None) -> dict | None:
     return {k: rec.get(k) for k in keys}
 
 
+def spread_areas() -> set[str]:
+    """The names of the areas whose climbs are the world over (climbing-history.org's lists of the hardest), which the
+    areas map leaves out: their meshes' middle is nowhere near any of them."""
+    return {r["name"] for r in q("SELECT name FROM campaigns WHERE area_id LIKE 'ch:%'")}
+
+
 def mesh_areas():
     """A function giving a mesh row (with its climbs, and boulder_climbs for a boulder's own) the names of the areas it
     was made for (those whose list holds it as a climb's mesh, or else lists its climbs; or else the area its upload's
@@ -12776,7 +12782,7 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
     kinds = boulder_kinds()
     for key in {r["boulder"] for r in rows if is_pool(r["boulder"])}:     # a pool's: its climbs
         on[key] = [{k: c[k] for k in ("id", "name", "grade")} for c in boulder_climbs(key)]
-    areas, rated = mesh_areas(), mesh_ratings()
+    areas, rated, spread = mesh_areas(), mesh_ratings(), spread_areas()
     pooled_views = {r["id"]: viewpoints.load(MESHES / r["id"]) or {} for r in rows if r["boulder"]}
     homes = boulder_homes([r for r in rows if not r.get("replaced_by")], pooled_views)
     least, known_on = settings().get("boulders.placed_percent"), climbs_by_area()
@@ -12799,6 +12805,8 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
         r["boulder_url"] = leaf_url(leaf, urls) if leaf else None
         mesh_files_fields(r)
         r["areas"], r["area_path"] = areas(r)
+        if off := [a for a in r["areas"] if a in spread]:
+            r["off_map"] = off      # areas of it not drawn on the areas map
     # the names in its climbs' and its boulder's links, for Share, and how many current meshes its boulder has
     # (boulder_mesh_sets(): its own, what that left out, its climbs' own), for the viewer's Meshes button
     try:    # links failing shouldn't empty the list
