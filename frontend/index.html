@@ -3938,9 +3938,13 @@ function recLook(p){
   if (p.status !== 'done' || !p.mesh_id) return { sec: RETRYABLE.includes(p.status), tip: 'Makes a new mesh from the start' };
   const s = p.since_mesh, still = [...new Set((p.left || []).map(x => x.split(' ')[0]))].join(' and ');
   const busyNote = (p.work || []).length || still ? `\n\nMachines are still ${still ? `finding its mesh's ${still}` : 'working for its mesh'}: that work would go to a mesh about to be replaced.` : '';
-  if (s?.changed) return { sec: false, tip: `Makes a new mesh from the start, with what's changed since its mesh: ${s.said}` };
-  if (s) return { sec: true, tip: 'Same photos as its mesh: a new one would probably come out the same. Asks first',
-                  ask: `"${p.name}" has the same photos as its mesh: a new mesh from them would probably come out the same. Make one from the start anyway?${busyNote}` };
+  // its photos in the backup: asked back first, never meshed without them (it stops, saying so: Retry once they're here)
+  const backNote = s?.lost ? '\n\nIts photos were lost from the backup: it waits until the admin page says whether to go on without them.'
+    : s?.away ? '\n\nIts photos are in the backup: they\'re asked for back first (within about 5 minutes), and it\'s never meshed without them. It stops until they\'re here: press Retry then.' : '';
+  const where = s?.lost ? ' Its photos were lost from the backup.' : s?.away ? ' Its photos are in the backup: asked back first.' : '';
+  if (s?.changed) return { sec: false, tip: `Makes a new mesh from the start, with what's changed since its mesh: ${s.said}.${where}`, ask: backNote ? `Make a new mesh of "${p.name}" from the start?${backNote}` : '' };
+  if (s) return { sec: true, tip: `Same photos as its mesh: a new one would probably come out the same.${where} Asks first`,
+                  ask: `"${p.name}" has the same photos as its mesh: a new mesh from them would probably come out the same. Make one from the start anyway?${busyNote}${backNote}` };
   return { sec: true, tip: 'It\'s meshed already: makes a new mesh from the start. Asks first',
            ask: `"${p.name}" is meshed already. Make a new mesh from the start?${busyNote}` };
 }

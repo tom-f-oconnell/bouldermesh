@@ -13200,37 +13200,91 @@ def steps_left() -> dict[str, list[str]]:
     return by
 
 
-_since_mesh: dict[str, tuple] = {}     # project id -> (key it was worked out for, when, what since_mesh() said)
-SINCE_MESH_POOLS_EVERY = 120    # seconds a boulder's or pool's pooled_same() is kept, as it reads its climbs' harvests
+_since_mesh: dict[str, tuple] = {}     # project id -> (key it was worked out for, what since_mesh() said)
 
 
-def since_mesh(proj: dict) -> dict | None:
+def harvest_keys(boulders: list[str], projects: list[dict] | None = None) -> Callable[[str], tuple]:
+    """For since_mesh(): a boulder's or pool's climbs' harvests (as climb_harvests() has them), each with when its
+    photos folder last changed, from one reading of these boulders' climbs and of the pools: so that pooled_same(),
+    which reads them all, is worked out again only as one of them changes (photos added, left out, put back or
+    offloaded, or a harvest or a climb added), not every time it's asked. projects: every project's id, kind, name,
+    climb_id and has_harvest (harvest IS NOT NULL), as /api/projects reads them; read here if not given."""
+    by_path: dict[str, list[str]] = {}
+    by_climb: dict[str, list[str]] = {}
+    paths = sorted({b for b in boulders if not is_pool(b)})
+    for i in range(0, len(paths), 500):
+        part = paths[i:i + 500]
+        for r in q(f"SELECT id, area_path FROM climbs WHERE area_path IN ({','.join('?' * len(part))})", *part):
+            by_path.setdefault(r["area_path"], []).append(r["id"])
+    if projects is None:
+        projects = q("SELECT id, kind, name, climb_id, harvest IS NOT NULL AS has_harvest FROM projects WHERE kind='harvest'")
+    for r in projects:
+        if r["kind"] == "harvest" and r["has_harvest"] and not (r["name"] or "").endswith(POOLED):
+            by_climb.setdefault(r["climb_id"], []).append(r["id"])
+    pools = {r["key"]: json.loads(r["members"] or "[]") for r in q("SELECT key, members FROM pools")} if len(paths) < len(set(boulders)) else {}
+
+    def key(boulder: str) -> tuple:
+        out = []
+        for c in sorted(pools.get(boulder, []) if is_pool(boulder) else by_path.get(boulder, [])):
+            for h in sorted(by_climb.get(c, [])):
+                try:
+                    out.append((c, h, (PROJECTS / h / "photos").stat().st_mtime_ns))
+                except OSError:
+                    pass
+        return tuple(out)
+    return key
+
+
+def since_mesh(proj: dict, state: str | None = None, harvests: Callable[[str], tuple] | None = None) -> dict | None:
     """What has changed of a meshed project's photos since its mesh was made, for the Projects tab's Reconstruct:
-    {changed, said} (said as "3 photos added, 1 left out"), from the photos its mesh was given (meshinputs) against those
-    in its folder now (uploads, frames of videos, photos put back or judged again by the filter); for a boulder's or a
-    pool's, also whether its climbs' harvests are those it pooled (pooled_same()). None where that can't be told: no
-    record of what it was given, or its photos offloaded to the backup. Kept per project until its folder changes."""
+    {changed, said, away?, lost?} (said as "3 photos added, 1 photo left out"), from the photos its mesh was given
+    (meshinputs) against those it has now (uploads, frames of videos, photos put back or judged again by the filter):
+    in its folder, or where they're offloaded, as the backup's record of them has them (offload_files), with away true
+    (meshing asks for them back first, and waits: need_back()); lost true where the backup lost them. For a boulder's or a
+    pool's, also whether its climbs' harvests are those it pooled (pooled_same()). None where there's no record of what
+    it was given. Kept per project until its folder, its photos' state in the backup, or (a boulder's or pool's) any
+    of its climbs' harvests changes (harvest_keys()).
+
+    Args:
+        state: its photos' state in the backup: "away", "lost", or None (here); read for it if not given.
+        harvests: harvest_keys(), read once for every project listed; read for it if not given.
+    """
     pid, mid = proj["id"], proj.get("mesh_id")
-    folder = PROJECTS / pid / "photos"
-    try:
-        key = (mid, folder.stat().st_mtime_ns)
-    except OSError:
-        return None
-    now = time.time()
-    kept = _since_mesh.get(pid)
+    folder, path = PROJECTS / pid / "photos", f"projects/{pid}/photos"
+    if state is None:
+        state = "lost" if offload_mod.lost(q, [path]) else "away" if photos_away(pid) else ""
     pool = proj.get("kind") == "boulder" and proj.get("boulder")
-    if kept and kept[0] == key and not (pool and now - kept[1] > SINCE_MESH_POOLS_EVERY):
-        return kept[2]
+    try:
+        key = (mid, folder.stat().st_mtime_ns, state)
+    except OSError:
+        key = (mid, None, state)
+    if pool:
+        key += ((harvests or harvest_keys([proj["boulder"]]))(proj["boulder"]),)
+    kept = _since_mesh.get(pid)
+    if kept and kept[0] == key:
+        return kept[1]
     out = None
     given = ((meshinputs.load(MESHES / mid) or {}) if mid else {}).get("photos")
-    if given and given.get("files") and not photos_away(pid):
-        diff = meshinputs.same_photos(given, {f.name: f for f in meshinputs.photos_in(folder)}) or {}
+    if given and given.get("files"):
+        here = {f.name: f for f in meshinputs.photos_in(folder)}
+        if state:     # as the backup has them, with any put here since
+            files = given["files"]
+            backed = {Path(r["file"]).name: r for r in q("SELECT file, bytes, sha1 FROM offload_files WHERE path=?", path)}
+            have = set(backed) | set(here)
+            diff = {"added": sorted(have - set(files)), "removed": sorted(set(files) - have),
+                    "contents": sorted(n for n in set(backed) & set(files) - set(here)
+                                       if (backed[n]["bytes"], backed[n]["sha1"]) != tuple(files[n][:2]))}
+            diff["contents"] += (meshinputs.same_photos({**given, "files": {n: files[n] for n in set(here) & set(files)}},
+                                                        {n: here[n] for n in set(here) & set(files)}) or {}).get("contents", [])
+        else:
+            diff = meshinputs.same_photos(given, here) or {}
         said = [f"{plural(len(diff[k]), 'photo')} {w}" for k, w in (("added", "added"), ("removed", "left out"), ("contents", "changed"))
                 if diff.get(k)]
         if pool and not said and not pooled_same(proj, proj["boulder"]):
             said = ["its climbs' photos changed since they were pooled"]
-        out = {"changed": bool(said), "said": ", ".join(said)}
-    _since_mesh[pid] = (key, now, out)
+        out = {"changed": bool(said), "said": ", ".join(said), **({"away": True} if state == "away" else {}),
+               **({"lost": True} if state == "lost" else {})}
+    _since_mesh[pid] = (key, out)
     return out
 
 
@@ -14512,14 +14566,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(deploy_state())
             # ---- projects
             if p == "/api/projects":
-                rows, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,boulder,user_id,approved,deleted_at FROM projects ORDER BY created DESC"), project_areas()
+                every, areas = q("SELECT id,name,created,status,mesh_id,demo,kind,climb_id,boulder,user_id,approved,deleted_at,"
+                                "harvest IS NOT NULL AS has_harvest FROM projects ORDER BY created DESC"), project_areas()
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
-                rows = [r for r in rows if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
+                rows = [r for r in every if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
                         (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
                 work, left, low = machine_work(), steps_left(), low_projects()
                 gone = {x["path"]: x["bytes"] or 0 for x in q("SELECT path, bytes FROM offloads WHERE done IS NOT NULL AND "
                                                             "approved IS NULL AND lost IS NULL AND path LIKE 'projects/%'")}
+                lost = {x["path"] for x in q("SELECT path FROM offloads WHERE lost IS NOT NULL AND approved IS NULL AND path LIKE 'projects/%'")}
+                pooled = [r["boulder"] for r in rows if r["kind"] == "boulder" and r["status"] == "done" and r["mesh_id"] and r["boulder"]]
+                harvests = harvest_keys(pooled, every) if pooled else None
                 for r in rows:
+                    del r["has_harvest"]
                     if r["id"] in areas:
                         r["areas"] = areas[r["id"]]
                         # remaking an old mesh (queue_old()), or a low-priority area's (set_area_low()): after everything else
@@ -14529,7 +14588,8 @@ class Handler(BaseHTTPRequestHandler):
                     if r["id"] in left:
                         r["left"] = left[r["id"]]
                     if r["status"] == "done" and r["mesh_id"]:     # for Reconstruct: whether it has anything new to mesh
-                        r["since_mesh"] = since_mesh(r)
+                        here = f"projects/{r['id']}/photos"
+                        r["since_mesh"] = since_mesh(r, "lost" if here in lost else "away" if here in gone else "", harvests)
                     if r["status"] in ("stopped", "failed", "interrupted", "harvested", "waiting"):
                         away = gone.get(f"projects/{r['id']}/photos", 0) + gone.get(f"projects/{r['id']}/masks", 0)
                         if away:    # its data was offloaded: resuming brings it back first
@@ -15096,7 +15156,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 if proj["status"] in ("queued", "running", "harvesting", HELD):
                     return self.send_json({"error": "already running" if proj["status"] != HELD else "already waiting its turn"}, 409)
-                n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT])
+                n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT]) if (PROJECTS / pid / "photos").is_dir() else 0
+                if photos_away(pid):    # in the backup: asked back as it's meshed (need_back()), which waits for them
+                    n += q("SELECT COUNT(*) n FROM offload_files WHERE path=?", f"projects/{pid}/photos", one=True)["n"]
                 if n < (1 if not pipeline.real_pipeline_ready() else 3):
                     return self.send_json({"error": "upload at least 3 overlapping photos"}, 400)
                 if proj["kind"] == "user":

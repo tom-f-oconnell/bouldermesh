@@ -4114,6 +4114,37 @@ time.sleep(0.01)
 assert server.since_mesh(sp) == {"changed": True, "said": "1 photo added"}, server.since_mesh(sp)
 (pdir / "photos" / "a.jpg").unlink()
 assert server.since_mesh(sp) == {"changed": True, "said": "1 photo added, 1 photo left out"}, server.since_mesh(sp)
+# offloaded to the backup: told from the backup's record of them, said to be away (asked back first, never meshed without)
+(pdir / "photos" / "a.jpg").write_bytes(b"a.jpg")
+(pdir / "photos" / "c.jpg").unlink()
+assert server.since_mesh(sp) == {"changed": False, "said": ""}, server.since_mesh(sp)
+path = "projects/se0000000001/photos"
+for n in ("a.jpg", "b.jpg"):
+    f = pdir / "photos" / n
+    server.q("INSERT INTO offload_files(path, file, bytes, mtime, sha1) VALUES(?,?,?,?,?)", path, f"{path}/{n}", f.stat().st_size,
+             f.stat().st_mtime, server.meshinputs.sha1_file(f), write=True)
+    f.unlink()
+server.q("INSERT INTO offloads(path, kind, ref, bytes, marked, done) VALUES(?,?,?,?,?,?)", path, "photos", "se0000000001", 10, time.time(),
+         time.time(), write=True)
+assert server.since_mesh(sp) == {"changed": False, "said": "", "away": True}, server.since_mesh(sp)
+server.q("UPDATE offload_files SET sha1='x' WHERE file=?", f"{path}/b.jpg", write=True)
+server._since_mesh.clear()
+assert server.since_mesh(sp) == {"changed": True, "said": "1 photo changed", "away": True}, server.since_mesh(sp)
+server.q("DELETE FROM offloads WHERE path=?", path, write=True)
+server.q("DELETE FROM offload_files WHERE path=?", path, write=True)
+# a boulder's: worked out again as a harvest of one of its climbs changes, not otherwise
+server.q("INSERT INTO climbs(id,source,source_id,url,name,created,area_path) VALUES('sc0000000001','mountainproject','sc1','https://x/sc1',"
+         "'Since Climb',0,'[\"Since Boulder\"]')", write=True)
+server.q("INSERT INTO projects(id,name,created,kind,status,climb_id,harvest) VALUES('sh0000000001','Since Climb (harvest)',?,'harvest','harvested',"
+         "'sc0000000001','{}')", time.time(), write=True)
+(server.PROJECTS / "sh0000000001" / "photos").mkdir(parents=True, exist_ok=True)
+keys = server.harvest_keys(['["Since Boulder"]'])('["Since Boulder"]')
+assert [k[:2] for k in keys] == [("sc0000000001", "sh0000000001")], keys
+time.sleep(0.01)
+(server.PROJECTS / "sh0000000001" / "photos" / "x.jpg").write_bytes(b"x")
+assert server.harvest_keys(['["Since Boulder"]'])('["Since Boulder"]') != keys, "a photo added: its key changes"
+server.q("DELETE FROM projects WHERE id='sh0000000001'", write=True)
+server.q("DELETE FROM climbs WHERE id='sc0000000001'", write=True)
 (server.MESHES / "sf0000000001" / server.meshinputs.FILE).unlink()
 (pdir / "photos" / "d.jpg").write_bytes(b"d")
 assert server.since_mesh(sp) is None, "no record of what it was given"
