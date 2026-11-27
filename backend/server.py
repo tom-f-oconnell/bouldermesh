@@ -10909,6 +10909,8 @@ def campaign_view(camp: dict) -> dict:
     if paused:
         counts["paused"] = len(paused)
     pending = ordered_pending(camp)
+    for i in pending[:10]:      # why each is up next, where it isn't for the first time
+        i["note"] = next_why(i)
     # queued again as their meshes are old (queue_old()): at low priority, counted and listed apart from its own
     old_next = [i for i in ordered_pending(camp, old=True) if i["old_rerun"] in (1, 3, 4)]
     old_counts = {r["status"]: r["n"] for r in q("SELECT status, COUNT(*) n FROM campaign_items WHERE campaign_id=? AND old_rerun IN (1, 3, 4) "
@@ -10934,6 +10936,24 @@ def campaign_view(camp: dict) -> dict:
             "idle_why": area_idle_why(cid) if camp["status"] == "running" and not running else None,
             # for one that's a climbing-history.org list of the hardest, the list's link (area_id is then its id here)
             "list_url": ch_mod.list_url(camp["area_id"]) if str(camp.get("area_id") or "").startswith("ch:") else None}
+
+
+def next_why(item: dict) -> str | None:
+    """Why an area's climb that has been through before is up next again, for its row there (None for one coming to its
+    first turn): a climb goes back in the queue for each step that follows from work done, which otherwise reads as
+    starting over."""
+    redo = item.get("redo")
+    if redo in ("more", "more+rebuild"):
+        return ("its videos have come from volunteers: adding their frames to its photos" + (", then meshing it" if "rebuild" in redo else "")
+                if item.get("was") in ("waiting", "harvested", None) else
+                "new videos of it were found: adding their frames to its photos" + (", then meshing it again" if "rebuild" in redo else ""))
+    if redo:
+        return f"been through already; queued to {REDO_NAMES.get(redo, redo)}"
+    if item.get("retry"):
+        return "trying it again"
+    if item.get("project_id"):
+        return "carrying on from where it was stopped"
+    return None
 
 
 def active_areas(camps: list[dict]) -> set[str]:

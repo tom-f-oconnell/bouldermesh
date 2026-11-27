@@ -320,6 +320,9 @@ for _ in range(10):
 assert sorted(harvested) == ["Alphane", "Burden of Dreams", "Exodia", "Pneuma"], harvested
 assert sorted(u.rsplit("/", 1)[1] for u, afresh in reads if afresh) == ["alphane", "burden-of-dreams", "exodia", "pneuma"], reads
 assert all(i["status"] == "done" for n, i in items(camp["id"]).items() if n != "Missing"), items(camp["id"])
+assert server.next_why({"redo": "more+rebuild", "was": "waiting"}) == "its videos have come from volunteers: adding their frames to its photos, then meshing it"
+assert "new videos of it were found" in server.next_why({"redo": "more+rebuild", "was": "done"}) and server.next_why({"redo": None}) is None
+assert server.next_why({"redo": "harvest+rebuild"}) == "been through already; queued to harvest again and rebuild"
 print("check for new OK")
 
 # --- the same climb on Mountain Project: told by its name and where it is, and given the page's videos ---------------
