@@ -443,6 +443,15 @@ own files) showed in 28 s, where its own files would take almost 4 minutes, and 
 - **Textures** are JPEGs at quality 90. A phone, a tablet (a coarse pointer) or a device saying it has 4 GB or less gets
   4096 at most: an 8192 texture takes 256 MB of graphics memory, and a phone's screen can't show it. A sharper texture
   that the graphics card has no room for (an OUT_OF_MEMORY error when it's uploaded) leaves the one before.
+- **A phone's budget of graphics memory.** An iPhone (any browser there, Brave included, is WebKit) drops a page that
+  takes more than a few hundred MB and loads it again; with the rest of the detail coming at once, it did the same
+  again and again. Exodia (nine textures, 7.8M faces) takes about 1.1 GB at 4096, and on Nov 27 an iPhone lost its view of it
+  10 times in 9 minutes; the next largest (about 870 MB) did the same 3 times on Nov 22. So the list's `pack` says each mesh's faces and texture pixels, and the viewer
+  reckons 4 bytes a pixel and a third more for mipmaps, and 40 bytes a face. It fetches at once only what fits 256 MB
+  on an iPhone or iPad, or 640 MB on another phone or tablet; the rest is on a button, *may be too much for this
+  device*. A device that loses its view, or whose page goes while detail comes in (without leaving it), keeps 70% of
+  what it had (or was getting) as its budget from then on, and reports it (`gpu-budget`), so a device the defaults
+  are too much for finds its own.
 - **When.** Each new mesh is packed as it's made, and any mesh the list of meshes shows unpacked is queued, so old
   meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. The admin page sets the
   preview's size (`viewer.preview_faces`, 150,000 by default, 0 for none): a change queues every mesh again, and each

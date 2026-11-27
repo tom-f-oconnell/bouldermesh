@@ -3177,8 +3177,9 @@ def mesh_version(mid: str, mode: str, filename: str) -> str:
 
 def pack_info(r: dict) -> dict | None:
     """What the viewer can fetch for a listed mesh instead of its own files: the sizes of its packed copies, and of
-    its textures' JPEG copies; None if it isn't packed. One not packed, or not for the previews the admin page asks
-    for now, is queued (shown as it was meanwhile)."""
+    its textures' JPEG copies, and the faces and texture pixels each would put in a graphics card's memory (for the
+    viewer's budget of that on phones); None if it isn't packed. One not packed, or not for the previews the admin page
+    asks for now, is queued (shown as it was meanwhile)."""
     src = viewer_glb(r["id"], r["texture"], r["filename"])
     rec = glbpack.record(src) if src else None
     if (not rec or not glbpack.made_for(rec, settings().get("viewer.preview_faces"))) \
@@ -3187,12 +3188,16 @@ def pack_info(r: dict) -> dict | None:
     if not rec:
         return None
     sides: dict[str, int] = {}
+    pixels: dict[str, int] = {}
     for t in (rec.get("textures") or {}).values():
         for s, n in t["bytes"].items():
             sides[s] = sides.get(s, 0) + n
+            pixels[s] = pixels.get(s, 0) + min(t["side"], int(s)) ** 2
     textures = rec.get("textures") or {}
     return {"full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
-            "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides} if textures else None}
+            "faces": {"full": rec["full"].get("faces"), "preview": (rec.get("preview") or {}).get("faces")},
+            "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides, "pixels": pixels}
+            if textures else None}
 
 
 # ------------------------------------------------------------------ worker

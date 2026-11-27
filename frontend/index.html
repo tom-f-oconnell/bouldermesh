@@ -2538,6 +2538,8 @@ document.addEventListener('pointerdown', ev => { if (document.body.classList.con
 addEventListener('keydown', ev => { if (ev.key === 'Escape') setPrefs(false); });
 renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); $('#viewing').textContent = 'The view stopped working: reload the page';
   reportError('webgl-lost', 'the graphics card dropped the view', { mesh: shownMesh || undefined, gpu: gpuName() });
+  const d = detailLoad?.id === shownMesh ? detailLoad : null;     // next time, less detail than was in it (or coming)
+  if (d) { lowerBudget(d.fetching ? d.steps.at(-1)?.gpu : d.gpu, 'the view was lost'); try { localStorage.removeItem(DETAIL_TRY); } catch {} }
   if (phone.matches) showTitle('The view stopped working: reload the page');     // where a phone has room to say so
   viewNote('The graphics card dropped this view, usually because it ran out of memory. Close other tabs that use it and reload the page.'); });
 // A 1×1 image, for a GLB whose shape alone is wanted: the mesh in view has its textures already
@@ -2752,6 +2754,36 @@ function deviceSide(){
   const small = phone.matches || matchMedia('(pointer:coarse)').matches || (navigator.deviceMemory || 8) <= 4;
   return Math.min(renderer.capabilities.maxTextureSize, small ? 4096 : 8192);
 }
+// Graphics memory the mesh in view takes, roughly, from its list's pack: its textures' pixels at 4 bytes and a third
+// more for mipmaps, and each face's share of positions, normals, texture coordinates and indices. An iPhone or iPad
+// (any browser there is Safari's WebKit) drops a page that takes much more than a few hundred MB and loads it again,
+// which, with the detail fetched at once, does the same again: Exodia's nine textures at 4096 and 7.8M faces, about
+// 1.1 GB, kept reloading on an iPhone (Nov 27). So a phone gets only what fits GPU_BUDGET, and the rest on a button.
+const GPU_FACE_BYTES = 40, GPU_BUDGET = { ios: 256e6, small: 640e6 }, GPU_LEARNT = 'bm_gpu_budget', DETAIL_TRY = 'bm_detail_try';
+const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const texGpu = (t, side) => (t?.pixels?.[side] || 0) * 4 * 4 / 3;
+// What this device is taken to have room for: the most for its kind, or less, if it has dropped a view since (lowerBudget())
+function gpuBudget(){
+  const small = phone.matches || matchMedia('(pointer:coarse)').matches || (navigator.deviceMemory || 4) <= 4;
+  let b = iOS ? GPU_BUDGET.ios : small ? GPU_BUDGET.small : Infinity;
+  try { const learnt = +localStorage.getItem(GPU_LEARNT); if (learnt > 0) b = Math.min(b, learnt); } catch {}
+  return b;
+}
+// A view dropped with `bytes` in it (or on the way): this device gets 70% of that from now on
+function lowerBudget(bytes, why){
+  if (!(bytes > 0)) return;
+  const b = Math.round(Math.min(gpuBudget(), bytes * .7));
+  try { localStorage.setItem(GPU_LEARNT, String(b)); } catch {}
+  reportError('gpu-budget', `${why}: detail limited to ${mb(b)} MB of graphics memory from now on`, { mesh: shownMesh || undefined, gpu: gpuName() });
+}
+// The page went while detail was coming in or just after, without leaving (pagehide clears it): a browser that drops a
+// page short of memory (iOS) sometimes does so without saying the view was lost first
+try {
+  const tried = JSON.parse(localStorage.getItem(DETAIL_TRY) || 'null');
+  localStorage.removeItem(DETAIL_TRY);
+  if (tried && Date.now() - tried.t < 10 * 60e3) setTimeout(() => lowerBudget(tried.gpu, 'the page went as more detail came'), 0);
+} catch {}
+addEventListener('pagehide', () => { try { localStorage.removeItem(DETAIL_TRY); } catch {} });
 // Chrome on Android says how it's connected, and whether data saving is on; elsewhere the preview's speed decides
 const slowLink = () => { const c = navigator.connection; return !!c && (c.saveData || ['slow-2g', '2g', '3g'].includes(c.effectiveType)); };
 // Bytes a second, as the preview's files came (the browser's timings of them), or if it didn't time them, as fast as
@@ -2770,22 +2802,41 @@ function showDetail(text, onclick){
 }
 function stopDetail(){ detailLoad?.abort.abort(); detailLoad = null; showDetail(''); }
 function moreDetail(d){
-  const steps = [], t = d.pk.texture;
+  // what fits this device's budget of graphics memory (gpuBudget()) comes as before; the rest (over) only on a button
+  const steps = [], over = [], t = d.pk.texture, faces = d.pk.faces || {}, budget = gpuBudget();
+  const cost = (side, lod) => texGpu(t, side) + (faces[lod] || 0) * GPU_FACE_BYTES;
+  let side = d.first;
+  d.gpu = cost(side, d.lod);
   if (t && d.first) {
-    const side = Math.min(deviceSide(), DETAIL_SIDES.find(s => s >= t.side) || 8192);
-    if (side > d.first) steps.push({ kind: 'texture', side, bytes: t.bytes[side] || 0 });
+    const want = Math.min(deviceSide(), DETAIL_SIDES.find(s => s >= t.side) || 8192);
+    let fit = want;
+    while (fit > d.first && cost(fit, d.lod) > budget) fit /= 2;
+    if (fit > d.first) { steps.push({ kind: 'texture', side: fit, bytes: t.bytes[fit] || 0, gpu: cost(fit, d.lod) }); side = fit; }
+    if (want > fit) over.push({ kind: 'texture', side: want, bytes: t.bytes[want] || 0, gpu: cost(want, d.lod) });
   }
-  if (d.lod === 'preview') steps.push({ kind: 'shape', bytes: d.pk.full });
-  Object.assign(d, { steps, abort: new AbortController() });
+  if (d.lod === 'preview') {
+    const fits = cost(side, 'full') <= budget;
+    (fits ? steps : over).push({ kind: 'shape', bytes: d.pk.full, gpu: cost(fits ? side : over[0]?.side || side, 'full') });
+  }
+  Object.assign(d, { steps, over, abort: new AbortController() });
   detailLoad = d;
-  if (!steps.length) return;
+  if (!steps.length) return offerOver(d);
   const bytes = steps.reduce((n, s) => n + s.bytes, 0), rate = linkRate(d);
   if (detailChoice === 'full' || (detailChoice === 'auto' && !slowLink() && bytes / rate < DETAIL_SECONDS)) return fetchDetail(d);
   showDetail(`Full detail (${mb(bytes)} MB)`, () => fetchDetail(d));
 }
+// More than this device is taken to have room for, if it's asked for (and if it drops the view, its budget falls)
+function offerOver(d){
+  if (detailLoad !== d || !d.over?.length) return showDetail('');
+  const bytes = d.over.reduce((n, s) => n + s.bytes, 0);
+  showDetail(`More detail (${mb(bytes)} MB), may be too much for this device`, () => { d.steps = d.over; d.over = []; fetchDetail(d); });
+}
 async function fetchDetail(d){
   if (d.fetching) return;
   d.fetching = true;
+  const mark = { gpu: d.steps.at(-1)?.gpu || 0, t: Date.now() };
+  try { localStorage.setItem(DETAIL_TRY, JSON.stringify(mark)); } catch {}
+  const done = () => { d.fetching = false; setTimeout(() => { try { if (JSON.parse(localStorage.getItem(DETAIL_TRY) || 'null')?.t === mark.t) localStorage.removeItem(DETAIL_TRY); } catch {} }, 20000); };
   const total = Math.max(1, d.steps.reduce((n, s) => n + s.bytes, 0));
   let before = 0;
   const progress = n => { if (detailLoad === d) showDetail(`Loading detail… ${Math.min(99, Math.round(100 * (before + n) / total))}%`); };
@@ -2794,16 +2845,19 @@ async function fetchDetail(d){
     try {
       await (step.kind === 'texture' ? sharpenTexture : fullShape)(d, step, progress);
     } catch (e) {
-      if (detailLoad !== d) return;
+      if (detailLoad !== d) return done();
       reportError('mesh-detail', e, { mesh: d.id });
       viewNote(step.kind === 'texture' ? `Showing its texture at ${d.first} pixels, as a sharper one wouldn't load: ${e.message}`
         : `Showing a simplified copy of it, as all of its faces wouldn't load: ${e.message}`);
+      done();
       return showDetail('');
     }
-    if (detailLoad !== d) return;
+    if (detailLoad !== d) return done();
     before += step.bytes;
+    d.gpu = step.gpu ?? d.gpu;
   }
-  showDetail('');
+  done();
+  offerOver(d);
 }
 async function fetchBlob(url, onBytes, signal, headers){
   const res = await fetch(url, { signal, headers });
