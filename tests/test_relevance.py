@@ -545,4 +545,23 @@ with tempfile.TemporaryDirectory() as td:
     # without being told they're an edit's, they're kept on trust as before
     assert len(relevance.filter_photos(sorted(photos.glob("*.jpg")), None, logged.append, methods=["same-rock"])["kept"]) == 8
 print("an edit's frames must match OK")
+
+# --- a video showing another's footage again (news, commentary): the later of the two is left out -----------------
+with tempfile.TemporaryDirectory() as td:
+    photos = pathlib.Path(td)
+    first = [view_of(photos, f"yt_aaaaaaaa_{i:03d}.jpg", 200 + 150 * i, 100 + 100 * i) for i in range(4)]            # the send, as filmed
+    again = [view_of(photos, f"yt_bbbbbbbb_{i:03d}.jpg", 230 + 150 * i, 120 + 100 * i, w=1000, h=750) for i in range(4)]   # cropped, in a news video
+    other = [view_of(photos, f"yt_cccccccc_{i:03d}.jpg", 300 + 100 * i, 200, make_rock(20 + i)) for i in range(3)]     # footage of its own
+    footage = {"video": {p.name: p.name.split("_")[1] for p in first + again + other},
+               "uploaded": {"aaaaaaaa": "20251111", "bbbbbbbb": "20251120", "cccccccc": "20251201"}}
+    logged = []
+    got = relevance.filter_photos(sorted(photos.glob("*.jpg")), None, logged.append, methods=["same-rock"], footage=footage)
+    assert got["reused_footage"] == {"bbbbbbbb": {"of": "aaaaaaaa", "matched": 4, "sampled": 4}}, got.get("reused_footage")
+    assert {n for n, w in got["rejected"].items() if w == "reused"} == {p.name for p in again} and got["counts"]["reused"] == 4, got["rejected"]
+    assert all(p.name in got["kept"] for p in first + other), got["kept"]
+    # with a date unknown, neither is called the copy
+    unknown = relevance.filter_photos(sorted(photos.glob("*.jpg")), None, logged.append, methods=["same-rock"],
+                                      footage={**footage, "uploaded": {"aaaaaaaa": "20251111"}})
+    assert "reused_footage" not in unknown and len(unknown["kept"]) == 11
+print("footage shown again OK")
 print("ALL RELEVANCE TESTS PASSED")

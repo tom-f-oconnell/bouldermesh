@@ -295,6 +295,11 @@ INTERRUPTED: the server restarted during this job: Retry carries on from the las
     harvested(mesh("unlooked", made=current, tex=tex_now), {"url": yt(4), "frames": 20})
     harvested(mesh("newway", made=current, tex=tex_now), {"url": yt(5), "frames": 20, "frames_version": 2, "shots": 5, "duration": 4000})
     mesh("itsboulder", kind="boulder", made=current, tex=tex_now, leaf='["A", "Rock"]', climbs={"c1": ["pcuts"], "c2": ["ptripod"]})
+    # only climbing-history.org climbs' videos are framed by their shots: an ordinary climb's is never in the tier
+    harvested(mesh("ordinary", made=current, tex=tex_now), {"url": yt(1), "frames": 12})
+    for name in ("cuts", "tripod", "longvid", "unlooked", "newway"):
+        server.q("INSERT INTO climbs(id, source, source_id, name) VALUES(?, 'climbinghistory', ?, ?)", "c" + name, "ch" + name, name, write=True)
+        server.q("UPDATE projects SET climb_id=? WHERE id=?", "c" + name, "p" + name, write=True)
     # looked at already: one whose shots would get 5 frames they didn't (with 1 video sharing the harvest's frames), one of one shot
     server.q("INSERT INTO video_shots(url, shots, seconds, checked, gain) VALUES(?,4,200,0,?),(?,1,100,0,'{}')", yt(1),
              json.dumps({"1": 5, "2": 5, "6": 0}), yt(2), write=True)

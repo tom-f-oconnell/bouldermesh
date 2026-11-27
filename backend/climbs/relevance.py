@@ -47,7 +47,11 @@ Progress = Callable[..., None]   # progress(fraction, detail)
 UNTRUSTED = ("commons", "flickr", "google", "ddg", "web")   # file name prefixes of area-wide / search sources
 VERSION = 1
 METHODS = ("cards", "boulder", "same-rock")     # every method, as a machine with everything installed runs them
+REUSED_SAMPLE = 8         # frames of each of two videos compared to tell whether one shows the other's footage again
+REUSED_SHARE = 0.5        # the share of a video's sampled frames that are another's (at least REUSED_MIN) for it to be so
+REUSED_MIN = 3
 REASONS = {"card": "title card or blank frame", "notboulder": "doesn't look like a boulder",
+           "reused": "another video's footage shown again",
            "nomatch": "doesn't match known photos of this boulder"}
 NOMATCH_CLIPPED = "looks like bouldering, but doesn't match known photos of this boulder"   # with the boulder check run
 FLAT_MAX = 0.5            # share of an image that may be flat
@@ -613,7 +617,7 @@ def split_rejected(project_dir: Path, log: Log, progress: Progress | None = None
             record.setdefault("rejected", {})[name] = "notboulder"
             moved += 1
     record["methods"] = record.get("methods", []) + ["boulder"]
-    record["counts"] = {r: sum(1 for w in record.get("rejected", {}).values() if w == r) for r in REASONS}
+    record["counts"] = {r: n for r in REASONS if (n := sum(1 for w in record.get("rejected", {}).values() if w == r)) or r != "reused"}
     record_path.write_text(json.dumps(record, indent=1))
     log(f"relevance: of {len(todo)} photos that didn't match, {moved} don't look like bouldering")
     return {"nomatch": len(todo) - moved, "notboulder": moved}
@@ -646,6 +650,33 @@ def among_shots(frames: dict[Path, str], log: Log, cache_only: bool = False) -> 
     finally:
         photos.save()
     return passed
+
+
+def reused_footage(by_video: dict[str, list[Path]], uploaded: dict[str, str], log: Log) -> dict[str, dict]:
+    """Videos that show another's footage again, as news and commentary do: {video: {"of": the other, "matched",
+    "sampled"}}. Up to REUSED_SAMPLE frames of each, spread over it, are held against the other's: the same shot
+    (diversity.pair(): many matches, all explained by a shift, turn and zoom, so the same camera at the same place and
+    moment, cropped or with captions over it) for REUSED_SHARE of one's frames says it shows the other's. Of the two, the
+    one that went up later is the copy; where either's date isn't known, neither is called one."""
+    from . import diversity
+    tags = [t for t in by_video if len(by_video[t]) >= REUSED_MIN]
+    sample = {t: _spaced(sorted(by_video[t]), REUSED_SAMPLE) for t in tags}
+    feats = {t: diversity.orb_features(sample[t]) for t in tags}
+    if any(f is None for f in feats.values()):
+        return {}
+    out: dict[str, dict] = {}
+    for i, a in enumerate(tags):
+        for b in tags[i + 1:]:
+            if a in out or b in out or not uploaded.get(a) or not uploaded.get(b) or uploaded[a] == uploaded[b]:
+                continue
+            copy, first = (a, b) if uploaded[a] > uploaded[b] else (b, a)
+            mine = [f for f in feats[copy] if f is not None]
+            theirs = [f for f in feats[first] if f is not None]
+            n = sum(any(diversity.pair(f, g)[1] for g in theirs) for f in mine)
+            if n >= REUSED_MIN and n >= REUSED_SHARE * len(mine):
+                out[copy] = {"of": first, "matched": n, "sampled": len(mine)}
+                log(f"relevance: video {copy} shows the footage of video {first} again ({n} of {len(mine)} frames looked at), and went up later: left out")
+    return out
 
 
 def run_filter(paths: list[Path], rejected: Path | None, log: Log, assess: Callable[..., None] | None = None, **kw) -> dict:
@@ -730,7 +761,7 @@ def reusable(prior: dict | None) -> bool:
 def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: list[str] | None = None,
                   anchors: list[Path] | None = None, progress: Progress | None = None,
                   more_anchors: list[Path] | None = None, prior: dict | None = None, cache_only: bool = False,
-                  unsure: dict[str, str] | None = None) -> dict:
+                  unsure: dict[str, str] | None = None, footage: dict | None = None) -> dict:
     """Filter photos, moving the rejected ones to `rejected` (None: only report).
 
     Args:
@@ -750,6 +781,9 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
             besides the rock (of a 19-minute film's 156 shots, 54 were of it, Nov 2026), so its frames aren't taken on
             trust as other videos' are. Each has to match a photo known to show the rock, as a search's photos do, or
             failing that a frame of another shot of its own video (among_shots()).
+        footage: for a climb whose videos are checked for footage shown again (reused_footage()): {"video": {frame's
+            name: its video}, "uploaded": {video: the day it went up, YYYYMMDD}}. A video that shows another's again
+            has its frames rejected ("reused"), and is named in the report's "reused_footage".
         cache_only: work out nothing that isn't in the cache (CLIP, SIFT, matching), raising Uncached where that's
             needed, as for what a mesh would be made from now (meshinputs.py). Every method counts as installed.
 
@@ -845,6 +879,19 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
         for p in alive:
             if p.name in again:
                 why[p.name] = "nomatch"
+    reused: dict[str, dict] = {}
+    if footage and not cache_only and "same-rock" in methods:
+        by_video: dict[str, list[Path]] = {}
+        for p in paths:
+            if p.name in (footage.get("video") or {}) and p.name not in why:
+                by_video.setdefault(footage["video"][p.name], []).append(p)
+        try:
+            reused = reused_footage(by_video, footage.get("uploaded") or {}, log)
+        except Exception as e:  # noqa: BLE001 - only costs this check
+            log(f"relevance: looking for footage shown again failed ({type(e).__name__}: {e})")
+        for t in reused:
+            for p in by_video[t]:
+                why[p.name] = "reused"
     held = set((prior or {}).get("put_back") or []) & {p.name for p in paths}
     for name in held:       # put back by hand: kept, whatever this run makes of it
         why.pop(name, None)
@@ -861,8 +908,10 @@ def filter_photos(paths: list[Path], rejected: Path | None, log: Log, methods: l
                 rejected.mkdir(exist_ok=True)
                 p.rename(rejected / f"{why[p.name]}_{p.name}")
     counts = {r: sum(1 for w in why.values() if w == r) for r in REASONS}
+    if not counts["reused"]:    # only where the check ran and found some, so that reports read as they did
+        del counts["reused"]
     log(f"relevance: kept {len(paths) - len(why)} of {len(paths)}"
         + "".join(f", {n} rejected: {REASONS[r]}" for r, n in counts.items() if n))
     return {"version": VERSION, "methods": methods, "kept": [p.name for p in paths if p.name not in why], "rejected": why, "counts": counts,
             "scores": scores, "settings": settings_key(), "fallback": fallback, "more": sorted({p.name for p in more_anchors or []}),
-            "reused": len(stood), **({"put_back": sorted(held)} if held else {})}
+            "reused": len(stood), **({"put_back": sorted(held)} if held else {}), **({"reused_footage": reused} if reused else {})}

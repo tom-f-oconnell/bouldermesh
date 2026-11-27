@@ -65,6 +65,9 @@ VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 # "volunteers_when_refused", here unless YouTube is refusing this server, when volunteers are asked; or "volunteers",
 # never here (a cloud server, which YouTube refuses)
 via = "volunteers_when_refused"
+# channels whose videos are never used (their ids and addresses), set by the server from its list (the admin page's
+# "Channels left out"): commentary and news channels, which show others' footage again with captions over it
+BLOCKED: set[str] = set()
 wide_retry = True          # search again without its place when the search with it finds nothing of a climb (youtube.wide_retry)
 # set by tests that run a whole server: nothing at all is asked of YouTube (searches come back empty, downloads are refused)
 OFFLINE = os.environ.get("YOUTUBE_OFFLINE") == "1"
@@ -471,12 +474,21 @@ def _search_one(c: Climb, q: str, log: Log, known: set[str], want, asked: list |
         minutes = (e.get("duration") or 0) / 60
         if not url or url in known or not e.get("duration") or minutes > MAX_MINUTES:
             continue
+        if channel_blocked(e):
+            log(f"youtube search: {url} left out: its channel ({e.get('channel') or e.get('channel_id')}) is one whose videos aren't used")
+            continue
         if matches(c, e.get("title"), e.get("description")):
             out.append(Media(url=url, kind="video", page=url, title=e.get("title"), credit=e.get("channel") or e.get("uploader"),
                              source="youtube-search"))
     log(f"youtube search: {q!r} -> {len(found)} result(s), {len(out)} of this climb"
         + (f", keeping {MAX_MATCHES}" if len(out) > MAX_MATCHES else ""))
     return out
+
+
+def channel_blocked(info: dict | None) -> bool:
+    """Whether a video's details, or a search's result, are of a channel left out (BLOCKED)."""
+    info = info or {}
+    return bool(BLOCKED and ({info.get("channel_id"), info.get("channel_url")} - {None}) & BLOCKED)
 
 
 def video_id(url: str) -> str | None:

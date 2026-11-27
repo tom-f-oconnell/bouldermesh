@@ -297,6 +297,10 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS video_shots(url TEXT PRIMARY KEY, shots INTEGER, seconds REAL, checked REAL, gain TEXT);
         -- climbers to ask for footage that's only on Instagram (asks_listed()): where each ask has got to, and the climbs
         -- it covered when it was marked asked (names, JSON), so that a climber is asked once, not once a climb
+        -- channels whose videos aren't used (channels_out()): "blocked"; "suspected", one of whose videos showed another's
+        -- footage again, for the admin page to block or allow; "allowed", looked at and fine, never suspected again
+        CREATE TABLE IF NOT EXISTS channels_out(key TEXT PRIMARY KEY, channel_id TEXT, channel_url TEXT, name TEXT, state TEXT,
+          why TEXT, video TEXT, at REAL);
         CREATE TABLE IF NOT EXISTS asks(climber TEXT PRIMARY KEY, status TEXT, note TEXT, updated REAL, climbs TEXT);
         """)
         con.execute(steptimes_mod.SCHEMA)   # how long each step of each run took, for estimates (steptimes.py)
@@ -4680,7 +4684,9 @@ def frames_tier() -> dict:
     shots = {r["url"]: r for r in q("SELECT url, shots, seconds, gain FROM video_shots")}
     lengths = {r["url"]: r["duration"] for r in q("SELECT url, duration FROM videos WHERE duration IS NOT NULL")}
     differ, unchecked = {}, {}
-    for p in q("SELECT id, harvest FROM projects WHERE kind='harvest' AND harvest IS NOT NULL AND harvest LIKE '%\"videos\"%'"):
+    # only climbing-history.org climbs' videos are framed by their shots (harvest()): no other's would change
+    for p in q("SELECT p.id, p.harvest FROM projects p JOIN climbs c ON c.id=p.climb_id WHERE p.kind='harvest' AND c.source=? AND "
+               "p.harvest IS NOT NULL AND p.harvest LIKE '%\"videos\"%'", ch_mod.SOURCE):
         try:
             videos = json.loads(p["harvest"]).get("videos") or []
         except (TypeError, ValueError):
@@ -6321,6 +6327,11 @@ def run_harvest(pid: str, sources: set[str], reconstruct: bool, relevance_filter
                                               rejudge=add and rejudge)
                 videos = summary.pop("videos", [])
                 record_videos(proj["climb_id"], videos, log)
+                for r in summary.get("reused") or []:
+                    try:
+                        channel_suspected(r, c.name, log)
+                    except Exception as e:  # noqa: BLE001 - the harvest stands
+                        log(f"couldn't note the channel of {r.get('url')}: {type(e).__name__}: {e}")
                 summary["videos"] = [{k: v.get(k) for k in ("url", "found_by", "title", "uploader", "frames", "license", "duration", "kept",
                                                              "way", "shots", "views", "span", "start", "frames_version")}
                                      for v in videos]
@@ -10416,7 +10427,7 @@ def filter_here(paths: list[Path], rejected: Path | None, log, **kw) -> dict:
 
 def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[str] | None = None, progress=None,
                   more_anchors: list[Path] | None = None, prior: dict | None = None, anchors: None = None,
-                  assess=None, unsure: dict[str, str] | None = None) -> dict:
+                  assess=None, unsure: dict[str, str] | None = None, footage: dict | None = None) -> dict:
     """relevance.filter_photos() on a machine that connects here: its photos, the other harvests' anchors, and what
     this server's cache knows of them go; its report and the pairs it matched come back (kept in the cache here),
     and the photos it rejects are moved to rejected here. With assess (a progress), the machine also checks the
@@ -10437,7 +10448,8 @@ def filter_remote(paths: list[Path], rejected: Path | None, log, methods: list[s
                 progress.at("waiting")
             progress(0.0)
         args = {"methods": methods, "more": sorted(more), "prior": prior, "matcher": relevance_mod.MATCHER,
-                "diversity": assess is not None, "order": [p.name for p in paths], **({"unsure": unsure} if unsure else {})}
+                "diversity": assess is not None, "order": [p.name for p in paths], **({"unsure": unsure} if unsure else {}),
+                **({"footage": footage} if footage else {})}
         _, back = MACHINES.task("filter", files, args, f"filter: {name or pid or 'photos'}", log,
                                 tracker=_StepProgress(progress, {"diversity": assess} if assess else None),
                                 version=FILTER_VERSION, take_within=FILTER_TAKE,
@@ -16437,6 +16449,7 @@ def apply_settings() -> None:
     """What changing the admin page's settings changes at once."""
     youtube_mod.via = settings().get("youtube.via")
     youtube_mod.wide_retry = bool(settings().get("youtube.wide_retry"))
+    channels_applied()
     _research_wake.set()
     relevance_mod.MATCHER = settings().get("relevance.matcher")
     relevance_mod.RUNNER = filter_anywhere      # on a machine when one can (relevance.machines), else here
@@ -16978,6 +16991,73 @@ def asks_listed() -> list[dict]:
     return out
 
 
+# ---- channels left out. News and commentary channels show others' footage of the hardest climbs again, cropped and
+# captioned: a video of theirs takes a place from one with footage of its own, adds no viewpoint, and is credited to
+# the wrong person. The off-topic filter can't tell: the footage is of the rock. So there's a list, kept by hand on
+# the admin page; and for the hardest climbs a video found to show another's footage again (relevance.reused_footage())
+# is left out of that harvest, and its channel put on the list as suspected, with a notification, to block or allow.
+def channels_applied() -> None:
+    """Give the list's blocked channels to youtube (BLOCKED), which leaves their videos out of searches and harvests."""
+    try:
+        rows = q("SELECT channel_id, channel_url FROM channels_out WHERE state='blocked'")
+    except sqlite3.OperationalError:    # before the database is made
+        return
+    youtube_mod.BLOCKED = {x for r in rows for x in (r["channel_id"], r["channel_url"]) if x}
+
+
+def channel_suspected(reused: dict, climb: str, log) -> None:
+    """Put the channel of a video that showed another's footage again on the list as suspected, unless it's there, and
+    tell the phone once: {url, of, matched, sampled} as a harvest reports it."""
+    v = q("SELECT uploader, channel_id, channel_url FROM videos WHERE url=?", reused.get("url"), one=True) or {}
+    other = q("SELECT uploader, channel_id FROM videos WHERE url=?", reused.get("of"), one=True) or {}
+    key = v.get("channel_id") or v.get("channel_url")
+    if not key or key == other.get("channel_id"):     # its own footage, in two of its own videos
+        return
+    if q("SELECT 1 FROM channels_out WHERE key=?", key, one=True):
+        return
+    why = (f"its video {reused['url']} shows the footage of {reused.get('of')}"
+           + (f" ({other['uploader']}'s)" if other.get("uploader") else "") + f" again, for {climb}: {reused.get('matched')} of "
+           f"{reused.get('sampled')} frames looked at")
+    q("INSERT INTO channels_out(key, channel_id, channel_url, name, state, why, video, at) VALUES(?,?,?,?,?,?,?,?)", key, v.get("channel_id"),
+      v.get("channel_url"), v.get("uploader"), "suspected", why, reused.get("url"), time.time(), write=True)
+    log(f"the channel {v.get('uploader') or key} is on the admin page's list to look at: {why}")
+    try:
+        NOTIFIER.send("A channel to look at", f"{v.get('uploader') or key}: {why}. Its video was left out of this harvest. Block or allow "
+                      "the channel on the admin page (People, Channels left out).")
+    except Exception as e:  # noqa: BLE001
+        print(f"channels: couldn't notify: {type(e).__name__}: {e}", flush=True)
+
+
+def admin_channels(_: dict) -> dict:
+    rows = q("SELECT * FROM channels_out ORDER BY state='suspected' DESC, at DESC")
+    return {"result": f"{len(rows)} channel(s)", "channels": rows}
+
+
+def admin_channel_set(body: dict) -> dict:
+    """Block, allow or take off the list a channel: {"channel": its id (UC...), its address or its key on the list,
+    "state": "blocked" | "allowed" | "remove", "name"}. Blocked, its videos are left out of searches and harvests from
+    then on; what's been made from them stays."""
+    given, state = str(body.get("channel") or "").strip(), body.get("state")
+    if state not in ("blocked", "allowed", "remove"):
+        raise ValueError("state must be blocked, allowed or remove")
+    row = q("SELECT * FROM channels_out WHERE key=?", given, one=True)
+    if not row:
+        m = re.search(r"UC[A-Za-z0-9_-]{22}", given)
+        url = given if given.startswith("http") else None
+        if not m and not url:
+            raise ValueError("give a channel's id (UC and 22 characters) or its address (https://www.youtube.com/...)")
+        row = {"key": m[0] if m else url, "channel_id": m[0] if m else None, "channel_url": url, "name": None, "why": "added by hand",
+               "video": None}
+    if state == "remove":
+        q("DELETE FROM channels_out WHERE key=?", row["key"], write=True)
+    else:
+        q("INSERT OR REPLACE INTO channels_out(key, channel_id, channel_url, name, state, why, video, at) VALUES(?,?,?,?,?,?,?,?)", row["key"],
+          row["channel_id"], row["channel_url"], str(body.get("name") or row["name"] or "")[:200] or None, state, row["why"], row["video"],
+          time.time(), write=True)
+    channels_applied()
+    return {"result": f"{row.get('name') or row['key']}: {'taken off the list' if state == 'remove' else state}"}
+
+
 def admin_asks(_: dict) -> dict:
     asks = asks_listed()
     return {"result": f"{len(asks)} climber(s)", "asks": asks, "states": list(ASK_STATES)}
@@ -17154,7 +17234,7 @@ def main() -> None:
     admin_mod.start(admin_mod.Context(settings(), admin_state, apply_settings,
                                       {"test": admin_test, "end-nodes": admin_end_nodes, "retexture": admin_retexture, "rejected-check": rejected_check, "backup-now": admin_backup_now, "texture-again": admin_texture_again, "rest": admin_rest,
                                        "remesh-untied": admin_remesh_untied, "inputs-check": admin_inputs_check,
-                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "frames-check": admin_frames_check, "asks": admin_asks, "ask-set": admin_ask_set, "abtest": admin_abtest,
+                                       "old-decide": admin_old_decide, "lost-decide": admin_lost_decide, "remake-tier": admin_remake_tier, "frames-check": admin_frames_check, "asks": admin_asks, "ask-set": admin_ask_set, "channels": admin_channels, "channel-set": admin_channel_set, "abtest": admin_abtest,
                                        "volunteer-add": admin_volunteer_add, "volunteer-revoke": admin_volunteer_revoke,
                                        "volunteer-limits": admin_volunteer_limits,
                                        "volunteer-trial": admin_volunteer_trial, "volunteer-trust": admin_volunteer_trust,

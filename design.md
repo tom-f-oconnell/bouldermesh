@@ -1091,6 +1091,25 @@ page's *frames* tier): a video over 15 minutes by its length, kept already; cuts
 a second (`frames_check()`, a few seconds a video, started from the admin page). Their climbs are then harvested
 again and rebuilt at low priority (`queue_reframes()`). Uploaded videos are still taken the old way.
 
+**Only the hardest climbs' videos** (Nov 26, 2026, after trying it on real ones). Shots are looked for, and frames
+chosen by them, only for climbing-history.org climbs' videos. Of 131 ordinary cached videos, 35 had cuts, nearly all
+title cards, close-up inserts or a second tripod, which give the same frames either way; choosing by shots added 2
+frames or more to 8 to 22 of them, depending how many videos share a harvest. Of 20 videos linked for the hardest
+climbs, 11 were over 15 minutes, against 4 of 1,653 ordinary ones.
+
+**An edit's frames must match** (`relevance.filter_photos()`'s `unsure`). A 19-minute film linked for Return of the
+Sleepwalker had 153 shots, about a third of the boulder. So frames of a video of several shots aren't anchors: each
+must match a photo known to show the rock, or a frame of another shot of its own video. Such a video gets twice its
+places to choose from. On that climb's six videos, 182 of 264 frames were kept, and the film's 31 kept were all
+climbing on the boulder. It runs with the off-topic filter, on machines.
+
+**Footage shown again, and channels left out** (`relevance.reused_footage()`, `channels_out`). News and commentary
+show the original footage again, cropped and captioned: it matches the rock, takes a video's place, and adds no view.
+For these climbs, a video half of whose sampled frames are the same shot as another video's (no parallax between
+them), and that went up later, is left out, and its channel listed on the admin page as suspected, with a
+notification. Blocked there, or added by hand, a channel's videos are left out of every search and harvest. Six
+distinct real videos of one climb gave no false match; no real commentary video has been through it yet.
+
 **What isn't tested.** The thresholds (0.85, 0.9, 15 matches, 10 s and 300 s round a moment) were set on made-up
 videos in `tests/test_frames.py`: no real video could be had while this was built. The comparison planned on Nov 9
 (frames by time against frames by the camera's movement, on 6 to 8 real climbs, three seeds each) is still the check

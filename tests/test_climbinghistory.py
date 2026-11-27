@@ -424,5 +424,40 @@ server.admin_ask_set({"climber": "Will Bosi", "status": "asked", "note": "Instag
 assert server.admin_asks({})["asks"][1]["since"] == ["Second Badger"]
 print("footage to ask for OK")
 
+# --- channels left out: blocked by hand, or suspected when a video shows another's footage again ----------------------
+assert server.admin_channels({})["channels"] == []
+for url, who, cid in (("https://www.youtube.com/watch?v=ORIGINALvid", "Elias Iagnemma", "UC" + "a" * 22),
+                      ("https://www.youtube.com/watch?v=NEWSNEWSvid", "Some Climbing News", "UC" + "n" * 22)):
+    server.save_video({"url": url, "uploader": who, "channel_id": cid, "channel_url": f"https://www.youtube.com/channel/{cid}"})
+told = []
+real_send, server.NOTIFIER.send = server.NOTIFIER.send, lambda title, message, *a, **k: told.append((title, message))
+try:
+    reuse = {"url": "https://www.youtube.com/watch?v=NEWSNEWSvid", "of": "https://www.youtube.com/watch?v=ORIGINALvid", "matched": 6, "sampled": 8}
+    server.channel_suspected(reuse, "Exodia", lambda s: None)
+    server.channel_suspected(reuse, "Exodia", lambda s: None)       # once
+    server.channel_suspected({**reuse, "url": reuse["of"]}, "Exodia", lambda s: None)     # its own footage in its own two videos
+finally:
+    server.NOTIFIER.send = real_send
+listed = server.admin_channels({})["channels"]
+assert [(c["name"], c["state"]) for c in listed] == [("Some Climbing News", "suspected")] and "Elias Iagnemma's" in listed[0]["why"], listed
+assert len(told) == 1 and told[0][0] == "A channel to look at" and "Some Climbing News" in told[0][1], told
+assert not youtube.BLOCKED, "suspected isn't blocked: only that video was left out"
+news = {"channel_id": "UC" + "n" * 22}
+assert not youtube.channel_blocked(news)
+server.admin_channel_set({"channel": listed[0]["key"], "state": "blocked"})
+assert youtube.channel_blocked(news) and not youtube.channel_blocked({"channel_id": "UC" + "a" * 22}) and not youtube.channel_blocked(None)
+server.admin_channel_set({"channel": "https://www.youtube.com/@reactions", "name": "Reactions", "state": "blocked"})
+assert youtube.channel_blocked({"channel_url": "https://www.youtube.com/@reactions"})
+server.admin_channel_set({"channel": listed[0]["key"], "state": "allowed"})
+assert not youtube.channel_blocked(news)
+server.channel_suspected(reuse, "Exodia", lambda s: None)
+assert [c["state"] for c in server.admin_channels({})["channels"] if c["name"] == "Some Climbing News"] == ["allowed"], "allowed: never suspected again"
+try:
+    server.admin_channel_set({"channel": "some words", "state": "blocked"})
+    raise AssertionError("not a channel")
+except ValueError as e:
+    assert "id" in str(e), e
+print("channels left out OK")
+
 ch.http.get_text, ch.http.get_json = real_get_text, real_get_json
 print("ALL CLIMBING-HISTORY TESTS PASSED")

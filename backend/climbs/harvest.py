@@ -526,7 +526,8 @@ def drop_repeats(frames: list[Path], sharpness: dict[Path, float], log: Log) -> 
 
 def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0, max_frames: int = 150,
                  max_videos: int = 6, progress: Callable[..., None] | None = None, infos: dict | None = None,
-                 want: Callable[[str], bool] | None = None, asked: list | None = None) -> list[Path]:
+                 want: Callable[[str], bool] | None = None, asked: list | None = None,
+                 edits: Callable[[Media], bool] | None = None) -> list[Path]:
     """Download videos and keep their sharpest frames, named yt_<start of the SHA-1 of the URL>_NNN.jpg. A YouTube
     video is kept in youtube's cache, so that finding beta, or harvesting again, needn't ask YouTube for it again,
     and one in the cache isn't asked for.
@@ -536,6 +537,8 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
         want: called with the URL of each video not had because YouTube is refusing this server, to have it
             fetched by volunteers (whether it's coming); without it, they're skipped.
         asked: the URLs of the videos volunteers were asked for are added to it.
+        edits: says of a video whether its frames are chosen by its shots, from a linked moment (extract_frames()'s
+            edits): the hardest climbs' videos, which are long and cut together. Others are framed as they always were.
     """
     ytdlp, ffmpeg = shutil.which("yt-dlp"), shutil.which("ffmpeg")
     if not ffmpeg:
@@ -574,11 +577,14 @@ def video_frames(videos: list[Media], out_dir: Path, log: Log, fps: float = 1.0,
                     infos[v.url] = {**details, "frames": 0}
                 vid = next(p for p in tmp.glob("video.*") if not p.name.endswith((".json", ".part")))
                 vid = youtube.cache_put(v.url, vid, details)
+            if youtube.channel_blocked(details):
+                log(f"youtube: {v.url} left out: its channel ({(details or {}).get('uploader')}) is one whose videos aren't used")
+                continue
             if progress:
                 progress((i + (0.7 if not have else 0.1)) / n_videos, f"choosing frames from video {i + 1} of {n_videos}")
             stats: dict = {}
             frames = extract_frames(vid, tmp, (max_frames - used) // (n_videos - i), log, fps, stats,   # a video that failed leaves its share
-                                    start=getattr(v, "start", None), edits=True)
+                                    start=getattr(v, "start", None), edits=bool(edits and edits(v)))
             used += stats.get("chosen", len(frames))
             times, unsure = {}, {}
             for j, f in enumerate(frames):
@@ -883,6 +889,10 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     photos_dir = project_dir / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)
     queries = search_terms(c)
+    # the hardest climbs' videos (climbing-history.org's) are long, cut together and reported on by others: only theirs
+    # are framed by their shots and checked for footage shown again (Nov 26, 2026: of 131 ordinary videos, choosing by
+    # shots added frames to few, and looking takes the server minutes a long video)
+    hard = c.source == "climbinghistory"
     log(f"harvest for {c.name!r} (boulder: {c.boulder_name or '?'}, coords: {c.lat}, {c.lng})")
     log("queries: " + " | ".join(queries))
     # YouTube alongside the photos, on a thread of its own: searching it (or asking volunteers to) and fetching the videos
@@ -912,7 +922,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                 log(f"youtube: {len(videos) - len(new)} video(s) framed before, kept as they are")
             if new:
                 frames.extend(video_frames(new, photos_dir, log, progress=progress("video"), infos=infos, want=want,
-                                           asked=asked["videos"]))
+                                           asked=asked["videos"], edits=lambda v: hard or v.source == "climbinghistory"))
             if tracker:
                 tracker.end("video", detail=f"{len(frames)} frame(s) from {len(videos)} video(s)"
                             + (f"; volunteers asked for {len(asked['searches'])} search(es) and {len(asked['videos'])} video(s)"
@@ -955,6 +965,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
     (project_dir / "sources.json").write_text(json.dumps({"climb": c.to_dict(), "queries": queries,
                                                            "files": manifest, "created": time.time()}, indent=1))
     filtered = report = None
+    reused: list[dict] = []
     try:
         paths = diversity.dedupe(photos_dir, log, progress=progress("dedupe"))
         if relevance_filter:
@@ -979,9 +990,20 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                 prior = {"put_back": (prior or {}).get("put_back") or []}
             here = {p.name for p in paths}
             unsure = {m["file"]: m["shot"] for m in manifest if m.get("shot") and m.get("file") in here}
+            footage = None
+            if hard:    # which video each frame is of, and when each went up: the later of two showing the same footage goes
+                of = {m["file"]: m["file"].split("_")[1] for m in manifest if m.get("kind") == "video-frame" and m.get("file") in here}
+                urls = {m["file"].split("_")[1]: m["url"] for m in manifest if m.get("kind") == "video-frame" and m.get("url")}
+                up = {t: (infos.get(u) or youtube.cached_details(u) or {}).get("upload_date") for t, u in urls.items()}
+                if len(set(of.values())) > 1:
+                    footage = {"video": of, "uploaded": {t: d for t, d in up.items() if d}}
             filtered = relevance.run_filter(paths, project_dir / "rejected", log, progress=progress("filter"),
                                             more_anchors=more, prior=prior, assess=progress("diversity") or (lambda f=0.0, d=None: None),
-                                            **({"unsure": unsure} if unsure else {}))
+                                            **({"unsure": unsure} if unsure else {}), **({"footage": footage} if footage else {}))
+            if filtered.get("reused_footage"):
+                urls = {m["file"].split("_")[1]: m["url"] for m in manifest if m.get("kind") == "video-frame" and m.get("url")}
+                reused = [{"url": urls.get(t), "of": urls.get(r["of"]), "matched": r["matched"], "sampled": r["sampled"]}
+                          for t, r in filtered["reused_footage"].items() if urls.get(t)]
             report = filtered.pop("diversity", None)    # checked on the machine that filtered them, if it was one
             (project_dir / "relevance.json").write_text(json.dumps(filtered, indent=1))
             paths = [p for p in paths if p.name in set(filtered["kept"])]
@@ -999,6 +1021,7 @@ def harvest(c: Climb, project_dir: Path, log: Log, sources: set[str] | None = No
                         "uploader": v.credit, "frames": 0,
                         **{k: x for k, x in infos.get(v.url, {}).items() if k not in ("times", "unsure")}} for v in videos],
             "relevance": {k: filtered[k] for k in ("methods", "counts")} if filtered else None, "asked": asked,
+            **({"reused": reused} if reused else {}),
             "youtube_checked": yt["checked"], **({} if yt["checked"] else {"unsearched": yt.get("words")}),
             **({"youtube_method": youtube.SEARCH_METHOD} if yt["checked"] and yt.get("words") else {})}
 

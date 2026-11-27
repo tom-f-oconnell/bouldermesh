@@ -451,6 +451,16 @@
     <button class="sec" id="asks-load">Show them</button>
     <div id="asks-list"></div>
   </section>
+  <section id="channels-out">
+    <h2>Channels left out</h2>
+    <p class="note">Channels whose videos are never used: news and commentary, which show others' footage again. For the hardest
+      climbs, a video found to show another video's footage again is left out of that harvest, and its channel listed here as
+      suspected, with a notification: block it, or allow it (it's then never suspected again).</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="text" id="chan-add" placeholder="a channel's address or id (UC…)" style="flex:1;min-width:220px">
+      <input type="text" id="chan-name" placeholder="its name" style="width:180px"><button class="sec" id="chan-block">Block</button>
+      <button class="sec" id="chan-load">Show the list</button></div>
+    <div id="chan-list"></div>
+  </section>
   <section id="pairing">
     <h2>Editing from a phone</h2>
     <div class="note" id="pair-note"></div>
@@ -1252,6 +1262,29 @@ async function loadAsks(){
   });
 }
 $('#asks-load').onclick = loadAsks;
+// ---- channels left out: blocked by hand, or suspected by a harvest and waiting to be looked at
+async function loadChannels(){
+  let got;
+  try { got = await call('/api/admin/actions/channels', {}); } catch (e) { return msg(e.message, 8000); }
+  const link = c => c.channel_id ? `https://www.youtube.com/channel/${c.channel_id}` : c.channel_url;
+  $('#chan-list').innerHTML = got.channels.length ? got.channels.map((c, i) => `<div data-chan="${i}" style="margin:6px 0">
+      <b>${link(c) ? `<a href="${esc(link(c))}" target="_blank" rel="noopener">${esc(c.name || c.key)}</a>` : esc(c.name || c.key)}</b>
+      · <span class="${c.state === 'suspected' ? 'warn' : 'note'}">${esc(c.state)}</span>
+      ${c.state !== 'blocked' ? '<button class="sec" data-state="blocked">Block</button>' : ''}
+      ${c.state !== 'allowed' ? '<button class="sec" data-state="allowed">Allow</button>' : ''}
+      <button class="sec" data-state="remove">Take off the list</button>
+      <div class="note">${esc(c.why || '')}${c.video ? ` · <a href="${esc(c.video)}" target="_blank" rel="noopener">the video</a>` : ''}</div></div>`).join('')
+    : '<p class="note">None yet.</p>';
+  $('#chan-list').querySelectorAll('[data-chan]').forEach(d => d.querySelectorAll('button').forEach(b => b.onclick = async () => {
+    try { msg((await call('/api/admin/actions/channel-set', { channel: got.channels[+d.dataset.chan].key, state: b.dataset.state })).result, 5000); loadChannels(); }
+    catch (e) { msg(e.message, 8000); }
+  }));
+}
+$('#chan-load').onclick = loadChannels;
+$('#chan-block').onclick = async () => {
+  try { msg((await call('/api/admin/actions/channel-set', { channel: $('#chan-add').value, name: $('#chan-name').value, state: 'blocked' })).result, 5000); $('#chan-add').value = $('#chan-name').value = ''; loadChannels(); }
+  catch (e) { msg(e.message, 8000); }
+};
 $('#frames-check').onclick = async () => {
   const n = state?.tiers?.frames_unchecked || 0;
   if (!n || !confirm(`Look at ${n} video(s) for what choosing their frames by shots would add? A couple of seconds each for most, up to a minute for some, one at a time at low priority: about ${Math.max(1, Math.round(n * 6 / 60))} min in all. Those offloaded to the backup are left.`)) return;
