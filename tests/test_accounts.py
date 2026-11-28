@@ -184,7 +184,6 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": hold}, ANA)[0] == 200, "another's shared set"
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{quiet['id']}", {"holds": hold}, ANA)[0] == 403, "but not one kept private"
         assert names(ANA) == ["Mine", "The site's"], "nor sees it"
-        assert req(B, "POST", "/api/projects/retry-interrupted", {}, ANA)[0] == 200
         for path in (f"/api/meshes/{mid}", "/api/climbs/abcdef", "/api/campaigns/abcdef"):
             st, _, r = req(B, "DELETE", path, headers=ANA)
             assert st == 403 and "owner" in r["error"], (path, st, r)
@@ -199,7 +198,9 @@ with tempfile.TemporaryDirectory() as tmp:
         for method, path in (("POST", "/api/campaigns"), ("POST", "/api/campaigns/abcdef/rebuild"), ("POST", "/api/campaigns/abcdef/pause"),
                              ("POST", "/api/campaigns/abcdef/options"), ("POST", "/api/climbs/abcdef/harvest"), ("POST", f"/api/meshes/{mid}/beta"),
                              ("POST", f"/api/meshes/{mid}/scale"), ("POST", "/api/meshes/beta-all"), ("POST", "/api/meshes/scale-all"),
-                             ("POST", f"/api/meshes/{mid}/links"), ("DELETE", f"/api/meshes/{mid}/links/abcdef"), ("POST", f"/api/meshes/{mid}/prefer")):
+                             ("POST", f"/api/meshes/{mid}/links"), ("DELETE", f"/api/meshes/{mid}/links/abcdef"), ("POST", f"/api/meshes/{mid}/prefer"),
+                             ("POST", "/api/projects/retry-interrupted"), ("POST", "/api/projects/abcdef/retry"), ("POST", "/api/projects/abcdef/stop"),
+                             ("POST", "/api/projects/abcdef/next")):
             st, _, r = req(B, method, path, {}, ANA)
             assert st == 403 and "owner" in r["error"], (method, path, st, r)
         # who changed what, and the owner putting it back: a facing, and a set of beta's holds

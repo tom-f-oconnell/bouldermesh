@@ -1522,14 +1522,15 @@ once it's approved, or at once for those pre-approved.
 **Editors and owners:** an *editor* account may change what the editing token can on the main site, but for what's
 the owner's alone (`OWNER_ONLY` in server.py): deleting meshes, climbs, areas' lists or others' projects (hiding a mesh
 is theirs; their own projects are only marked deleted); areas' jobs (starting one, stopping, pausing, their options,
-harvesting or meshing again); harvesting a climb, or meshing its boulder or group; finding beta or size; and linking
-climbs to meshes. Nor do they see beta others keep private, or the admin page's address. An *owner* account may do
+harvesting or meshing again); a project's job retried, stopped or meshed next; harvesting a climb, or meshing its
+boulder or group; finding beta or size; and linking climbs to meshes. Nor do they see beta others keep private, or the admin page's address. An *owner* account may do
 all of it, as the token does. Neither reaches this admin page without the server's own address and password.
 
-**Changes** (People): who changed what, newest first. Each change to a mesh's cleanup, its facing or a set of beta,
-and each approval, is listed by whom; *every request* adds each change an editor or the owner made of any kind.
-*Put back* makes a facing or a set of beta as it was before that change, or a cleanup as it was then (later changes to
-that cleanup go too, and can be put back from their own rows). A mesh's own files are never changed by its cleanup.
+**Changes** (People): who changed what, newest first. Each change to a mesh's cleanup, its facing, a set of beta, a
+line drawn by hand, a climb's or a mesh's name or place, which version of a mesh is current, and each approval, is
+listed by whom; *every request* adds each change an editor or the owner made of any kind. *Put back* makes any of
+those but an approval as it was before that change; a cleanup is put back whole, as it was then (later changes to it
+go too, and can be put back from their own rows). A mesh's own files are never changed by its cleanup.
 
 **Joining and leaving:** your phone is also told, by name, when a worker (a machine lending itself) or a downloader (a
 volunteer) joins, as it starts asking for work, and leaves: its script stopped (it says goodbye, from worker script 5 and

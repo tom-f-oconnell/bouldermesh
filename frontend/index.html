@@ -153,12 +153,13 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
   body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .campacts{display:none!important}
   /* what an editor may not do: the site's owner's alone (OWNER_ONLY in server.py): deleting, areas' jobs, harvesting and meshing
-     again, finding beta or size, and linking */
+     again, a project's job retried, stopped or meshed next, finding beta or size, and linking */
   body.notowner .owneronly,body.notowner .linksel,body.notowner .unlink,body.notowner .harvest,body.notowner .meshboulder,
   body.notowner .campacts,body.notowner #ca-box,body.notowner button.find,body.notowner .findall,body.notowner .stopall,body.notowner .findsize,
   body.notowner .stopnow,body.notowner .stoplater,body.notowner .resume,body.notowner .retryfailed,body.notowner .checknew,
   body.notowner .checknewrebuild,body.notowner .refilter,body.notowner .rebuildchanged,body.notowner .rebuildall,body.notowner .boulders,
-  body.notowner .tryskipped,body.notowner .editopt,body.notowner .pause,body.notowner .unpause{display:none!important}
+  body.notowner .tryskipped,body.notowner .editopt,body.notowner .pause,body.notowner .unpause,
+  body.notowner #projects .retry,body.notowner #projects .stop,body.notowner #projects .next,body.notowner #p-interrupted{display:none!important}
   /* the ? tab: comments and bug reports, from anyone, and the Donate button */
   .tabs button[data-tab=help]{flex:0 0 auto;padding:10px 16px}
   #pane-help p{font-size:13px;margin:0 0 8px} #pane-help a{color:var(--acc)} #pane-help .fine{font-size:12px;color:var(--mute);margin:10px 0 0}

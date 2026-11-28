@@ -783,6 +783,19 @@ def draw(mesh_dir: Path, climb: str, points, by: str | None = None, now: float |
     return drawn
 
 
+def put_drawn(mesh_dir: Path, climb: str, one: dict | None) -> dict[str, dict]:
+    """Put a climb's line drawn by hand back as it was (one, as load_drawn() gives it), or with None, as none drawn."""
+    drawn = load_drawn(mesh_dir)
+    if one is None:
+        drawn.pop(climb, None)
+    else:
+        drawn[climb] = one
+    tmp = mesh_dir / (DRAWN_FILE + ".tmp")
+    tmp.write_text(json.dumps(drawn))
+    tmp.replace(mesh_dir / DRAWN_FILE)
+    return drawn
+
+
 def drawn_stamp(mesh_dir: Path) -> str:
     """What says a mesh's hand-drawn lines are the same ones: their points, by climb."""
     drawn = load_drawn(mesh_dir)

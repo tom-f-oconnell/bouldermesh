@@ -12304,6 +12304,8 @@ OWNER_ONLY = (("DELETE", r"/api/meshes/[0-9a-f]+"), ("DELETE", r"/api/climbs/[0-
               ("POST", r"/api/climbs/[0-9a-f]+/(harvest|whole|boulder)"),
               # finding beta or size, of one mesh or all
               ("POST", r"/api/meshes/[0-9a-f]+/(beta|scale)"), ("POST", r"/api/meshes/(beta-all|beta-stop|scale-all)"),
+              # a project's job retried, stopped or meshed next; every one a restart interrupted retried
+              ("POST", r"/api/projects/[0-9a-f]+/(retry|stop|next)"), ("POST", r"/api/projects/retry-interrupted"),
               # which climbs a mesh is of, and which of a capture's meshes its climbs show first
               ("POST", r"/api/meshes/[0-9a-f]+/(links|prefer)"), ("DELETE", r"/api/meshes/[0-9a-f]+/links/[0-9a-f]+"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
@@ -13319,7 +13321,9 @@ def contribution_pump() -> None:
 
 
 # ----------------------------------------------------------------- who changed what, and putting it back
-CHANGE_KINDS_BACK = ("cleanup", "heading", "beta-set")     # those revert_change() can put back
+CHANGE_KINDS_BACK = ("cleanup", "heading", "beta-set", "line", "climb", "mesh", "current")     # those revert_change() can put back
+CLIMB_FIELDS = ("name", "grade", "lat", "lng", "boulder_name", "kind", "url", "coord_source")     # a climb's, as an editor changes them
+MESH_FIELDS = ("name", "lat", "lng")
 
 
 def who_name(who: dict | None) -> str:
@@ -13377,6 +13381,43 @@ def changing_sets(who: dict | None, mid: str, what: str, fn):
     return out
 
 
+def changing_line(who: dict | None, mid: str, climb: str, what: str, fn):
+    """Draw a climb's line by hand on a mesh (or forget it) by fn(), noting who did and the line drawn before, to put back."""
+    before = betalines.load_drawn(MESHES / mid).get(climb)
+    out = fn()
+    after = betalines.load_drawn(MESHES / mid).get(climb)
+    if after != before:
+        record_change(who, "line", mid, climb, f"{what}: {climb_name_of(climb)}", before={"line": before}, after={"line": after})
+    return out
+
+
+def changing_current(who: dict | None, mid: str, what: str, fn):
+    """Make an older version of a mesh current by fn(), noting who did and which was current before, to put back."""
+    current = (q("SELECT replaced_by FROM meshes WHERE id=?", mid, one=True) or {}).get("replaced_by")
+    out = fn()
+    if current and not (q("SELECT replaced_by FROM meshes WHERE id=?", mid, one=True) or {}).get("replaced_by"):
+        record_change(who, "current", current, mid, what, before={"current": current}, after={"current": mid})
+    return out
+
+
+def climb_name_of(cid: str) -> str:
+    return (q("SELECT name FROM climbs WHERE id=?", cid, one=True) or {}).get("name") or cid
+
+
+def changing_row(who: dict | None, table: str, rid: str, fields: tuple, fn) -> None:
+    """Change a climb's or a mesh's own fields (name, place...) by fn(), noting who did and those fields before, to put back."""
+    cols = ", ".join(fields)
+    before = q(f"SELECT {cols} FROM {table} WHERE id=?", rid, one=True)
+    out = fn()
+    after = q(f"SELECT {cols} FROM {table} WHERE id=?", rid, one=True)
+    if before and after != before:
+        changed = [k for k in fields if before[k] != after[k] and k != "coord_source"]
+        kind = "climb" if table == "climbs" else "mesh"
+        record_change(who, kind, None if kind == "climb" else rid, rid, f"{kind} {after.get('name') or rid}: " +
+                      ", ".join(f"{k} {before[k]!r} → {after[k]!r}" for k in changed), before={"row": before}, after={"row": after})
+    return out
+
+
 def put_set_back(mid: str, sid: str, one: dict | None) -> None:
     """Make a mesh's set of beta sid what it was (one), or take it away (None), keeping the sets in the order made."""
     sets = [x for x in beta_mod.load_sets(MESHES / mid) if x["id"] != sid]
@@ -13402,7 +13443,10 @@ def revert_change(cid: int, who: dict = REVERTER) -> dict:
     if row["kind"] not in CHANGE_KINDS_BACK or not row["before"]:
         raise ValueError("that change isn't one that can be put back here")
     before, mid, what = json.loads(row["before"]), row["mesh_id"], f"put back as before change {cid} ({row['who']}: {row['what']})"
-    if not (MESHES / mid).is_dir():
+    if row["kind"] == "climb":
+        if not q("SELECT 1 FROM climbs WHERE id=?", row["target"], one=True):
+            raise ValueError("its climb is gone")
+    elif not (MESHES / mid).is_dir() or (row["kind"] in ("mesh", "current") and not q("SELECT 1 FROM meshes WHERE id=?", mid, one=True)):
         raise ValueError("its mesh is gone")
     last = q("SELECT COALESCE(MAX(id), 0) AS id FROM changes", one=True)["id"]
     if row["kind"] == "cleanup":
@@ -13411,10 +13455,21 @@ def revert_change(cid: int, who: dict = REVERTER) -> dict:
             changing_cleanup(who, mid, d, what, lambda: meshclean.restore(d, before["key"]))
     elif row["kind"] == "heading":
         changing_heading(who, mid, what, lambda: heading_mod.restore_edited(MESHES / mid, before["edited"]))
-    else:
+    elif row["kind"] == "beta-set":
         changing_sets(who, mid, what, lambda: put_set_back(mid, row["target"], before["set"]))
-    new = (q("SELECT id FROM changes WHERE id>? AND kind=? AND mesh_id=? AND what LIKE ? ORDER BY id DESC LIMIT 1", last, row["kind"], mid,
-             what.replace("%", "") + "%", one=True) or {}).get("id")
+    elif row["kind"] == "line":
+        changing_line(who, mid, row["target"], what, lambda: (betalines.put_drawn(MESHES / mid, row["target"], before["line"]), mesh_lines(mid)))
+    elif row["kind"] in ("climb", "mesh"):
+        table, old = ("climbs" if row["kind"] == "climb" else "meshes"), before["row"]
+        changing_row(who, table, row["target"], CLIMB_FIELDS if table == "climbs" else MESH_FIELDS,
+                     lambda: q(f"UPDATE {table} SET {', '.join(k + '=?' for k in old)} WHERE id=?", *old.values(), row["target"], write=True))
+    else:   # the version that was current before: current again, if another hasn't taken over since
+        was = before["current"]
+        if not q("SELECT 1 FROM meshes WHERE id=? AND replaced_by=?", was, row["target"], one=True):
+            raise ValueError("that mesh isn't the one this version replaced any more: choose a version from its mesh's Versions")
+        changing_current(who, was, what, lambda: make_current(was))
+    new = (q("SELECT id FROM changes WHERE id>? AND kind=? AND who=? ORDER BY id DESC LIMIT 1", last, row["kind"], who_name(who),
+             one=True) or {}).get("id")
     if new is None:
         raise ValueError("it's as it was before that change already: nothing to put back")
     q("UPDATE changes SET reverted_by=? WHERE id=?", new, cid, write=True)
@@ -15672,7 +15727,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 try:
-                    return self.send_json(draw_line(m[1], m[2], self.read_json().get("points"), (self.who() or OWNER).get("name")))
+                    points, who = self.read_json().get("points"), self.who() or OWNER
+                    return self.send_json(changing_line(who, m[1], m[2], "line drawn by hand",
+                                                        lambda: draw_line(m[1], m[2], points, who_name(who))))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
@@ -15920,7 +15977,7 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 if not q("SELECT replaced_by FROM meshes WHERE id=? AND replaced_by IS NOT NULL", m[1]):
                     return self.send_json({"error": "not an older version"}, 409)
-                make_current(m[1])
+                changing_current(self.who(), m[1], "an older version made current", lambda: make_current(m[1]))
                 return self.send_json({"current": m[1]})
 
             if p == "/api/climbs/search":   # OpenBeta live search (not stored until imported)
@@ -16016,7 +16073,8 @@ class Handler(BaseHTTPRequestHandler):
                     sets["coord_source"] = "manual"
                 if not sets:
                     return self.send_json({"error": "nothing to update"}, 400)
-                q(f"UPDATE climbs SET {', '.join(k + '=?' for k in sets)} WHERE id=?", *sets.values(), m[1], write=True)
+                changing_row(self.who(), "climbs", m[1], CLIMB_FIELDS,
+                             lambda: q(f"UPDATE climbs SET {', '.join(k + '=?' for k in sets)} WHERE id=?", *sets.values(), m[1], write=True))
                 return self.send_json(climb_row(m[1], full=True))
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
             if m:
@@ -16046,7 +16104,8 @@ class Handler(BaseHTTPRequestHandler):
                 sets = {k: body[k] for k in ("name", "lat", "lng") if k in body}
                 if not sets:
                     return self.send_json({"error": "nothing to update"}, 400)
-                q(f"UPDATE meshes SET {', '.join(k + '=?' for k in sets)} WHERE id=?", *sets.values(), m[1], write=True)
+                changing_row(self.who(), "meshes", m[1], MESH_FIELDS,
+                             lambda: q(f"UPDATE meshes SET {', '.join(k + '=?' for k in sets)} WHERE id=?", *sets.values(), m[1], write=True))
                 return self.send_json(q("SELECT * FROM meshes WHERE id=?", m[1], one=True))
             return self.send_json({"error": "not found"}, 404)
         except Exception as e:
@@ -16062,7 +16121,7 @@ class Handler(BaseHTTPRequestHandler):
             if not (MESHES / m[1]).is_dir():
                 return self.send_json({"error": "not found"}, 404)
             try:
-                return self.send_json(draw_line(m[1], m[2], None, None))
+                return self.send_json(changing_line(self.who(), m[1], m[2], "line drawn by hand taken away", lambda: draw_line(m[1], m[2], None, None)))
             except ValueError as e:
                 return self.send_json({"error": str(e)}, 400)
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/sets/([0-9a-z]+)", p)
