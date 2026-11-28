@@ -417,8 +417,10 @@
   <section id="people" hidden>
     <h2>People</h2>
     <div class="note">Accounts, each made from an invite: whoever opens its link picks a name, accepts the terms, and may then make their
-      own sets of beta. A moderator's areas are the ids of the areas they may approve additions to, or <code>*</code> for all. An editor
-      (role <i>owner</i>) may change anything the editing token can, with no storage limit, and what they add is approved as it comes.
+      own sets of beta. A moderator's areas are the ids of the areas they may approve additions to, or <code>*</code> for all. An <i>editor</i>
+      may change what the editing token can on the main site, with no storage limit, and what they add is approved as it comes;
+      but not delete meshes, climbs, areas' lists or others' projects (they may hide a mesh), see beta others keep to themselves,
+      or see this page's address. An <i>owner</i> may do all of that too, as the editing token does.
       An <i>uploader</i> is a user whose uploads are approved as they come (as a moderator's are). Ticking <i>Mesh next</i> for an account
       meshes what it adds as the main site's <i>Mesh next</i> would: ahead of everything else, once it's approved.</div>
     <div id="people-list"></div>
@@ -427,7 +429,7 @@
       added <small class="note">(approved things don't count; an account's own quota, in the table, goes before this)</small></div>
     <div id="added-list"></div>
     <div class="grid">
-      <div><label>Invite as</label><select id="inv-role"><option value="user">a user</option><option value="moderator">a moderator</option><option value="uploader">an uploader (a user, pre-approved)</option><option value="owner">an editor</option><option value="george">george (a user; the apps use only the screen's top half)</option></select></div>
+      <div><label>Invite as</label><select id="inv-role"><option value="user">a user</option><option value="moderator">a moderator</option><option value="uploader">an uploader (a user, pre-approved)</option><option value="editor">an editor</option><option value="owner">an owner (an editor who may also delete)</option><option value="george">george (a user; the apps use only the screen's top half)</option></select></div>
       <div><label>A note, for you <small>(who it's for)</small></label><input type="text" id="inv-note" maxlength="200"></div>
     </div>
     <div class="row"><button id="inv-make">Invite</button></div>
@@ -1418,19 +1420,19 @@ function renderPeople(u, site){
     peopleDrawnFor = peopleEditing;
     $('#people-list').innerHTML = u.list.length ? `<table><tr><th>Name</th><th>Role</th><th>Areas</th><th>Quota (MB)</th><th title="What it added that isn't approved, of what it may hold">Used</th><th title="What it adds is meshed next, as Mesh next does: once it's approved, or at once for those pre-approved">Mesh next</th><th>Accepted the terms</th><th>Devices</th><th>Last seen</th><th>Closed</th><th></th></tr>${
       u.list.map(x => x.id === peopleEditing ? `<tr><td><input type="text" id="pe-name" value="${esc(x.name)}" maxlength="40" title="Its name, which what it adds is credited to: another frees this one" style="width:140px"></td>
-        <td><select id="pe-role" style="width:auto">${[...new Set(['user', 'uploader', 'moderator', 'owner', 'george', x.role])].map(r => `<option value="${esc(r)}" ${r === x.role ? 'selected' : ''}>${esc(r === 'owner' ? 'owner (editor)' : r)}</option>`).join('')}</select></td>
+        <td><select id="pe-role" style="width:auto">${[...new Set(['user', 'uploader', 'moderator', 'editor', 'owner', 'george', x.role])].map(r => `<option value="${esc(r)}" ${r === x.role ? 'selected' : ''}>${esc(r)}</option>`).join('')}</select></td>
         <td><input type="text" id="pe-areas" value="${esc((x.areas || []).join(', '))}" placeholder="ids, or *" title="The ids of the areas a moderator may approve additions to, with commas between; * for all" style="width:120px"></td>
         <td><input type="number" id="pe-quota" min="0" value="${x.quota_mb ?? ''}" placeholder="default" title="Blank: the site's default" style="width:90px"></td><td>${used(x)}</td>
         <td><input type="checkbox" data-pnext="${esc(x.id)}" ${x.mesh_next ? 'checked' : ''} title="What it adds is meshed next, as Mesh next does: once it's approved, or at once for those pre-approved"></td><td>${x.accepted ? 'yes' : 'no'}</td><td>${x.devices}</td><td>${when(x.last_seen)}</td><td>${x.disabled ? 'yes' : '–'}</td>
         <td><button data-pesave="${esc(x.id)}">Save</button> <button class="sec" data-pecancel="1">Cancel</button></td></tr>`
-      : `<tr><td>${esc(x.name)}</td><td>${esc(x.role === 'owner' ? 'owner (editor)' : x.role)}</td><td>${esc(areas(x.areas))}</td><td>${x.quota_mb ?? 'default'}</td><td class="${x.quota != null && x.used >= x.quota ? 'warn' : ''}">${used(x)}</td>
+      : `<tr><td>${esc(x.name)}</td><td>${esc(x.role)}</td><td>${esc(areas(x.areas))}</td><td>${x.quota_mb ?? 'default'}</td><td class="${x.quota != null && x.used >= x.quota ? 'warn' : ''}">${used(x)}</td>
         <td><input type="checkbox" data-pnext="${esc(x.id)}" ${x.mesh_next ? 'checked' : ''} title="What it adds is meshed next, as Mesh next does: once it's approved, or at once for those pre-approved"></td><td class="${x.accepted ? '' : 'warn'}">${x.accepted ? 'yes' : 'not yet'}</td><td>${x.devices}</td><td>${when(x.last_seen)}</td><td class="${x.disabled ? 'bad' : ''}">${x.disabled ? 'closed' : '–'}</td>
         <td><button class="sec" data-pedit="${esc(x.id)}">Change</button> ${x.devices ? `<button class="sec" data-pout="${esc(x.id)}" data-name="${esc(x.name)}">Sign out everywhere</button> ` : ''}${
           x.disabled ? `<button class="sec" data-popen="${esc(x.id)}">Reopen</button>` : `<button class="sec" data-psignin="${esc(x.id)}" title="A link that signs one device in to this account, once, within 10 minutes: for an account reopened, or whose devices are lost">Sign-in link</button> <button class="danger" data-pclose="${esc(x.id)}" data-name="${esc(x.name)}">Close</button>`} <button class="danger" data-pdel="${esc(x.id)}" data-name="${esc(x.name)}" title="Remove it for good, freeing its name: only an account that added nothing">Delete</button></td></tr>`).join('')}</table>`
       : '<div class="note">No accounts yet.</div>';
   }
   $('#inv-list').innerHTML = u.invites.length ? `<table><tr><th>Open invites</th><th>For</th><th>Made</th><th>Good until</th><th></th></tr>${
-    u.invites.map(i => `<tr><td>${esc(i.note || '(no note)')}</td><td>${i.role === 'owner' ? 'an editor' : 'a ' + esc(i.role)}</td><td>${when(i.created)}</td><td>${when(i.expires)}</td>
+    u.invites.map(i => `<tr><td>${esc(i.note || '(no note)')}</td><td>${i.role === 'owner' || i.role === 'editor' ? 'an ' + esc(i.role) : 'a ' + esc(i.role)}</td><td>${when(i.created)}</td><td>${when(i.expires)}</td>
       <td><button class="sec sm" data-rescind="${esc(i.id)}" data-note="${esc(i.note || '')}" title="Take back this invite: its link no longer makes an account" aria-label="Take back this invite">✕</button></td></tr>`).join('')}</table>
     <div class="note">An invite's link is shown only when it's made. One not used runs out by itself.</div>` : '';
 }
@@ -1446,7 +1448,7 @@ $('#inv-make').onclick = async () => {
     const r = await call('/api/admin/actions/user-invite', { role: $('#inv-role').value, areas: [], note: $('#inv-note').value.trim() });
     const i = r.invite;
     $('#inv-note').value = '';
-    $('#inv-new').innerHTML = `<div class="note ok">An invite for ${i.role === 'owner' ? 'an editor' : 'a ' + esc(i.role)}. ${i.url ? 'Send them this link' : 'Send them this code, to put after <code>/?invite=</code> on the site\'s address'}:</div>
+    $('#inv-new').innerHTML = `<div class="note ok">An invite for ${i.role === 'owner' || i.role === 'editor' ? 'an ' + esc(i.role) : 'a ' + esc(i.role)}. ${i.url ? 'Send them this link' : 'Send them this code, to put after <code>/?invite=</code> on the site\'s address'}:</div>
       <div class="row"><code id="inv-link" style="user-select:all">${esc(i.url || i.code)}</code><button class="sec" id="inv-copy">Copy</button></div>
       <div class="note">It's shown only now. It works once, and lasts two weeks (until ${new Date(i.expires * 1000).toLocaleString()}).${
         i.url ? '' : ' Set <code>SITE_URL</code> (the address people reach the site at) for a whole link here.'}</div>`;

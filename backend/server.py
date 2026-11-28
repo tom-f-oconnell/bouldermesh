@@ -2371,7 +2371,7 @@ def capture_fresh(ids: list[str], me: dict | None) -> dict[str, dict]:
     another than the phone's plan has means its holds, beta, mesh or size changed), {newer, newer_name} (it was rebuilt:
     the current mesh that replaces it), or {gone} (no longer here, and nothing replaces it)."""
     waiting = unapproved_meshes()
-    visible = lambda mid: mid not in waiting or (me and (me["role"] == "owner" or waiting[mid] == me["id"]))  # noqa: E731
+    visible = lambda mid: mid not in waiting or (me and (accounts_mod.is_editor(me) or waiting[mid] == me["id"]))  # noqa: E731
     out: dict[str, dict] = {}
     for mid in ids[:200]:
         row = q("SELECT id, replaced_by FROM meshes WHERE id=?", mid, one=True)
@@ -2513,7 +2513,7 @@ def capture_status(ids: list[str], me: dict | None) -> dict[str, dict]:
     for pid in ids[:200]:
         proj = q("SELECT id, status, mesh_id, user_id, approved, deleted_at, area FROM projects WHERE id=?", pid, one=True)
         seen = proj and not proj["deleted_at"] and (not proj["user_id"] or proj["approved"] == 1 or
-                                                    (me and (me["role"] == "owner" or proj["user_id"] == me["id"])))
+                                                    (me and (accounts_mod.is_editor(me) or proj["user_id"] == me["id"])))
         if not seen:
             out[pid] = {"status": "gone"}
             continue
@@ -12289,6 +12289,9 @@ USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshe
             # what it adds: a project of its own (photos, videos, an app's capture), meshed when its turn comes
             ("POST", r"/api/projects"), ("POST", r"/api/projects/[0-9a-f]+/(photos|capture|capture/points|capture/log|capture/crash|reconstruct|scenery|scenery/done|area)"),
             ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
+# what an editor may not change, of what the editing token may: the owner's alone (is_owner()). Deleting a project is
+# checked where it's done, as an editor may delete its own.
+OWNER_ONLY = (("DELETE", r"/api/meshes/[0-9a-f]+"), ("DELETE", r"/api/climbs/[0-9a-f]+"), ("DELETE", r"/api/campaigns/[0-9a-f]+"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
 _join_tries: dict[str, list[float]] = {}
@@ -12334,13 +12337,13 @@ def user_used(uid: str) -> int:
 
 def limited(user: dict) -> bool:
     """Whether a change's maker is an account held to its own (its projects and sets, its quota): any but the site's
-    owner, by the editing token, and an account given the owner's role (an editor), which may change what the token may."""
-    return user["id"] is not None and user["role"] != "owner"
+    owner (by the editing token, or an account given the owner's role) and an editor, which may change what the token may."""
+    return user["id"] is not None and not accounts_mod.is_editor(user)
 
 
 def user_quota(user: dict) -> int | None:
-    """What an account may hold of what it added, in bytes: None (no limit) for an editor."""
-    if user.get("role") == "owner":
+    """What an account may hold of what it added, in bytes: None (no limit) for the owner or an editor."""
+    if accounts_mod.is_editor(user):
         return None
     mb = user.get("quota_mb")
     return int((settings().get("users.quota_mb") if mb is None else mb) * 2**20)
@@ -12356,7 +12359,7 @@ def areas_of_project(proj: dict) -> list[str]:
 
 
 def may_approve(user: dict | None, proj: dict) -> bool:
-    return bool(user) and (user["role"] == "owner" or any(accounts_mod.may_moderate(user, a) for a in areas_of_project(proj)))
+    return bool(user) and (accounts_mod.is_editor(user) or any(accounts_mod.may_moderate(user, a) for a in areas_of_project(proj)))
 
 
 PRIO_NEXT = -1      # a project the owner said to mesh next (mesh_next()): ahead of every other's on the machines
@@ -12372,7 +12375,7 @@ def contribution_prio(proj: dict) -> int:
     if proj.get("approved") != 1:
         return pullwork.PRIO_UNAPPROVED
     role = (ACCOUNTS.get(proj["user_id"]) or {}).get("role")
-    return pullwork.PRIO_OWNER if role == "owner" else pullwork.PRIO_MODERATOR if role == "moderator" else pullwork.PRIO_USER
+    return pullwork.PRIO_OWNER if role == "owner" else pullwork.PRIO_MODERATOR if role in ("editor", "moderator") else pullwork.PRIO_USER
 
 
 def submit_reconstruct(pid: str) -> dict:
@@ -12843,7 +12846,7 @@ def _mesh_list(editor: bool, me: dict | None, waiting: dict[str, str]) -> list[d
     if not editor:    # hidden as failures (hide_mesh()): only editors see them, tagged so
         rows = [r for r in rows if not r["hidden"]]
     if waiting:     # made from what an account added, not yet approved: its account's and the owner's to see
-        rows = [r for r in rows if r["id"] not in waiting or (me and (me["role"] == "owner" or waiting[r["id"]] == me["id"]))]
+        rows = [r for r in rows if r["id"] not in waiting or (me and (accounts_mod.is_editor(me) or waiting[r["id"]] == me["id"]))]
         for r in rows:
             if r["id"] in waiting:
                 r["awaits_approval"] = True
@@ -13178,7 +13181,7 @@ def shape_existing_meshes() -> None:
 def mesh_list_key(editor: bool, me: dict | None, waiting: dict[str, str]):
     """Which kept /api/meshes someone gets: their own, (editor, account), as an editor, or an account with meshes
     awaiting approval (the owner's, or theirs), sees theirs alone; anyone else visitors' (None)."""
-    if editor or (me and (me["role"] == "owner" or me["id"] in waiting.values())):
+    if editor or (me and (accounts_mod.is_editor(me) or me["id"] in waiting.values())):
         return (editor, (me or {}).get("id"))
     return None
 
@@ -14335,7 +14338,7 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/debug/files?kind=<what>&session=<its folder>&name=<file>: a file the owner's phone kept for debugging
         (the apps' live hold finding: each frame's JPEG and JSON; line-up tests; captures' timing traces), to
         DEBUG/<kind>/<session>/<name>, replacing one there."""
-        if not self.is_editor():
+        if not self.is_owner():
             return self.send_json({"error": "only the site's owner sends debug files"}, 403)
         qs = parse_qs(urlparse(self.path).query)
         parts = [(qs.get(k) or [""])[0] for k in ("kind", "session", "name")]
@@ -14354,12 +14357,26 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"kept": f"{parts[0]}/{parts[1]}/{parts[2]}", "bytes": n})
 
     def is_editor(self) -> bool:
-        """Whether this request may change what the editing token may: it carries that token, or an editor's (an
-        account given the owner's role on the admin page)."""
+        """Whether this request may change what the editing token may (but for OWNER_ONLY, is_owner()): it carries that
+        token, or the token of an account given the owner's or an editor's role on the admin page."""
         if self.has_edit_token():
             return True
+        return bool(EDIT_TOKEN) and accounts_mod.is_editor(self.who())
+
+    def is_owner(self) -> bool:
+        """Whether this request is the site's owner's: the editing token, an account given the owner's role, or anyone
+        on a site with no token (open to all). Only it may do what's in OWNER_ONLY."""
+        if READ_ONLY:
+            return False
+        if not EDIT_TOKEN or self.has_edit_token():
+            return True
         user = self.who()
-        return bool(EDIT_TOKEN) and user is not None and user["role"] == "owner"
+        return user is not None and user["role"] == "owner"
+
+    def owner_only(self) -> bool:
+        """Whether this request's change is one only the site's owner may make (OWNER_ONLY)."""
+        path = urlparse(self.path).path
+        return any(method == self.command and re.fullmatch(r, path) for method, r in OWNER_ONLY)
 
     def who(self) -> dict | None:
         """Who a request is from: the site's owner (its editing token, or anyone where there's none), an account (by
@@ -14385,7 +14402,7 @@ class Handler(BaseHTTPRequestHandler):
             return True     # hidden as a failure (hide_mesh())
         waiting = unapproved_meshes()
         me = self.who()
-        return mid in waiting and not (me and (me["role"] == "owner" or waiting[mid] == me["id"]))
+        return mid in waiting and not (me and (accounts_mod.is_editor(me) or waiting[mid] == me["id"]))
 
     def locate_pack(self, mid: str, versioned: bool) -> None:
         """GET /api/capture/locate-pack/<mesh>.bin: the pack the apps place frames against with no signal (locate.py),
@@ -14476,6 +14493,8 @@ class Handler(BaseHTTPRequestHandler):
                 why = "accept the site's terms first (your account's page)"
             else:
                 why, code, headers = "editing this site needs its token", 401, {"WWW-Authenticate": 'Bearer realm="BoulderMesh"'}
+        elif EDIT_TOKEN and not self.is_owner() and self.owner_only() and self.is_editor():
+            why = "only the site's owner may do that, not an editor"
         elif self.cross_site():
             why = "refused: sent from another site's page"
         if why:
@@ -14523,12 +14542,13 @@ class Handler(BaseHTTPRequestHandler):
         return proj is None or (proj["user_id"] == me["id"] and proj["deleted_at"] is None)
 
     def own_set(self, mid: str, sid: str) -> bool:
-        """Whether whoever asks may change a set of beta: the site's owner any, an account its own."""
+        """Whether whoever asks may change a set of beta: the site's owner any, an editor any shared, an account its own."""
         me = self.who() or OWNER
-        if not limited(me):
+        if me["role"] == "owner":
             return True
         one = next((s for s in beta_mod.load_sets(MESHES / mid) if s["id"] == sid), None) if (MESHES / mid).is_dir() else None
-        return one is None or one.get("owner") == me["id"]     # a set that isn't there: said as not found, further on
+        # a set that isn't there: said as not found, further on
+        return one is None or one.get("owner") == me["id"] or (not limited(me) and one.get("shared", True))
 
     def cross_site(self) -> bool:
         """Whether another site's page sent this: its Origin isn't this host, or the browser says so."""
@@ -14808,10 +14828,11 @@ class Handler(BaseHTTPRequestHandler):
                                        # the volunteers' page, for the header's Volunteer button, where this server takes them
                                        "volunteer_url": VOLUNTEER_URL if VOLUNTEER_PORT else None,
                                        "editing": "none" if READ_ONLY else "token" if EDIT_TOKEN else "open",
-                                       "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "stopping": _stopping,
-                                       "version": VERSION, "thumbs": thumbs_mod.available(),
-                                       # where the admin page is, and how to reach it over SSH: for editors only
-                                       "admin": admin_link() if not READ_ONLY and (not EDIT_TOKEN or self.is_editor()) else None})
+                                       "editor": not READ_ONLY and (not EDIT_TOKEN or self.is_editor()), "owner": self.is_owner(),
+                                       "stopping": _stopping, "version": VERSION, "thumbs": thumbs_mod.available(),
+                                       # where the admin page is, and how to reach it over SSH (the server's own address,
+                                       # which Cloudflare otherwise hides): for the owner only
+                                       "admin": admin_link() if self.is_owner() else None})
             if p == "/api/jobs":     # what a restart would interrupt now, and what it would only pause
                 return self.send_json(jobs_state())
             if p == "/api/deploy":   # for deploy.sh, from this machine only
@@ -14824,7 +14845,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "harvest IS NOT NULL AS has_harvest, back_wait IS NOT NULL AS back_wait FROM projects ORDER BY created DESC"), project_areas()
                 me = self.who()     # what an account added and nobody approved is its own and the owner's to see; what it deleted, the owner's
                 rows = [r for r in every if not r["user_id"] or (r["approved"] == 1 and not r["deleted_at"]) or
-                        (me and (me["role"] == "owner" or (r["user_id"] == me["id"] and not r["deleted_at"])))]
+                        (me and (accounts_mod.is_editor(me) or (r["user_id"] == me["id"] and not r["deleted_at"])))]
                 work, left, low = machine_work(), steps_left(), low_projects()
                 gone = {x["path"]: x["bytes"] or 0 for x in q("SELECT path, bytes FROM offloads WHERE done IS NOT NULL AND "
                                                             "approved IS NULL AND lost IS NULL AND path LIKE 'projects/%'")}
@@ -14940,7 +14961,7 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # for the phone apps: what the viewer fetches of a mesh, to keep for showing it with no signal (offline_bundle())
                 waiting = unapproved_meshes()
                 me = self.who()
-                if m[1] in waiting and not (me and (me["role"] == "owner" or waiting[m[1]] == me["id"])):
+                if m[1] in waiting and not (me and (accounts_mod.is_editor(me) or waiting[m[1]] == me["id"])):
                     return self.send_json({"error": "not found"}, 404)
                 got = offline_bundle(m[1])
                 return self.send_json(got) if got else self.send_json({"error": "not found"}, 404)
@@ -15005,13 +15026,13 @@ class Handler(BaseHTTPRequestHandler):
             if m:   # all of one, as a zip: for its account to keep before deleting it here
                 me = self.who()
                 proj = q("SELECT * FROM projects WHERE id=?", m[1], one=True)
-                if not me or not proj or (me["role"] != "owner" and proj["user_id"] != me["id"]):
+                if not me or not proj or (not accounts_mod.is_editor(me) and proj["user_id"] != me["id"]):
                     return self.send_json({"error": "not found"}, 404)
                 return self.export_project(proj)
             if p == "/api/submissions":     # what accounts added that whoever asks may approve
                 me = self.who()
-                if not me or me["role"] not in ("owner", "moderator"):
-                    return self.send_json({"error": "that's for the site's owner and its moderators"}, 401)
+                if not me or me["role"] not in (*accounts_mod.EDITORS, "moderator"):
+                    return self.send_json({"error": "that's for the site's owner, its editors and its moderators"}, 401)
                 return self.send_json({"added": submissions(me)})
             if p == "/api/account":     # who this browser or phone is signed in as, and the terms as they stand
                 me = self.who()
@@ -15431,10 +15452,9 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 return self.send_json(*retry_project(m[1]))
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/next", p)
-            if m:   # Mesh next: the site's owner's (an editor's) only
-                me = self.who()
-                if not me or me["role"] != "owner":
-                    return self.send_json({"error": "only the site's owner can put a mesh first"}, 403)
+            if m:   # Mesh next: the site's owner's and editors' only
+                if not self.is_editor():
+                    return self.send_json({"error": "only the site's owner or an editor can put a mesh first"}, 403)
                 try:
                     return self.send_json(mesh_next(m[1]))
                 except ValueError as e:
@@ -15933,6 +15953,10 @@ class Handler(BaseHTTPRequestHandler):
             me = self.who() or OWNER
             if not self.own_project(p):
                 return self.send_json({"error": "that isn't yours to delete"}, 403)
+            if me["id"] is not None and me["role"] == "editor":     # an editor: its own as an account's; others' the owner's
+                if (q("SELECT user_id FROM projects WHERE id=?", m[1], one=True) or {}).get("user_id") != me["id"]:
+                    return self.send_json({"error": "only the site's owner may delete that, not an editor: hide its mesh instead"}, 403)
+                return self.send_json(user_delete_project(m[1], me))
             if limited(me):    # an account's own: marked, not destroyed
                 if not q("SELECT 1 FROM projects WHERE id=?", m[1], one=True):
                     return self.send_json({"error": "not found"}, 404)

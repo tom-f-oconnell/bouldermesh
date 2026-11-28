@@ -5,7 +5,8 @@ and their browser is given a token, kept there and sent as "Authorization: Beare
 token is. No passwords and no email. Another device (the phone app) gets a token of its own from a pairing code a
 signed-in one asks for. Only hashes of tokens, invites and codes are kept.
 
-Roles: "owner" (everything; whoever holds the site's EDIT_TOKEN is the owner too, with no account), "moderator" (may
+Roles: "owner" (everything; whoever holds the site's EDIT_TOKEN is the owner too, with no account), "editor" (what the
+owner may change on the main site but for a few things the owner alone does, OWNER_ONLY in server.py), "moderator" (may
 approve what's added to the areas they're given, `areas`: campaign ids, or "*" for all), "user", "uploader": a user whose
 uploads are approved as they come (pre-approved: queued to mesh in a user's turn, with nothing for the owner to decide),
 and "george": a user whose phone apps draw only in the top half of the screen (for a phone whose screen's lower half is
@@ -30,9 +31,10 @@ import threading
 import time
 from pathlib import Path
 
-ROLES = ("owner", "moderator", "user", "uploader", "george")
-PRE_APPROVED = ("owner", "moderator", "uploader")     # roles whose uploads are approved as they come
-RANK = {"owner": 0, "moderator": 1, "user": 2, "uploader": 2, "george": 2}      # whose work goes first: the owner's, moderators', then users'
+ROLES = ("owner", "editor", "moderator", "user", "uploader", "george")
+EDITORS = ("owner", "editor")       # roles that may change what the editing token may (but for OWNER_ONLY, the owner's alone)
+PRE_APPROVED = ("owner", "editor", "moderator", "uploader")     # roles whose uploads are approved as they come
+RANK = {"owner": 0, "editor": 1, "moderator": 1, "user": 2, "uploader": 2, "george": 2}      # whose work goes first: the owner's, moderators', then users'
 NAME_MAX = 40
 INVITE_DAYS = 14
 PAIR_SECONDS = 600
@@ -110,7 +112,7 @@ class Accounts:
                now: float | None = None) -> dict:
         """A new invite: {code, expires}. The code is shown once and not kept."""
         if role not in ROLES:
-            raise Refused("an invite is for a user, a moderator or an owner (an editor)")
+            raise Refused("an invite's role is one of " + ", ".join(ROLES))
         now = time.time() if now is None else now
         code = secrets.token_urlsafe(16)
         self._q("INSERT INTO invites(hash, role, areas, note, created, expires) VALUES(?,?,?,?,?,?)", _hash(code), role,
@@ -265,12 +267,17 @@ class Accounts:
 
 
 def may_moderate(user: dict | None, area: str | None) -> bool:
-    """Whether an account may approve what's added to an area: the owner any, a moderator those it's given ("*": all)."""
+    """Whether an account may approve what's added to an area: an editor any, a moderator those it's given ("*": all)."""
     if not user or user.get("disabled"):
         return False
-    if user["role"] == "owner":
+    if is_editor(user):
         return True
     return user["role"] == "moderator" and ("*" in user["areas"] or (area is not None and str(area) in user["areas"]))
+
+
+def is_editor(user: dict | None) -> bool:
+    """Whether an account (or the site's own OWNER) may change what the editing token may: the owner, or an editor."""
+    return bool(user) and user.get("role") in EDITORS
 
 
 def public(user: dict) -> dict:

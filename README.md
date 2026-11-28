@@ -1513,11 +1513,16 @@ on the admin page's People. Something approved or declined there since is left a
 notification shows one of the photos, and tapping it opens a page of them all (`/added/<id>`, open to whoever has the
 id, as the photos are).
 
-Accounts with the role *uploader* (or *moderator*, or an editor) are pre-approved: what they add is queued as it comes,
-with no notification. Unless told otherwise, approved work by users and uploaders is meshed after yours and moderators'
-(which includes every area's climbs), but before old meshes made again and anything not yet approved. Ticking an
+Accounts with the role *uploader* (or *moderator*, *editor* or *owner*) are pre-approved: what they add is queued as it
+comes, with no notification. Unless told otherwise, approved work by users and uploaders is meshed after yours and
+moderators' and editors' (which includes every area's climbs), but before old meshes made again and anything not yet approved. Ticking an
 account's *Mesh next* on People meshes what it adds as the main site's *Mesh next* would, ahead of everything else:
 once it's approved, or at once for those pre-approved.
+
+**Editors and owners:** an *editor* account may change what the editing token can on the main site, but not delete
+meshes, climbs, areas' lists or others' projects (hiding a mesh is theirs; their own projects are only marked
+deleted), see beta others keep private, or be shown the admin page's address. An *owner* account may do all of it, as
+the token does. Neither reaches this admin page without the server's own address and password.
 
 **Joining and leaving:** your phone is also told, by name, when a worker (a machine lending itself) or a downloader (a
 volunteer) joins, as it starts asking for work, and leaves: its script stopped (it says goodbye, from worker script 5 and

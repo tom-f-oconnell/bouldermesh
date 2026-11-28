@@ -174,6 +174,27 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "GET", "/api/status", headers=ANA)[2]["editor"] and req(B, "GET", "/api/account", headers=ANA)[2]["owner"]
         assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": hold}, ANA)[0] == 200
         assert req(B, "POST", "/api/projects/retry-interrupted", {}, ANA)[0] != 401
+        assert req(B, "GET", "/api/status", headers=ANA)[2]["owner"] and req(B, "GET", "/api/status", headers=ANA)[2]["admin"]
+        # an editor: as the owner, but for deleting, beta kept private, and where the admin page is
+        admin("user-change", {"id": ana["user"]["id"], "role": "editor"})
+        st = req(B, "GET", "/api/status", headers=ANA)[2]
+        assert st["editor"] and not st["owner"] and st["admin"] is None and not req(B, "GET", "/api/account", headers=ANA)[2]["owner"]
+        assert req(B, "GET", "/api/status", headers=AUTH)[2]["owner"] and req(B, "GET", "/api/status", headers=AUTH)[2]["admin"]
+        assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": hold}, ANA)[0] == 200, "another's shared set"
+        assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{quiet['id']}", {"holds": hold}, ANA)[0] == 403, "but not one kept private"
+        assert names(ANA) == ["Mine", "The site's"], "nor sees it"
+        assert req(B, "POST", "/api/projects/retry-interrupted", {}, ANA)[0] == 200
+        for path in (f"/api/meshes/{mid}", "/api/climbs/abcdef", "/api/campaigns/abcdef"):
+            st, _, r = req(B, "DELETE", path, headers=ANA)
+            assert st == 403 and "owner" in r["error"], (path, st, r)
+        assert req(B, "DELETE", "/api/campaigns/abcdef", headers=AUTH)[0] == 200, "the owner may"
+        theirs = req(B, "POST", "/api/projects", {"name": "the site's"}, AUTH)[2]["id"]
+        own = req(B, "POST", "/api/projects", {"name": "Ana's"}, ANA)[2]["id"]
+        assert req(B, "DELETE", f"/api/projects/{theirs}", headers=ANA)[0] == 403, "another's project is the owner's to delete"
+        st, _, r = req(B, "DELETE", f"/api/projects/{own}", headers=ANA)
+        assert st == 200 and req(B, "GET", f"/api/projects/{own}", headers=AUTH)[2].get("deleted_at"), "its own, only marked"
+        st, _, r = req(B, "POST", "/api/debug/files?kind=a&session=b&name=c", b"x", ANA)
+        assert st == 403, (st, r)
         admin("user-change", {"id": ana["user"]["id"], "role": "moderator"})
         admin("user-change", {"id": ana["user"]["id"], "disabled": True})
         assert req(B, "GET", "/api/account", headers=ANA)[2]["user"] is None and req(B, "DELETE", f"/api/meshes/{mid}/beta/sets/{mine['id']}", headers=ANA)[0] == 401

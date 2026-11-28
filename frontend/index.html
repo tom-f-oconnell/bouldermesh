@@ -152,6 +152,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,body.readonly #pieces .undo,
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
   body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .campacts{display:none!important}
+  body.notowner .owneronly{display:none!important}     /* what an editor may not do: the site's owner's alone */
   /* the ? tab: comments and bug reports, from anyone, and the Donate button */
   .tabs button[data-tab=help]{flex:0 0 auto;padding:10px 16px}
   #pane-help p{font-size:13px;margin:0 0 8px} #pane-help a{color:var(--acc)} #pane-help .fine{font-size:12px;color:var(--mute);margin:10px 0 0}
@@ -3867,7 +3868,7 @@ async function openClimb(id, focus=true){
       <div class="checks" style="margin-top:6px"><label title="Drops title cards and photos that don't match this boulder; you can put any back afterwards"><input type="checkbox" class="relfilter" ${st.relevance_methods?.length?'checked':'disabled'}> filter off-topic photos ${st.relevance_methods?.length?`<small>(${esc(st.relevance_methods.join(', '))})</small>`:'(needs numpy)'}</label>
         <label><input type="checkbox" class="autorec" checked> reconstruct if diverse enough</label></div>
       <div class="row" style="margin-top:6px"><span class="grow"></span>
-        ${harvests.length ? `<button class="sm sec harvest scratch" ${harvesting?'disabled':''} title="A new harvest of it, from scratch, beside the one it has (which stays)">Harvest from scratch</button>` : ''}<button class="sm harvest" ${harvesting?'disabled':''} ${harvests.length ? 'title="Looks in the sources ticked again, adding only what its last harvest hadn\'t found; its photos and the filter\'s verdicts stay"' : ''}>${harvesting?'Harvesting…':harvests.length?'Check for new photos':'Harvest photos'}</button><button class="sm danger del">Delete climb</button></div>
+        ${harvests.length ? `<button class="sm sec harvest scratch" ${harvesting?'disabled':''} title="A new harvest of it, from scratch, beside the one it has (which stays)">Harvest from scratch</button>` : ''}<button class="sm harvest" ${harvesting?'disabled':''} ${harvests.length ? 'title="Looks in the sources ticked again, adding only what its last harvest hadn\'t found; its photos and the filter\'s verdicts stay"' : ''}>${harvesting?'Harvesting…':harvests.length?'Check for new photos':'Harvest photos'}</button><button class="sm danger del owneronly">Delete climb</button></div>
       <div class="notice" style="margin-top:6px">Downloaded photos stay on this server for reconstruction only; most are copyrighted by their photographers. Provenance is written to sources.json.</div>
     </div>`;
   d.querySelector('.close').onclick = closeClimb;
@@ -4481,7 +4482,7 @@ async function refreshCampaigns(kept = null){
           ${c.status !== 'stopping' && c.again.triable ? `<button class="sm sec tryskipped" title="Climbs skipped as their photos looked too few viewpoints, which the viewpoint check now lets COLMAP try: it decides within minutes if it can't place enough of them.">Try ${c.again.triable} skipped climb${c.again.triable === 1 ? '' : 's'} again</button>` : ''}
           ${c.status !== 'stopping' && c.again.boulders ? `<button class="sm sec boulders" title="Boulders with more than one climb on this list: each meshed from the photos of all its climbs, as a mesh of its own beside each climb's, with each climb placed where its own photos were taken. Its climbs never harvested are harvested first.">Mesh ${c.again.boulders} boulder${c.again.boulders === 1 ? '' : 's'} from all their climbs' photos</button>` : ''}
           <span class="grow"></span>
-          <button class="danger sm del" title="Remove this list; its meshes stay">✕</button>
+          <button class="danger sm del owneronly" title="Remove this list; its meshes stay">✕</button>
         </div>
         ${c.worked.length ? `<details data-list="${c.id}-done"><summary class="meta">Worked through (${c.worked.length}${c.worked.length === 300 ? ' most recent' : ''})</summary><div class="crows">${c.worked.map(row).join('')}</div></details>` : ''}
         ${c.next.length ? `<details data-list="${c.id}-next"><summary class="meta">Up next</summary><div class="crows">${c.next.map(row).join('')}</div></details>` : ''}
@@ -5150,7 +5151,7 @@ function renderMeshes(filter = true){
         <a class="dlbtn" href="/meshes/${m.id}/${m.filename}?download=1${m.cleanup?.hidden ? '&cleaned=1' : ''}" download aria-label="Download this mesh" title="${m.cleanup?.hidden ? `Download this mesh, without its ${plural(m.cleanup.hidden, 'hidden stray piece')}. To get the whole mesh, remove the cleanup first.` : `Download this mesh (${esc(m.filename.split('.').pop().toUpperCase())}, ${fmtSize(m.size)})`}">${DOWNLOAD_ICON}</a>
         ${linkable ? '<button class="sm sec cardshare" aria-label="Share" title="Share a link to this exact mesh: on a phone, with its apps; elsewhere, copied for you to paste">' + SHARE_ICON + '</button>' : ''}
         ${embeddable ? '<button class="sm sec cardembed" aria-label="Embed" title="Embed: copy the code that shows this exact mesh in 3D on another site\'s page">' + EMBED_ICON + '</button>' : ''}
-        <button class="sm danger del">✕</button></div>`;
+        <button class="sm danger del owneronly">✕</button></div>`;
     const bar = sourceBar(m);
     if (bar) d.querySelector('.chips').before(bar);
     d.querySelector('.chips').insertAdjacentHTML('beforebegin', metricsLine(m));
@@ -8121,7 +8122,7 @@ function appsHtml(){
     account), or send the phone these links.</p>`;
 }
 function openAccount(){
-  const role = account.role === 'user' ? '' : ` (${account.role === 'owner' ? 'an editor' : esc(account.role)})`;
+  const role = account.role === 'user' ? '' : ` (${account.role === 'owner' ? "the site's owner" : account.role === 'editor' ? 'an editor' : esc(account.role)})`;
   const dlg = acctDlg(`<p>Signed in as <b>${esc(account.name)}</b>${role}: what you add is credited to this name.</p>
     <label class="row" style="gap:6px;margin:0 0 10px"><input type="checkbox" class="betaanon" ${betaAnon() ? 'checked' : ''}> Show my beta to others anonymously (as anonymous-1, anonymous-2…), not under my name</label>
     ${account.accepted ? '' : '<p>You haven\'t accepted the site\'s terms yet, so nothing can be added. <button class="sm sec toterms">Read them</button></p>'}
@@ -8167,6 +8168,7 @@ statusCache = await api('/api/status');
 if (statusCache.via_links === false) $('#c-no-via').closest('label').hidden = true;     // none shown anyway (the admin page's setting)
 editor = !!statusCache.editor && !embedMode;      // the site may have editing open to all (no token): never in a frame
 document.body.classList.toggle('readonly', !editor);
+document.body.classList.toggle('notowner', editor && statusCache.owner === false);
 const inviteCode = new URLSearchParams(location.search).get('invite');
 if (statusCache.editing === 'token' && !thumbMode && !embedMode) {      // accounts are only on a site with an editing token
   try {
