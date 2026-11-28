@@ -282,6 +282,25 @@ with tempfile.TemporaryDirectory() as td:
     assert meshclean._write_labels(d, np.arange(70000) % 70000, 70000) == 4, "past 65,536 pieces: 4 bytes each"
     print("undo OK")
 
+# --- a cut across the border of two textures, chosen on a copy whose corners there are a little apart (glbpack rounds
+# each primitive's positions on its own): (20, 10) is a hair above the line for column 19's copy and below it for column
+# 20's, so the faces either side of it there are left uncut, and they're joined through it once it's welded
+with tempfile.TemporaryDirectory() as td:
+    d = pathlib.Path(td)
+    glb(d / "mesh.glb", [grid(20, 40), grid(20, 40, x0=20.0)])
+    assert [p["faces"] for p in meshclean.clean(d, lambda s: None)["pieces"]] == [3200], "one piece across both textures"
+    face = lambda i, j, k: (i % 20 * 40 + j) * 2 + k + (1600 if i >= 20 else 0)  # noqa: E731    k: the first or second of the cell
+
+    chosen = np.zeros(3200, bool)
+    chosen[[face(i, 10, k) for i in range(40) for k in (0, 1) if (i, k) != (19, 1)]] = True   # all of row 10 but one,
+    chosen[face(19, 9, 1)] = True                                                              # and one below it
+    rec, made = meshclean.edit(d, "cut", chosen)
+    assert made == 1, "the faces around the corner are cut too, so it doesn't join the two sides"
+    labels = np.frombuffer((d / meshclean.FACES_FILE).read_bytes(), "<u2")
+    assert {int(labels[face(i, j, k)]) for i in range(40) for j in range(9) for k in (0, 1)} == {1}, "below the line"
+    assert {int(labels[face(i, j, k)]) for i in range(40) for j in range(12, 40) for k in (0, 1)} == {0}, "above it"
+    print("cut across textures OK")
+
 # --- what it can't work on
 with tempfile.TemporaryDirectory() as td:
     d = pathlib.Path(td)

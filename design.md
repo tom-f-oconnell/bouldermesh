@@ -834,9 +834,14 @@ aren't the mesh's, so cuts and areas wait for every face.
 
 The server makes the pieces (`meshclean.edit`). A cut joins the faces of each piece it touches by the corners they
 share, except the faces it crossed, with each piece's corners kept apart from other pieces', so an earlier cut stays
-cut even where its faces still share corners with the other side. Crossed faces go with the biggest part beside
-them, so the cut follows the faces' edges, a face wide. A piece's biggest part keeps its id (and whether it's hidden),
-and parts under 100 faces stay with it rather than litter the list. An area becomes a piece of its own for each
+cut even where its faces still share corners with the other side. The faces sharing a corner with a crossed one are
+cut too: the packed copy rounds each primitive's positions on its own (texture 0 of Spots of Time reaches 33 m out, so
+to about 1 mm, against 0.1-0.2 mm for its others), so a corner on the border of two textures is in two places a hair
+apart there, and a line passing between them left the faces either side of it uncut and joined through it. That
+undid every cut tried across Spots of Time on 2026-11-27 (4 such corners within 0.05 px of the line), and replays of
+the same line from 5 cameras near the person's all split with the ring. Cut faces go with the biggest part beside
+them, so the cut follows the faces' edges, a few faces wide. A piece's biggest part keeps its id (and whether it's
+hidden), and parts under 100 faces stay with it rather than litter the list. An area becomes a piece of its own for each
 piece it takes part of. On Caveman (1.47M faces) a cut takes 2 s and an area 1 s on the server; the viewer's share is
 under a second. Before each change, the cleanup is kept (its faces' pieces zlib'd, about 20 KB for Caveman), and the
 last 20 can be undone.

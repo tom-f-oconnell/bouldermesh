@@ -280,10 +280,13 @@ def set_removed(mesh_dir: Path, removed: list[int]) -> dict:
 def _cut(F, labels, crossed, n: int):
     """Split the pieces a cut crosses where it crosses them.
 
-    Within each piece the cut touches, faces are joined by the corners they share, except those the cut crosses (the
-    vertices of different pieces are told apart, so earlier cuts stay cut). Each crossed face then goes with the biggest
-    part any of its corners is in. A piece's biggest part keeps its id; other parts of MIN_CUT_PIECE faces or more become
-    new pieces, and smaller ones stay with it.
+    Within each piece the cut touches, faces are joined by the corners they share, except those the cut crosses and
+    those sharing a corner with one (the vertices of different pieces are told apart, so earlier cuts stay cut). That
+    ring around the crossed faces is needed because the viewer chooses them on its packed copy (glbpack.py), which rounds
+    each primitive's positions on its own: a corner on the border of two textures can be in two places a hair apart
+    there, with the line between them, and the faces either side of it, left uncut, would be joined through it here,
+    where it's one corner. Each cut face then goes with the biggest part any of its corners is in. A piece's biggest
+    part keeps its id; other parts of MIN_CUT_PIECE faces or more become new pieces, and smaller ones stay with it.
 
     Returns:
         (labels, [(new piece, the piece it came from), ...]).
@@ -296,7 +299,9 @@ def _cut(F, labels, crossed, n: int):
     _, node = np.unique((F[T] * n + old[:, None]).ravel(), return_inverse=True)
     node = node.reshape(-1, 3)
     nodes = int(node.max()) + 1
-    keep = ~crossed[T]
+    near = np.zeros(nodes, bool)
+    near[node[crossed[T]].ravel()] = True
+    keep = ~near[node].any(axis=1)
     roots = _components(node[keep], nodes)
     root = roots[node[:, 0]]
     size = np.bincount(root[keep], minlength=nodes)
