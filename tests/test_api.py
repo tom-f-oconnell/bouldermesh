@@ -481,6 +481,18 @@ def run(B: str, tmp: Path) -> None:
         assert v2 != v1 and cache_of(f"{B}/meshes/{mid}/my-rock.glb?v={v1}") == "no-cache", "its cleanup went"
         st, _ = req(B, "POST", f"/api/meshes/{mid}/cleanup", {})
         assert version() not in (v1, v2), "its pieces found again"
+        # each change to it noted, and one put back from the admin page: the cleanup as it was then, itself noted
+        def admin_call(name, body):
+            r = urllib.request.Request(f"{ADMIN}/api/admin/actions/{name}", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(r) as resp:
+                return json.loads(resp.read())
+        log = [c for c in admin_call("changes", {"mesh": mid})["changes"] if c["kind"] == "cleanup"]
+        assert [c["what"].split(":")[0] for c in log][:3] == ["cleanup made again from the rule", "cleanup removed", "cleanup"], log
+        admin_call("change-revert", {"id": log[1]["id"]})
+        st, back = req(B, "GET", f"/api/meshes/{mid}/cleanup")
+        assert st == 200 and not back.get("deleted") and back["removed"] == [], back
+        assert admin_call("changes", {"mesh": mid})["changes"][0]["who"] == "the owner (admin page)"
+        print("cleanup changes put back OK")
         print("mesh versions OK")
         # --- the meshes around one: this one 20 m north and 10 m east of the uploaded PLY's point
         assert req(B, "PATCH", f"/api/meshes/{um['id']}", {"lat": 34.0, "lng": -116.0})[0] == 200

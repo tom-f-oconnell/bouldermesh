@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "tests"))
 import accounts  # noqa: E402
 import beta  # noqa: E402
+import heading  # noqa: E402
 from test_public import AUTH, Server, req  # noqa: E402
 
 
@@ -195,6 +196,33 @@ with tempfile.TemporaryDirectory() as tmp:
         assert st == 200 and req(B, "GET", f"/api/projects/{own}", headers=AUTH)[2].get("deleted_at"), "its own, only marked"
         st, _, r = req(B, "POST", "/api/debug/files?kind=a&session=b&name=c", b"x", ANA)
         assert st == 403, (st, r)
+        for method, path in (("POST", "/api/campaigns"), ("POST", "/api/campaigns/abcdef/rebuild"), ("POST", "/api/campaigns/abcdef/pause"),
+                             ("POST", "/api/campaigns/abcdef/options"), ("POST", "/api/climbs/abcdef/harvest"), ("POST", f"/api/meshes/{mid}/beta"),
+                             ("POST", f"/api/meshes/{mid}/scale"), ("POST", "/api/meshes/beta-all"), ("POST", "/api/meshes/scale-all"),
+                             ("POST", f"/api/meshes/{mid}/links"), ("DELETE", f"/api/meshes/{mid}/links/abcdef"), ("POST", f"/api/meshes/{mid}/prefer")):
+            st, _, r = req(B, method, path, {}, ANA)
+            assert st == 403 and "owner" in r["error"], (method, path, st, r)
+        # who changed what, and the owner putting it back: a facing, and a set of beta's holds
+        assert req(B, "PATCH", f"/api/meshes/{mid}/heading", {"deg": 90}, ANA)[0] == 200
+        before = req(B, "GET", f"/api/meshes/{mid}/beta", headers=AUTH)[2]["sets"]
+        assert req(B, "PATCH", f"/api/meshes/{mid}/beta/sets/{site['id']}", {"holds": [{"p": [3, 3, 3], "role": "finish"}]}, ANA)[0] == 200
+        st, _, log = admin("changes", {"who": "Ana"})
+        kinds = [c["kind"] for c in log["changes"]]
+        assert st == 200 and kinds[:2] == ["beta-set", "heading"] and all(c["who"] == "Ana" and c["revertable"] for c in log["changes"][:2]), log
+        assert "Ana" in log["people"] and not any(c["kind"] == "request" for c in log["changes"])
+        every = admin("changes", {"who": "Ana", "requests": True})[2]["changes"]
+        assert any(c["kind"] == "request" and c["what"] == f"PATCH /api/meshes/{mid}/heading" for c in every)
+        assert any(c["kind"] == "request" and c["status"] == 403 and c["what"] == "POST /api/campaigns" for c in every), "refused ones too"
+        for c in log["changes"][:2]:
+            st, _, r = admin("change-revert", {"id": c["id"]})
+            assert st == 200 and r["reverted"] == c["id"], r
+        assert (heading.load(tmp / "data" / "meshes" / mid) or {}).get("edited") is None, "facing as it was: not turned by hand"
+        assert req(B, "GET", f"/api/meshes/{mid}/beta", headers=AUTH)[2]["sets"] == before, "the holds as they were"
+        st, _, r = admin("change-revert", {"id": log["changes"][0]["id"]})
+        assert st == 400, "nothing left to put back"
+        log = admin("changes", {})[2]["changes"]
+        assert [c["who"] for c in log[:2]] == ["the owner (admin page)"] * 2 and all(c["revertable"] for c in log[:2]), log[:4]
+        assert {log[2]["reverted_by"], log[3]["reverted_by"]} == {log[0]["id"], log[1]["id"]}, "each says what put it back"
         admin("user-change", {"id": ana["user"]["id"], "role": "moderator"})
         admin("user-change", {"id": ana["user"]["id"], "disabled": True})
         assert req(B, "GET", "/api/account", headers=ANA)[2]["user"] is None and req(B, "DELETE", f"/api/meshes/{mid}/beta/sets/{mine['id']}", headers=ANA)[0] == 401

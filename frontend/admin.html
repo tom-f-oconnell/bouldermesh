@@ -436,6 +436,19 @@
     <div id="inv-new"></div>
     <div id="inv-list"></div>
   </section>
+  <section id="changes">
+    <h2>Changes</h2>
+    <div class="note">Who changed what through the site, newest first: each change to a mesh's cleanup, its facing or a set of beta
+      (holds), and each approval. <i>Put back</i> makes a facing or a set of beta as it was before that change, or a cleanup as it was then
+      (so later changes to that cleanup go too, each of which can be put back from its own row). Putting back is a change too, and can be put back.
+      Ticking <i>every request</i> also lists each change an editor or the owner made, of any kind, to see who did what.</div>
+    <div class="row"><select id="chg-who" style="width:auto"><option value="">anyone</option></select>
+      <select id="chg-kind" style="width:auto"><option value="">any kind</option><option value="cleanup">cleanup</option><option value="heading">facing</option>
+        <option value="beta-set">beta (holds)</option><option value="approval">approvals</option><option value="request">requests only</option></select>
+      <label class="choice" style="margin:0"><input type="checkbox" id="chg-requests"> every request</label>
+      <button class="sec" id="chg-show">Show</button></div>
+    <div id="chg-list"></div>
+  </section>
   <section id="gps-areas">
     <h2>Uploads' areas, from their GPS</h2>
     <div class="note">Uploads not of a climb in an area are put in the area their photos' GPS is in: one listed here, or else Mountain
@@ -1611,6 +1624,25 @@ document.querySelectorAll('#views-span button').forEach(b => b.onclick = () => {
 });
 setInterval(() => { if (!$('#tab-site').hidden) loadViews(true); }, 60000);
 (async function poll(){ await refresh(true); setTimeout(poll, 10000); })();     // 10 s after each answer, not every 10 s
+
+// ---- Changes: who changed what, and putting it back
+const chgQuery = () => ({ who: $('#chg-who').value, kind: $('#chg-kind').value, requests: $('#chg-requests').checked || $('#chg-kind').value === 'request' });
+function showChanges(r) {
+  const who = $('#chg-who'), had = who.value;
+  who.innerHTML = '<option value="">anyone</option>' + r.people.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  who.value = had;
+  const kinds = { cleanup: 'cleanup', heading: 'facing', 'beta-set': 'beta', approval: 'approval', request: 'request' };
+  const mesh = id => !id ? '' : r.site_url ? `<a href="${esc(r.site_url)}/m/${esc(id)}" target="_blank" rel="noopener">${esc(id)}</a>` : esc(id);
+  $('#chg-list').innerHTML = !r.changes.length ? '<div class="note">No changes noted yet.</div>' : `<table><tr><th>#</th><th>When</th><th>Who</th><th>Kind</th><th>What</th><th>Mesh</th><th></th></tr>${
+    r.changes.map(c => `<tr><td>${c.id}</td><td>${new Date(c.at * 1000).toLocaleString()}</td><td>${esc(c.who)}</td><td>${esc(kinds[c.kind] || c.kind)}</td>
+      <td>${esc(c.what)}${c.status && c.status >= 400 ? ` <span class="bad">(refused: ${c.status})</span>` : ''}</td><td>${mesh(c.mesh_id)}</td>
+      <td>${c.reverted_by ? `put back (#${c.reverted_by})` : c.revertable ? `<button class="sec" data-revert="${c.id}">Put back</button>` : ''}</td></tr>`).join('')}</table>`;
+  $('#chg-list').querySelectorAll('[data-revert]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Put back what change #${b.dataset.revert} changed, as it was before it?`)) return;
+    try { showChanges(await call('/api/admin/actions/change-revert', { id: +b.dataset.revert, list: chgQuery() })); msg('Put back.'); } catch (e) { msg(e.message, 8000); }
+  });
+}
+$('#chg-show').onclick = async () => { try { showChanges(await call('/api/admin/actions/changes', chgQuery())); } catch (e) { msg(e.message, 8000); } };
 </script>
 </body>
 </html>

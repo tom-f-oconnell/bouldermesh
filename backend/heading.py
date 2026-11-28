@@ -232,3 +232,11 @@ def set_edited(mesh_dir: Path, deg: float | None) -> dict:
         record = load(mesh_dir) or {"version": 0, "created": time.time(), "compass": None, "text": None}
         record["edited"] = None if deg is None else {"deg": float(deg) % 360, "at": time.time(), "detail": "turned by hand"}
         return _save(mesh_dir, record)
+
+
+def restore_edited(mesh_dir: Path, edited: dict | None) -> dict:
+    """Put back a turn by hand as it was (a record's "edited", or None for what's worked out), as when a change is undone."""
+    with _lock:
+        record = load(mesh_dir) or {"version": 0, "created": time.time(), "compass": None, "text": None}
+        record["edited"] = edited
+        return _save(mesh_dir, record)

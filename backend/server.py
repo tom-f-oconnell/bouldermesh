@@ -427,6 +427,12 @@ def init_db() -> None:
         # what an editor says each mesh is (MESH_LABELS: rock, or the kind of junk), on the labelling page (/label), to
         # check and train a classifier of what isn't rock on
         con.execute("CREATE TABLE IF NOT EXISTS mesh_labels(mesh_id TEXT PRIMARY KEY, label TEXT, at REAL)")
+        # who changed what through the site (record_change()): every change by an editor or the owner (kind "request"),
+        # and each change to a cleanup, a facing or a set of beta, or an approval, with what it was before, for the
+        # admin page's Changes to show and put back (revert_change())
+        con.execute("CREATE TABLE IF NOT EXISTS changes(id INTEGER PRIMARY KEY, at REAL, who_id TEXT, who TEXT, kind TEXT, "
+                    "mesh_id TEXT, target TEXT, what TEXT, before TEXT, after TEXT, status INTEGER, reverted_by INTEGER)")
+        con.execute("CREATE INDEX IF NOT EXISTS changes_at ON changes(at)")
         # what's queued to be done again (an area's climb queued again, or a project with something already finished
         # retried or remade), and when it finished, by triggers, so that the Areas tab can show how far each area's work
         # done again has got (again_progress()): kind "item" (id: the climb's source_id in campaign_id) or "project"
@@ -12291,7 +12297,15 @@ USER_MAY = (("POST", r"/api/meshes/[0-9a-f]+/beta/sets"), ("PATCH", r"/api/meshe
             ("DELETE", r"/api/projects/[0-9a-f]+"), ("POST", r"/api/submissions/[0-9a-f]+/(approve|decline)"))
 # what an editor may not change, of what the editing token may: the owner's alone (is_owner()). Deleting a project is
 # checked where it's done, as an editor may delete its own.
-OWNER_ONLY = (("DELETE", r"/api/meshes/[0-9a-f]+"), ("DELETE", r"/api/climbs/[0-9a-f]+"), ("DELETE", r"/api/campaigns/[0-9a-f]+"))
+OWNER_ONLY = (("DELETE", r"/api/meshes/[0-9a-f]+"), ("DELETE", r"/api/climbs/[0-9a-f]+"), ("DELETE", r"/api/campaigns/[0-9a-f]+"),
+              # areas' jobs: making one, starting, stopping, pausing, its options and order, and harvesting or meshing again
+              ("POST", r"/api/campaigns"), ("POST", r"/api/campaigns/[0-9a-f]+/(options|start|stop|pause|priority|retry|boulders|harvest-again|rebuild)"),
+              # a climb harvested, or its boulder or group harvested or meshed again
+              ("POST", r"/api/climbs/[0-9a-f]+/(harvest|whole|boulder)"),
+              # finding beta or size, of one mesh or all
+              ("POST", r"/api/meshes/[0-9a-f]+/(beta|scale)"), ("POST", r"/api/meshes/(beta-all|beta-stop|scale-all)"),
+              # which climbs a mesh is of, and which of a capture's meshes its climbs show first
+              ("POST", r"/api/meshes/[0-9a-f]+/(links|prefer)"), ("DELETE", r"/api/meshes/[0-9a-f]+/links/[0-9a-f]+"))
 OWNER = {"id": None, "name": None, "role": "owner", "areas": ["*"], "accepted": True, "quota_mb": None, "created": None}
 JOIN_TRIES, JOIN_WINDOW = 10, 3600      # invites and pairing codes one address may try in an hour
 _join_tries: dict[str, list[float]] = {}
@@ -12539,6 +12553,8 @@ def approve_project(pid: str, by: dict, ok: bool = True) -> dict:
         raise ValueError("that isn't yours to approve")
     q("UPDATE projects SET approved=?, approved_by=?, approved_at=?, deleted_at=NULL WHERE id=?", 1 if ok else -1, by.get("name") or "the owner", time.time(), pid, write=True)
     append_log(pid, f"{'approved' if ok else 'declined'} by {by.get('name') or 'the owner'}")
+    record_change(by, "approval", proj.get("mesh_id"), pid, f"{'approved' if ok else 'declined'} {proj.get('name') or pid}, added by "
+                  f"{(ACCOUNTS.get(proj['user_id']) or {}).get('name') or 'an account'}")
     if ok:
         proj = q("SELECT * FROM projects WHERE id=?", pid, one=True)
         if (ACCOUNTS.get(proj["user_id"]) or {}).get("mesh_next") and proj["status"] in (HELD, "queued", "running"):
@@ -13300,6 +13316,133 @@ def contribution_pump() -> None:
                 queue_job(json.loads(held["job"]))
         except Exception as e:
             print(f"contributions: {type(e).__name__}: {e}", flush=True)
+
+
+# ----------------------------------------------------------------- who changed what, and putting it back
+CHANGE_KINDS_BACK = ("cleanup", "heading", "beta-set")     # those revert_change() can put back
+
+
+def who_name(who: dict | None) -> str:
+    return (who or {}).get("name") or ("the owner" if (who or {}).get("role") == "owner" else "nobody")
+
+
+def record_change(who: dict | None, kind: str, mesh_id: str | None, target: str | None, what: str, before=None, after=None,
+                  status: int | None = None) -> int:
+    """Note a change in the changes table: by whom (an account, or the owner by the editing token, with no id), of what
+    kind, to which mesh and what in it (target), said in words (what), and for those revert_change() can put back,
+    what it was before (and after) as JSON. Returns its id."""
+    return q("INSERT INTO changes(at, who_id, who, kind, mesh_id, target, what, before, after, status) VALUES(?,?,?,?,?,?,?,?,?,?)",
+             time.time(), (who or {}).get("id"), who_name(who), kind, mesh_id, target, what,
+             None if before is None else json.dumps(before), None if after is None else json.dumps(after), status, write=True)
+
+
+def changing_cleanup(who: dict | None, mid: str, d: Path, what: str, fn):
+    """Change a mesh's cleanup in d (served_dir()) by fn(), noting who did, with the cleanup as it was kept in its
+    history (meshclean.keep()) to put back. Nothing's noted if nothing changed. Returns what fn() did."""
+    key, before = secrets.token_hex(8), meshclean.load(d)
+    had = meshclean.keep(d, key)
+    try:
+        out = fn()
+    except BaseException:
+        meshclean.forget(d, key)
+        raise
+    if meshclean.load(d) == before:
+        meshclean.forget(d, key)
+    else:
+        record_change(who, "cleanup", mid, None, what, before={"key": key, "had": had, "dir": str(d.relative_to(MESHES))})
+    return out
+
+
+def changing_heading(who: dict | None, mid: str, what: str, fn):
+    """Turn a mesh by hand by fn(), noting who did and how it was turned before, to put back."""
+    before = (heading_mod.load(MESHES / mid) or {}).get("edited")
+    out = fn()
+    after = (heading_mod.load(MESHES / mid) or {}).get("edited")
+    if after != before:
+        record_change(who, "heading", mid, None, what, before={"edited": before}, after={"edited": after})
+    return out
+
+
+def changing_sets(who: dict | None, mid: str, what: str, fn):
+    """Change a mesh's sets of beta by fn(), noting who changed each set and how it was before (None: it wasn't there),
+    to put back."""
+    before = {x["id"]: x for x in beta_mod.load_sets(MESHES / mid)}
+    out = fn()
+    after = {x["id"]: x for x in beta_mod.load_sets(MESHES / mid)}
+    for sid in sorted(set(before) | set(after)):
+        a, b = before.get(sid), after.get(sid)
+        if a != b:
+            name = (b or a).get("name") or sid
+            record_change(who, "beta-set", mid, sid, f"{what}: {name}", before={"set": a}, after={"set": b})
+    return out
+
+
+def put_set_back(mid: str, sid: str, one: dict | None) -> None:
+    """Make a mesh's set of beta sid what it was (one), or take it away (None), keeping the sets in the order made."""
+    sets = [x for x in beta_mod.load_sets(MESHES / mid) if x["id"] != sid]
+    if one is not None:
+        sets = sorted(sets + [one], key=lambda x: x.get("created") or 0)
+    beta_mod.save_sets(MESHES / mid, sets)
+
+
+REVERTER = {"id": None, "name": "the owner (admin page)", "role": "owner"}
+
+
+def revert_change(cid: int, who: dict = REVERTER) -> dict:
+    """Put back what a change (record_change()) changed, as it was before it: itself a change, noted, which can be put
+    back in turn. A cleanup is put back whole, so later changes to it go too (they can be put back from theirs); a
+    facing or a set of beta is put back alone.
+
+    Raises:
+        ValueError: no such change, or one of a kind that isn't put back.
+    """
+    row = q("SELECT * FROM changes WHERE id=?", cid, one=True)
+    if not row:
+        raise ValueError("there's no such change")
+    if row["kind"] not in CHANGE_KINDS_BACK or not row["before"]:
+        raise ValueError("that change isn't one that can be put back here")
+    before, mid, what = json.loads(row["before"]), row["mesh_id"], f"put back as before change {cid} ({row['who']}: {row['what']})"
+    if not (MESHES / mid).is_dir():
+        raise ValueError("its mesh is gone")
+    last = q("SELECT COALESCE(MAX(id), 0) AS id FROM changes", one=True)["id"]
+    if row["kind"] == "cleanup":
+        d = MESHES / before["dir"]
+        with _cleanup_lock:
+            changing_cleanup(who, mid, d, what, lambda: meshclean.restore(d, before["key"]))
+    elif row["kind"] == "heading":
+        changing_heading(who, mid, what, lambda: heading_mod.restore_edited(MESHES / mid, before["edited"]))
+    else:
+        changing_sets(who, mid, what, lambda: put_set_back(mid, row["target"], before["set"]))
+    new = (q("SELECT id FROM changes WHERE id>? AND kind=? AND mesh_id=? AND what LIKE ? ORDER BY id DESC LIMIT 1", last, row["kind"], mid,
+             what.replace("%", "") + "%", one=True) or {}).get("id")
+    if new is None:
+        raise ValueError("it's as it was before that change already: nothing to put back")
+    q("UPDATE changes SET reverted_by=? WHERE id=?", new, cid, write=True)
+    forget_mesh_list()
+    return {"reverted": cid, "by": new}
+
+
+def admin_changes(body: dict) -> dict:
+    """Who changed what through the site, newest first: {kind?, who?, mesh?, requests?: also every change by an editor or
+    the owner, limit?}."""
+    where, args = ["1=1"], []
+    if not body.get("requests"):
+        where.append("kind<>'request'")
+    for col, key in (("kind", "kind"), ("who", "who"), ("mesh_id", "mesh")):
+        if body.get(key):
+            where.append(f"{col}=?")
+            args.append(str(body[key]))
+    limit = max(1, min(int(body.get("limit") or 200), 2000))
+    rows = q(f"SELECT id, at, who_id, who, kind, mesh_id, target, what, status, reverted_by, before IS NOT NULL AS has_before FROM changes "
+             f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?", *args, limit)
+    for r in rows:
+        r["revertable"] = bool(r.pop("has_before")) and r["kind"] in CHANGE_KINDS_BACK
+    people = [r["who"] for r in q("SELECT DISTINCT who FROM changes ORDER BY who")]
+    return {"changes": rows, "people": people, "site_url": SITE_URL}
+
+
+def admin_change_revert(body: dict) -> dict:
+    return {**revert_change(int(body.get("id") or 0)), **admin_changes(body.get("list") or {})}
 
 
 def admin_submission(body: dict) -> dict:
@@ -14714,6 +14857,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 - still made again, only not waited for by its maker
                 who = None
             forget_mesh_list(who)
+            try:
+                if who and who[0] == "editor" and not path.startswith(("/api/account/", "/api/uploads", "/api/debug/")):
+                    record_change(self.who(), "request", None, path, f"{self.command} {path}", status=self.code)
+            except Exception as e:  # noqa: BLE001 - noting it shouldn't touch the connection
+                print(f"error: noting a change: {type(e).__name__}: {e}", flush=True)
         try:
             if took >= SLOW_SECONDS and not path.startswith(SLOW_LEFT_OUT) and \
                     int(self.headers.get("Content-Length") or 0) <= 2**20 and not self.is_editor():
@@ -15535,7 +15683,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "cleaning up meshes needs numpy"}, 501)
                 try:
                     with _cleanup_lock:
-                        record = meshclean.clean(served_dir(m[1]), print, force=True)
+                        d = served_dir(m[1])
+                        record = changing_cleanup(self.who(), m[1], d, "cleanup made again from the rule",
+                                                  lambda: meshclean.clean(d, print, force=True))
                 except ValueError as e:
                     return self.send_json({"error": f"can't clean up this mesh: {e}"}, 400)
                 return self.send_json(cleanup_answer(m[1], record)) if record else self.send_json({"error": "only GLB meshes can be cleaned up"}, 400)
@@ -15549,11 +15699,14 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     with _cleanup_lock:
                         if m[2] == "undo":
-                            return self.send_json(cleanup_answer(m[1], meshclean.undo(d)))
+                            return self.send_json(cleanup_answer(m[1], changing_cleanup(self.who(), m[1], d, "cleanup's last change undone",
+                                                                                        lambda: meshclean.undo(d))))
                         body, record = self.read_json(), meshclean.load(d)
                         if not record or record.get("deleted"):
                             raise ValueError("this mesh has no cleanup to edit")
-                        record, made = meshclean.edit(d, body.get("op"), chosen_faces(m[1], body, record))
+                        faces = chosen_faces(m[1], body, record)
+                        record, made = changing_cleanup(self.who(), m[1], d, f"cleanup: {body.get('op')} by hand",
+                                                        lambda: meshclean.edit(d, body.get("op"), faces))
                     return self.send_json(cleanup_answer(m[1], record, made=made))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
@@ -15731,14 +15884,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "not found"}, 404)
                 body, me = self.read_json(), self.who() or OWNER
                 source = body.get("from")
-                if limited(me) and isinstance(source, dict) and source.get("set"):    # a copy only of a set it may see
+                if me["role"] != "owner" and isinstance(source, dict) and source.get("set"):    # a copy only of a set it may see
                     seen = beta_mod.visible(beta_mod.load_sets(MESHES / m[1]), me["id"])
                     if not any(one["id"] == source["set"] for one in seen):
                         return self.send_json({"error": "there's no such set to copy"}, 400)
                 try:    # an account's set is its own, under its name; a video's holds are copied as they're shown
                     seen = beta_shown(m[1], beta_mod.load(MESHES / m[1])) if isinstance(source, dict) and source.get("video") else None
-                    return self.send_json(beta_mod.new_set(MESHES / m[1], body.get("name"), body.get("climb"), me["name"] or body.get("author"), source,
-                                                           owner=me["id"], shared=body.get("shared", True) is not False, found=seen), 201)
+                    return self.send_json(changing_sets(me, m[1], "set of beta made", lambda: beta_mod.new_set(
+                        MESHES / m[1], body.get("name"), body.get("climb"), me["name"] or body.get("author"), source,
+                        owner=me["id"], shared=body.get("shared", True) is not False, found=seen)), 201)
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
@@ -15746,7 +15900,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 try:
-                    return self.send_json(beta_mod.save_holds(MESHES / m[1], self.read_json().get("holds") or []))
+                    holds = self.read_json().get("holds") or []
+                    return self.send_json(changing_sets(self.who(), m[1], "holds marked", lambda: beta_mod.save_holds(MESHES / m[1], holds)))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/prefer", p)
@@ -15849,7 +16004,8 @@ class Handler(BaseHTTPRequestHandler):
                 if limited(self.who() or OWNER):
                     changes = {k: v for k, v in changes.items() if k in ("name", "climb", "holds", "shared")}    # its author is its account
                 try:
-                    return self.send_json(beta_mod.update_set(MESHES / m[1], m[2], changes))
+                    return self.send_json(changing_sets(self.who(), m[1], "set of beta changed (" + ", ".join(sorted(changes)) + ")",
+                                                        lambda: beta_mod.update_set(MESHES / m[1], m[2], changes)))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 404 if "no such set" in str(e) else 400)
             m = re.fullmatch(r"/api/climbs/([0-9a-f]+)", p)
@@ -15866,7 +16022,9 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 try:
                     with _cleanup_lock:
-                        record = meshclean.set_removed(served_dir(m[1]), body.get("removed", []))
+                        d = served_dir(m[1])
+                        record = changing_cleanup(self.who(), m[1], d, "cleanup: which pieces are hidden",
+                                                  lambda: meshclean.set_removed(d, body.get("removed", [])))
                     return self.send_json(cleanup_answer(m[1], record))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
@@ -15875,7 +16033,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 try:
-                    record = heading_mod.set_edited(MESHES / m[1], body.get("deg"))
+                    deg = body.get("deg")
+                    record = changing_heading(self.who(), m[1], f"facing turned by hand to {deg:.0f}°" if isinstance(deg, (int, float)) else
+                                              "facing back to what's worked out", lambda: heading_mod.set_edited(MESHES / m[1], deg))
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
                 if record.get("version") != heading_mod.VERSION:
@@ -15909,7 +16069,7 @@ class Handler(BaseHTTPRequestHandler):
         if m:   # one set of beta, and its holds
             if not self.own_set(m[1], m[2]):
                 return self.send_json({"error": "that set of beta isn't yours to delete"}, 403)
-            gone = (MESHES / m[1]).is_dir() and beta_mod.delete_set(MESHES / m[1], m[2])
+            gone = (MESHES / m[1]).is_dir() and changing_sets(self.who(), m[1], "set of beta deleted", lambda: beta_mod.delete_set(MESHES / m[1], m[2]))
             return self.send_json({"deleted": m[2]} if gone else {"error": "not found"}, 200 if gone else 404)
         m = re.fullmatch(r"/api/campaigns/([0-9a-f]+)", p)
         if m:   # the list goes; meshes and projects it made stay
@@ -15920,7 +16080,8 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/cleanup", p)
         if m:   # the whole mesh shows again; its own files were never changed
             with _cleanup_lock:
-                meshclean.delete(served_dir(m[1]))
+                d = served_dir(m[1])
+                changing_cleanup(self.who(), m[1], d, "cleanup removed: the whole mesh shows", lambda: meshclean.delete(d))
             return self.send_json(cleanup_answer(m[1], {"deleted": True}))
         m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/links/([0-9a-f]+)", p)
         if m:
@@ -17659,7 +17820,7 @@ def main() -> None:
                                        "volunteer-approve": admin_volunteer_approve, "volunteer-deny": admin_volunteer_deny,
                                        "machine-approve": admin_machine_approve, "machine-deny": admin_machine_deny,
                                        "machine-diagnostics": admin_machine_diagnostics,
-                                       "notify-topics": admin_notify_topics, "notify-test": admin_notify_test, "edit-pair": admin_edit_pair,
+                                       "notify-topics": admin_notify_topics, "changes": admin_changes, "change-revert": admin_change_revert, "notify-test": admin_notify_test, "edit-pair": admin_edit_pair,
                                        "measure": admin_measure}),
                     os.environ.get("ADMIN_HOST", "0.0.0.0" if in_docker else "127.0.0.1"), ADMIN_PORT)
     if VOLUNTEER_PORT:

@@ -279,8 +279,24 @@ with tempfile.TemporaryDirectory() as td:
     for k in range(meshclean.UNDO_KEEP + 5):
         meshclean.set_removed(d, [1] if k % 2 else [])
     assert meshclean.undo_steps(d) == meshclean.UNDO_KEEP and len(list((d / meshclean.UNDO_DIR).iterdir())) == 2 * meshclean.UNDO_KEEP
-    assert meshclean._write_labels(d, np.arange(70000) % 70000, 70000) == 4, "past 65,536 pieces: 4 bytes each"
     print("undo OK")
+
+    # --- kept in its history by a key, for the owner to put back: never pruned, and putting back can be undone
+    meshclean.set_removed(d, [])
+    then, then_labels = meshclean.load(d), labels().copy()
+    assert meshclean.keep(d, "k1")
+    meshclean.edit(d, "cut", (np.arange(n) % 7) == 0)
+    meshclean.set_removed(d, [1])
+    for k in range(meshclean.UNDO_KEEP + 2):
+        meshclean.set_removed(d, [1] if k % 2 else [])
+    now = meshclean.load(d)
+    assert meshclean.restore(d, "k1") == then == meshclean.load(d) and np.array_equal(labels(), then_labels)
+    assert meshclean.undo(d) == now, "putting back is undone as any change"
+    meshclean.keep(d, "k2")
+    meshclean.forget(d, "k2")
+    assert not list((d / meshclean.HISTORY_DIR).glob("k2*"))
+    print("history OK")
+    assert meshclean._write_labels(d, np.arange(70000) % 70000, 70000) == 4, "past 65,536 pieces: 4 bytes each"
 
 # --- a cut across the border of two textures, chosen on a copy whose corners there are a little apart (glbpack rounds
 # each primitive's positions on its own): (20, 10) is a hair above the line for column 19's copy and below it for column

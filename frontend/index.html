@@ -152,7 +152,13 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   body.readonly .tryskipped,body.readonly .editopt,body.readonly .pause,body.readonly .unpause,body.readonly #pieces .undo,
   body.readonly #nearby [data-save],body.readonly #nearby [data-unedit],
   body.readonly .tabs button[data-tab=projects],body.readonly .projs,body.readonly .campacts{display:none!important}
-  body.notowner .owneronly{display:none!important}     /* what an editor may not do: the site's owner's alone */
+  /* what an editor may not do: the site's owner's alone (OWNER_ONLY in server.py): deleting, areas' jobs, harvesting and meshing
+     again, finding beta or size, and linking */
+  body.notowner .owneronly,body.notowner .linksel,body.notowner .unlink,body.notowner .harvest,body.notowner .meshboulder,
+  body.notowner .campacts,body.notowner #ca-box,body.notowner button.find,body.notowner .findall,body.notowner .stopall,body.notowner .findsize,
+  body.notowner .stopnow,body.notowner .stoplater,body.notowner .resume,body.notowner .retryfailed,body.notowner .checknew,
+  body.notowner .checknewrebuild,body.notowner .refilter,body.notowner .rebuildchanged,body.notowner .rebuildall,body.notowner .boulders,
+  body.notowner .tryskipped,body.notowner .editopt,body.notowner .pause,body.notowner .unpause{display:none!important}
   /* the ? tab: comments and bug reports, from anyone, and the Donate button */
   .tabs button[data-tab=help]{flex:0 0 auto;padding:10px 16px}
   #pane-help p{font-size:13px;margin:0 0 8px} #pane-help a{color:var(--acc)} #pane-help .fine{font-size:12px;color:var(--mute);margin:10px 0 0}
@@ -5175,7 +5181,7 @@ function renderMeshes(filter = true){
       d.querySelector('.chips').before(note);
       if (editor) {
         const first = tied[0].id === m.id;
-        const b = document.createElement('button'); b.className = 'sm sec w'; b.disabled = first;
+        const b = document.createElement('button'); b.className = 'sm sec w owneronly'; b.disabled = first;
         b.textContent = first ? 'Shown first for its climbs' : 'Show this one first';
         b.title = 'A capture\'s mesh and the mesh it adds to are both kept. This makes this one the one their climbs open; the other stays listed, and can be chosen back.';
         b.onclick = async () => { await api(`/api/meshes/${m.id}/prefer`, { method: 'POST', json: {} }); await refreshMeshes(); refreshClimbs(); };

@@ -8,6 +8,8 @@ made on request.
   cleanup.json        the pieces, which are hidden, and the rule used
   cleanup_faces.bin   the piece of every face, in the order of the GLB's primitives
   cleanup.undo/       the cleanup as it was before each of the last UNDO_KEEP changes, to undo them
+  cleanup.history/    the cleanup as it was before each change through the site, by a key the server's log of
+                      changes gives it (keep()), for the owner to put back (restore()); never pruned
   mesh.cleaned.glb    made when a cleaned download is asked for
 
 Pieces can also be made by hand, in the viewer: a cut splits the pieces it crosses where it crosses them, and a
@@ -34,6 +36,7 @@ FACES_FILE = "cleanup_faces.bin"
 CLEANED_FILE = "mesh.cleaned.glb"
 UNDO_DIR = "cleanup.undo"
 UNDO_KEEP = 20
+HISTORY_DIR = "cleanup.history"
 MIN_SHARE = 0.01     # hide pieces with fewer faces than this share of the main piece's
 MAX_SPARSER = 5.0    # hide pieces with this many times fewer faces per area than the main piece
 MIN_CUT_PIECE = 100  # faces: smaller bits a cut leaves of a piece stay part of it, rather than becoming pieces of their own
@@ -401,17 +404,62 @@ def _remember(mesh_dir: Path) -> None:
     record = load(mesh_dir)
     if record is None:
         return
-    d = mesh_dir / UNDO_DIR
-    d.mkdir(exist_ok=True)
     steps = _undo_steps(mesh_dir)
-    n = steps[-1] + 1 if steps else 1
-    labels = mesh_dir / FACES_FILE
-    if not record.get("deleted") and labels.exists():
-        (d / f"{n}.labels.z").write_bytes(zlib.compress(labels.read_bytes(), 1))
-    (d / f"{n}.json").write_text(json.dumps(record))    # last: what says the step is all there
+    _store(mesh_dir, record, mesh_dir / UNDO_DIR, str(steps[-1] + 1 if steps else 1))
+    d = mesh_dir / UNDO_DIR
     for old in steps[:max(0, len(steps) + 1 - UNDO_KEEP)]:
         (d / f"{old}.json").unlink(missing_ok=True)
         (d / f"{old}.labels.z").unlink(missing_ok=True)
+
+
+def _store(mesh_dir: Path, record: dict, d: Path, name: str) -> None:
+    """Keep a cleanup (record, and its faces' pieces as they are now) in d, as name."""
+    d.mkdir(exist_ok=True)
+    labels = mesh_dir / FACES_FILE
+    if not record.get("deleted") and labels.exists():
+        (d / f"{name}.labels.z").write_bytes(zlib.compress(labels.read_bytes(), 1))
+    (d / f"{name}.json").write_text(json.dumps(record))    # last: what says it's all there
+
+
+def _put_back(mesh_dir: Path, d: Path, name: str) -> dict:
+    """Make the cleanup the one kept in d as name (_store())."""
+    record = json.loads((d / f"{name}.json").read_text())
+    z = d / f"{name}.labels.z"
+    if record.get("deleted"):
+        (mesh_dir / FACES_FILE).unlink(missing_ok=True)
+    else:
+        import numpy as np
+        if not z.exists():
+            raise ValueError("that change can't be undone: what it changed wasn't kept")
+        labels = np.frombuffer(zlib.decompress(z.read_bytes()), {2: "<u2", 4: "<u4"}[record["label_bytes"]])
+        _write_labels(mesh_dir, labels, len(record["pieces"]))
+    _write_json(mesh_dir, record)
+    return record
+
+
+def keep(mesh_dir: Path, key: str) -> bool:
+    """Keep the cleanup as it is (before a change) in its history, as key, for restore(). False if it has none."""
+    record = load(mesh_dir)
+    if record is None:
+        return False
+    _store(mesh_dir, record, mesh_dir / HISTORY_DIR, key)
+    return True
+
+
+def forget(mesh_dir: Path, key: str) -> None:
+    """Drop what keep() kept as key: the change it was kept for changed nothing."""
+    for suffix in (".json", ".labels.z"):
+        (mesh_dir / HISTORY_DIR / f"{key}{suffix}").unlink(missing_ok=True)
+
+
+def restore(mesh_dir: Path, key: str) -> dict:
+    """Put a cleanup back as keep() kept it as key, which can itself be undone. With no cleanup kept (the change made
+    its first), the whole mesh shows again, as delete() has it."""
+    if not (mesh_dir / HISTORY_DIR / f"{key}.json").exists():
+        delete(mesh_dir)
+        return load(mesh_dir)
+    _remember(mesh_dir)
+    return _put_back(mesh_dir, mesh_dir / HISTORY_DIR, key)
 
 
 def undo_steps(mesh_dir: Path) -> int:
@@ -425,19 +473,9 @@ def undo(mesh_dir: Path) -> dict:
     if not steps:
         raise ValueError("nothing to undo")
     d = mesh_dir / UNDO_DIR
-    record = json.loads((d / f"{steps[-1]}.json").read_text())
-    z = d / f"{steps[-1]}.labels.z"
-    if record.get("deleted"):
-        (mesh_dir / FACES_FILE).unlink(missing_ok=True)
-    else:
-        import numpy as np
-        if not z.exists():
-            raise ValueError("that change can't be undone: what it changed wasn't kept")
-        labels = np.frombuffer(zlib.decompress(z.read_bytes()), {2: "<u2", 4: "<u4"}[record["label_bytes"]])
-        _write_labels(mesh_dir, labels, len(record["pieces"]))
-    _write_json(mesh_dir, record)
+    record = _put_back(mesh_dir, d, str(steps[-1]))
     (d / f"{steps[-1]}.json").unlink()
-    z.unlink(missing_ok=True)
+    (d / f"{steps[-1]}.labels.z").unlink(missing_ok=True)
     return record
 
 
