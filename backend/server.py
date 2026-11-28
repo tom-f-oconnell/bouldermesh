@@ -2283,13 +2283,13 @@ def capture_plan(mid: str) -> dict | None:
             for c in boulder_climbs(m["boulder"]) if m["boulder"] else []:
                 climbs.setdefault(c["id"], {"id": c["id"], "name": c["name"], "grade": c["grade"]})
             holds, found = [], []
-            for v in (beta_mod.load(d) or {}).get("videos", []):
+            for v in (beta_mod.apply_edits(beta_mod.load(d), beta_mod.load_edits(d)) or {}).get("videos", []):
                 of = [r["climb_id"] for r in q("SELECT climb_id FROM climb_videos WHERE url=?", v.get("url"))]
                 # each video's holds a set of their own, as the viewer lists them, to choose for a capture: video:<tag>,
                 # each hold <tag>/<its id>
                 vs = f"video:{v.get('tag')}" if v.get("tag") and v.get("holds") else None
                 if vs:
-                    found.append({"id": vs, "name": v.get("uploader") or f"video-{len(found) + 1}", "climb": None, "video": True})
+                    found.append({"id": vs, "name": v.get("label") or v.get("uploader") or f"video-{len(found) + 1}", "climb": None, "video": True})
                 holds += [{"p": h["p"], "role": h.get("role"), "from": "video", "climbs": [c for c in of if c in climbs],
                            "sets": [vs] if vs else [], "ids": [f"{v.get('tag')}/{h.get('id')}"] if vs and h.get("id") is not None else []}
                           for h in v.get("holds") or []]
@@ -2368,7 +2368,7 @@ def plan_key(mid: str, scale=None) -> str:
     d = MESHES / mid
     stamp = "|".join(f"{f.name}:{f.stat().st_mtime_ns}" for f in sorted(d.iterdir())
                      if f.name in ("mesh.glb", "mesh.ply", "cameras.json", "cleanup.json", viewpoints.FILE, beta_mod.FILE, beta_mod.HOLDS_FILE,
-                                   beta_mod.SETS_FILE))
+                                   beta_mod.SETS_FILE, beta_mod.EDITS_FILE))
     return captureplan.key(stamp, 0, metres_per_unit(mid) if scale is None else scale)
 
 
@@ -2921,9 +2921,10 @@ _lines_tracks: dict[str, tuple[float, str]] = {}    # betalines.tracks() of each
 
 def lines_of(mid: str, record: dict) -> dict[str, list[str]]:
     """Which of the videos of a mesh's beta are of each climb the mesh is of (climb_videos), for its climbs' lines:
-    {climb id: [url]}. A mesh of one climb's videos are all of it."""
+    {climb id: [url]}. A mesh of one climb's videos are all of it. Those an editor hid are none's."""
     climbs = list(climb_names(mid))
-    urls = [v["url"] for v in record.get("videos") or [] if v.get("url")]
+    hidden = {tag for tag, e in beta_mod.load_edits(MESHES / mid).items() if e.get("hidden")}     # an editor's: not its beta
+    urls = [v["url"] for v in record.get("videos") or [] if v.get("url") and v.get("tag") not in hidden]
     if len(climbs) == 1:
         return {climbs[0]: urls}
     of: dict[str, list[str]] = {cid: [] for cid in climbs}
@@ -13321,7 +13322,7 @@ def contribution_pump() -> None:
 
 
 # ----------------------------------------------------------------- who changed what, and putting it back
-CHANGE_KINDS_BACK = ("cleanup", "heading", "beta-set", "line", "climb", "mesh", "current")     # those revert_change() can put back
+CHANGE_KINDS_BACK = ("cleanup", "heading", "beta-set", "beta-video", "line", "climb", "mesh", "current")     # those revert_change() can put back
 CLIMB_FIELDS = ("name", "grade", "lat", "lng", "boulder_name", "kind", "url", "coord_source")     # a climb's, as an editor changes them
 MESH_FIELDS = ("name", "lat", "lng")
 
@@ -13418,6 +13419,19 @@ def changing_row(who: dict | None, table: str, rid: str, fields: tuple, fn) -> N
     return out
 
 
+def changing_video(who: dict | None, mid: str, tag: str, what: str, fn):
+    """Change a video's beta as found by fn() (beta.edit_video()), noting who did and its edits before, to put back."""
+    before = beta_mod.load_edits(MESHES / mid).get(tag)
+    out = fn()
+    after = beta_mod.load_edits(MESHES / mid).get(tag)
+    strip = lambda e: {k: v for k, v in (e or {}).items() if k not in ("by", "at")}    # noqa: E731
+    if strip(after) != strip(before):
+        v = next((v for v in (beta_mod.load(MESHES / mid) or {}).get("videos") or [] if v.get("tag") == tag), {})
+        record_change(who, "beta-video", mid, tag, f"{what}: {(before or {}).get('name') or v.get('uploader') or v.get('title') or tag}",
+                      before={"edit": before}, after={"edit": after})
+    return out
+
+
 def put_set_back(mid: str, sid: str, one: dict | None) -> None:
     """Make a mesh's set of beta sid what it was (one), or take it away (None), keeping the sets in the order made."""
     sets = [x for x in beta_mod.load_sets(MESHES / mid) if x["id"] != sid]
@@ -13457,6 +13471,8 @@ def revert_change(cid: int, who: dict = REVERTER) -> dict:
         changing_heading(who, mid, what, lambda: heading_mod.restore_edited(MESHES / mid, before["edited"]))
     elif row["kind"] == "beta-set":
         changing_sets(who, mid, what, lambda: put_set_back(mid, row["target"], before["set"]))
+    elif row["kind"] == "beta-video":
+        changing_video(who, mid, row["target"], what, lambda: beta_mod.put_edit(MESHES / mid, row["target"], before["edit"]))
     elif row["kind"] == "line":
         changing_line(who, mid, row["target"], what, lambda: (betalines.put_drawn(MESHES / mid, row["target"], before["line"]), mesh_lines(mid)))
     elif row["kind"] in ("climb", "mesh"):
@@ -15205,6 +15221,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not (MESHES / m[1]).is_dir():
                     return self.send_json({"error": "not found"}, 404)
                 found = beta_shown(m[1], beta_mod.load(MESHES / m[1]))     # its holds as its climbs' lines leave them
+                found = beta_mod.apply_edits(found, beta_mod.load_edits(MESHES / m[1]),     # and as editors changed them
+                                             not READ_ONLY and (not EDIT_TOKEN or self.is_editor()))
                 setting = settings().get("site.sources")
                 for v in (found or {}).get("videos", []):     # a video's frames, drawn on, are copies of it
                     access = policy.source_access(setting, video_entry(v["url"]))
@@ -15633,9 +15651,12 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/projects/([0-9a-f]+)/reconstruct", p)
             if m:
                 pid = m[1]
-                proj = q("SELECT status, kind FROM projects WHERE id=?", pid, one=True)
+                proj = q("SELECT status, kind, user_id FROM projects WHERE id=?", pid, one=True)
                 if not proj:
                     return self.send_json({"error": "not found"}, 404)
+                me = self.who() or OWNER
+                if me["role"] != "owner" and proj["user_id"] != me["id"]:     # an editor: its own alone (an account's, by own_project())
+                    return self.send_json({"error": "only the site's owner may mesh a project that isn't yours"}, 403)
                 if proj["status"] in ("queued", "running", "harvesting", HELD):
                     return self.send_json({"error": "already running" if proj["status"] != HELD else "already waiting its turn"}, 409)
                 n = len([f for f in (PROJECTS / pid / "photos").iterdir() if f.suffix.lower() in PHOTO_EXT]) if (PROJECTS / pid / "photos").is_dir() else 0
@@ -15952,6 +15973,19 @@ class Handler(BaseHTTPRequestHandler):
                         owner=me["id"], shared=body.get("shared", True) is not False, found=seen)), 201)
                 except ValueError as e:
                     return self.send_json({"error": str(e)}, 400)
+            m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/beta/videos/([0-9a-f]{8})", p)
+            if m:   # an editor's change to a video's beta as found: {name}, {hidden}, or {hold: {id, role | drop | keep | reset}}
+                if not (MESHES / m[1]).is_dir():
+                    return self.send_json({"error": "not found"}, 404)
+                body, who = self.read_json(), self.who() or OWNER
+                said = ("renamed" if "name" in body else ("hidden" if body.get("hidden") else "shown again") if "hidden" in body
+                        else "a hold changed" if "hold" in body else "changed")
+                try:
+                    entry = changing_video(who, m[1], m[2], f"video's beta {said}",
+                                           lambda: beta_mod.edit_video(MESHES / m[1], m[2], body, who_name(who)))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
+                return self.send_json({"tag": m[2], "edit": entry})
             m = re.fullmatch(r"/api/meshes/([0-9a-f]+)/holds", p)
             if m:   # the holds of its first set of beta (what "marked by hand" were): {holds: [{p, role}]}, replacing those there
                 if not (MESHES / m[1]).is_dir():

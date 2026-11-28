@@ -1522,12 +1522,17 @@ once it's approved, or at once for those pre-approved.
 **Editors and owners:** an *editor* account may change what the editing token can on the main site, but for what's
 the owner's alone (`OWNER_ONLY` in server.py): deleting meshes, climbs, areas' lists or others' projects (hiding a mesh
 is theirs; their own projects are only marked deleted); areas' jobs (starting one, stopping, pausing, their options,
-harvesting or meshing again); a project's job retried, stopped or meshed next; harvesting a climb, or meshing its
-boulder or group; finding beta or size; and linking climbs to meshes. Nor do they see beta others keep private, or the admin page's address. An *owner* account may do
+harvesting or meshing again); a project's job retried, stopped or meshed next, and meshing a project not their own;
+harvesting a climb, or meshing its boulder or group; finding beta or size; and linking climbs to meshes. Nor do they see beta others keep private, or the admin page's address. An *owner* account may do
 all of it, as the token does. Neither reaches this admin page without the server's own address and password.
 
+**Editing beta from videos:** in the Beta tab, an editor can rename a video's entry in the lists (to its climber's
+name, say), hide it (from visitors, and from its climb's line), and *Edit holds*: change a hold's role, leave a hold
+out, or keep one that was set aside. These are kept apart from what was found (`beta_edits.json`), so finding beta
+again keeps them. Only editors see the box to show holds set aside.
+
 **Changes** (People): who changed what, newest first. Each change to a mesh's cleanup, its facing, a set of beta, a
-line drawn by hand, a climb's or a mesh's name or place, which version of a mesh is current, and each approval, is
+video's beta as found, a line drawn by hand, a climb's or a mesh's name or place, which version of a mesh is current, and each approval, is
 listed by whom; *every request* adds each change an editor or the owner made of any kind. *Put back* makes any of
 those but an approval as it was before that change; a cleanup is put back whole, as it was then (later changes to it
 go too, and can be put back from their own rows). A mesh's own files are never changed by its cleanup.

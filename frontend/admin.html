@@ -439,13 +439,13 @@
   <section id="changes">
     <h2>Changes</h2>
     <div class="note">Who changed what through the site, newest first: each change to a mesh's cleanup, its facing, a set of beta
-      (holds), a line drawn by hand, a climb's or mesh's name or place, which version of a mesh is current, and each approval. <i>Put back</i>
+      (holds), a video's beta as found (renamed, hidden, its holds changed), a line drawn by hand, a climb's or mesh's name or place, which version of a mesh is current, and each approval. <i>Put back</i>
       makes any of those but an approval as it was before that change; a cleanup is put back whole, as it was then (so later changes to it go
       too, each of which can be put back from its own row). Putting back is a change too, and can be put back.
       Ticking <i>every request</i> also lists each change an editor or the owner made, of any kind, to see who did what.</div>
     <div class="row"><select id="chg-who" style="width:auto"><option value="">anyone</option></select>
       <select id="chg-kind" style="width:auto"><option value="">any kind</option><option value="cleanup">cleanup</option><option value="heading">facing</option>
-        <option value="beta-set">beta (holds)</option><option value="line">lines</option><option value="climb">climbs</option><option value="mesh">meshes</option><option value="current">versions</option><option value="approval">approvals</option><option value="request">requests only</option></select>
+        <option value="beta-set">beta sets (holds)</option><option value="beta-video">beta from videos</option><option value="line">lines</option><option value="climb">climbs</option><option value="mesh">meshes</option><option value="current">versions</option><option value="approval">approvals</option><option value="request">requests only</option></select>
       <label class="choice" style="margin:0"><input type="checkbox" id="chg-requests"> every request</label>
       <button class="sec" id="chg-show">Show</button></div>
     <div id="chg-list"></div>
@@ -1632,7 +1632,7 @@ function showChanges(r) {
   const who = $('#chg-who'), had = who.value;
   who.innerHTML = '<option value="">anyone</option>' + r.people.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
   who.value = had;
-  const kinds = { cleanup: 'cleanup', heading: 'facing', 'beta-set': 'beta', line: 'line', climb: 'climb', mesh: 'mesh', current: 'version', approval: 'approval', request: 'request' };
+  const kinds = { cleanup: 'cleanup', heading: 'facing', 'beta-set': 'beta set', 'beta-video': 'video beta', line: 'line', climb: 'climb', mesh: 'mesh', current: 'version', approval: 'approval', request: 'request' };
   const mesh = id => !id ? '' : r.site_url ? `<a href="${esc(r.site_url)}/m/${esc(id)}" target="_blank" rel="noopener">${esc(id)}</a>` : esc(id);
   $('#chg-list').innerHTML = !r.changes.length ? '<div class="note">No changes noted yet.</div>' : `<table><tr><th>#</th><th>When</th><th>Who</th><th>Kind</th><th>What</th><th>Mesh</th><th></th></tr>${
     r.changes.map(c => `<tr><td>${c.id}</td><td>${new Date(c.at * 1000).toLocaleString()}</td><td>${esc(c.who)}</td><td>${esc(kinds[c.kind] || c.kind)}</td>

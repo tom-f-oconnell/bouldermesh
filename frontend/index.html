@@ -454,6 +454,7 @@ try { const t = localStorage.getItem('bm_theme'); if (!APP && (t === 'light' || 
   .legend span{display:inline-flex;align-items:center;gap:5px} #b-legend{cursor:help}
   .swatch{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid var(--swatch-line)}
   .bvid{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+  .bv.vhidden .t,.bv.vhidden .who{opacity:.5;text-decoration:line-through}
   .bvid img{width:100%;border-radius:6px;margin-top:6px;display:block}
   .bholds{max-height:230px;overflow:auto;margin-top:6px}
   .bhold{gap:6px;padding:2px 4px;border-radius:5px;font-size:12px;cursor:pointer} .bhold.on{outline:1px solid var(--acc);outline-offset:-1px}
@@ -5738,7 +5739,7 @@ function renderBetaVids(){
   const groupId = gi => groups[gi][3];
   const hidesRest = gi => { const mine = new Set(groups[gi][2].map(v => v.tag)); return vids.some(v => !mine.has(v.tag)) && vids.every(v => mine.has(v.tag) === b.shown.has(v.tag)); };
   if (betaVidsOpen) el.innerHTML += (vids.length > 1 && !ch ? `<label class="bv all"><input type="checkbox" ${all ? 'checked' : ''}><span class="t">Show all from videos</span></label>` : '')
-    + (away && !ch ? `<label class="bv offl" title="Holds found over a reach (about 1.75 m) from their climb's line, or touched only on a go on the rock that never rose (often someone or something else at the rock's foot): where a hand or foot seemed to be while walking in, off the top or on other rock, or a point that fell past the rock's edge. Hidden unless ticked, then faint."><input type="checkbox" ${b.showOff ? 'checked' : ''}><span class="t">Show ${away} set aside</span></label>` : '')
+    + (away && !ch && editor ? `<label class="bv offl" title="Holds found over a reach (about 1.75 m) from their climb's line, or touched only on a go on the rock that never rose (often someone or something else at the rock's foot): where a hand or foot seemed to be while walking in, off the top or on other rock, or a point that fell past the rock's edge. Hidden unless ticked, then faint."><input type="checkbox" ${b.showOff ? 'checked' : ''}><span class="t">Show ${away} set aside</span></label>` : '')
     + groups.map(([climb, gs, gv], gi) => (climb !== null ? `<div class="bvclimb">${esc(climb)}</div>` : '')
       + (climb !== null && gv.length && !ch ? `<div class="bv all climball${b.climbFocus === groupId(gi) ? ' on' : ''}" data-group="${gi}" title="Pick to see this climb's beta alone (the rest faint); again to undo">
           <input type="checkbox" class="showall" ${gv.every(v => b.shown.has(v.tag)) ? 'checked' : ''} aria-label="Show all of its videos' holds"><span class="t">Show all</span>
@@ -5746,7 +5747,7 @@ function renderBetaVids(){
       + gs.map(setRow).join('')
       + (gs.length && gv.length ? '<hr class="bsep">' : '') + gv.map(vidRow).join('')).join('');
   function vidRow(v){ return [v].map(v =>
-    `<div class="bv${!ch && b.focus === v.tag ? ' on' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}">
+    `<div class="bv${!ch && b.focus === v.tag ? ' on' : ''}${v.hidden ? ' vhidden' : ''}" data-tag="${v.tag}" title="${esc(v.title || v.url)}${v.hidden ? ' (hidden from visitors)' : ''}">
       <input type="checkbox" ${(ch ? ch.sets.has('video:' + v.tag) : b.shown.has(v.tag)) ? 'checked' : ''} aria-label="${ch ? 'Capture its holds' : 'Show its holds'}">
       <span class="who">${esc(vset[v.tag]?.label || '')}</span><span class="t">${esc(v.title || v.url)}</span><small${offLine(v).length ? ` title="and ${offLine(v).length} set aside"` : ''}>${n(onLine(v).length)}</small>
       ${editor && !ch ? `<button class="sm sec dbg" title="Play the video with the climber the pose model found and the holds it called drawn over it, the view following along">Debug</button>` : ''}
@@ -6244,7 +6245,7 @@ function drawBeta(){
     // not on faces hidden; faint while another video's are picked out (renderBetaVids())
     const outside = notOf(v.climbs || []);
     // nor those off its climb's line (offLine()), unless asked for: then faint
-    for (const h of v.holds || []) if (!(h.off && !betaState.showOff) && !onHiddenFace(h.p, node))
+    for (const h of v.holds || []) if (!(h.off && !betaState.showOff && betaState.editVid !== v.tag) && !onHiddenFace(h.p, node))
       ring(h.p, h.role, 'found', h.off || outside || (!!betaState.focus && betaState.focus !== v.tag)).userData.hold = `${v.tag}/${h.id}`;
   }
   // how far round a hold reaches, as three circles about it (lines: nothing that goes through the meshes sees them),
@@ -6622,7 +6623,15 @@ function renderBetaPanel(){
     ${!b.available && n ? '<div class="notice">Finding beta needs rtmlib and onnxruntime, which the Docker image has.</div>' : ''}
     ${betaByClimb(b, [], f?.videos || []).map(([climb, , gv]) => (climb !== null ? `<div class="meta" style="margin-top:6px"><b>${esc(climb)}</b></div>` : '') + gv.map(v => `<div class="bvid">
       <label class="row" style="gap:6px"><input type="checkbox" data-tag="${v.tag}" ${b.shown.has(v.tag) ? 'checked' : ''}>
-        <span class="grow"><b>${esc(videoSets(b).find(x => x.tag === v.tag)?.label || '')}</b> · <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a></span></label>
+        <span class="grow"><b>${esc(videoSets(b).find(x => x.tag === v.tag)?.label || '')}</b> · <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.title || v.url)}</a>${v.hidden ? ' <small class="warn">hidden from visitors</small>' : ''}</span></label>
+      ${editor ? `<div class="row vedit" data-vtag="${v.tag}" style="margin-top:4px;gap:4px"><button class="sm sec vrename" title="The name it has in the lists of beta, as the climber's${v.found_label !== undefined ? '; empty for the one found' : ''}">Rename</button>
+        <button class="sm sec vhide" title="${v.hidden ? 'Show it to visitors again, and use it for its climb\'s line' : 'Hide it from visitors, and leave it out of its climb\'s line'}">${v.hidden ? 'Unhide' : 'Hide'}</button>
+        ${v.holds?.length ? `<button class="sm sec vholds" aria-pressed="${b.editVid === v.tag}" title="Change its holds' roles, leave holds out, or keep ones set aside">${b.editVid === v.tag ? 'Done' : 'Edit holds'}</button>` : ''}</div>
+        ${b.editVid === v.tag ? `<div class="bholds vholdlist">${(v.holds || []).map((h, i) => `<div class="row bhold" data-hold="${h.id}">
+          <span class="swatch" style="background:${ROLES[h.role]?.color || '#888'}"></span><span class="grow">${i + 1}${h.dropped ? ' · <small class="bad">left out</small>' : h.off ? ' · <small>set aside</small>' : ''}${h.kept ? ' · <small>kept</small>' : ''}${h.edited ? ` · <small>was ${esc(ROLES[h.found_role]?.name || h.found_role || '?')}</small>` : ''}</span>
+          <select class="hrole" title="What it's for"${h.dropped ? ' disabled' : ''}>${ROLE_CYCLE.map(r => `<option value="${r}" ${r === h.role ? 'selected' : ''}>${ROLES[r].name}</option>`).join('')}</select>
+          ${h.dropped ? '' : h.off && !h.kept ? '<button class="sm sec hkeep" title="Show it, though it was set aside">Keep</button>' : '<button class="sm sec hdrop" title="Leave it out of this video\'s beta">✕</button>'}
+          ${h.dropped || h.kept || h.edited ? '<button class="sm sec hreset" title="As it was found">Reset</button>' : ''}</div>`).join('')}</div>` : ''}` : ''}
       <div class="meta">${v.holds ? roleCounts(onLine(v)) : ''}${offLine(v).length ? ` <small>· ${offLine(v).length} more set aside</small>` : ''} ${onLine(v).length ? `<button class="sm sec tocopy${make ? '' : ' w'}" data-video="${esc(v.url)}" title="A set of these holds, to change" style="margin-left:4px">Copy to a set</button>` : ''} ${v.frames ? `<small>· climber in ${v.with_climber} of ${v.frames} frames, ${v.placed_frames} placed on the mesh${v.approximate_lens ? ', lens approximate' : ''}</small>` : ''}
         ${v.status && v.status !== 'done' ? `<small>· ${esc(v.status)}</small>` : ''}</div>
       ${v.image ? `<img src="/meshes/${b.mid}/${v.image}?v=${f.finished || ''}" alt="" title="The climber's hands (white) and feet (yellow), and the holds they stayed on, drawn on this video's frame placed in the mesh">` : ''}
@@ -6638,7 +6647,29 @@ function renderBetaPanel(){
   el.querySelector('.setname')?.addEventListener('click', () => setDo('rename'));
   el.querySelector('.setdel')?.addEventListener('click', () => setDo('delete'));
   el.querySelectorAll('.tocopy').forEach(c => c.onclick = () => setDo('new', { video: c.dataset.video }));
-  el.querySelectorAll('.bhold').forEach(row => {
+  el.querySelectorAll('.vedit').forEach(row => {     // an editor's changes to a video's beta as found: each one noted, and undone from the admin page
+    const tag = row.dataset.vtag, v = (f?.videos || []).find(x => x.tag === tag), list = row.nextElementSibling?.classList.contains('vholdlist') ? row.nextElementSibling : null;
+    const send = async body => {
+      try { await api(`/api/meshes/${b.mid}/beta/videos/${tag}`, { method: 'POST', json: body }); await loadBeta(); drawBeta(); renderBetaPanel(); }
+      catch (e) { toast(e.message, 6000); }
+    };
+    row.querySelector('.vrename').onclick = () => {
+      const name = prompt('Its name in the lists of beta (the climber\'s, say); empty for the one found:', v?.label || v?.uploader || '');
+      if (name !== null) send({ name });
+    };
+    row.querySelector('.vhide').onclick = () => send({ hidden: !v?.hidden });
+    row.querySelector('.vholds')?.addEventListener('click', () => { b.editVid = b.editVid === tag ? null : tag; if (b.editVid) b.shown.add(tag); drawBeta(); renderBetaPanel(); });
+    list?.querySelectorAll('.bhold').forEach(h => {
+      const id = h.dataset.hold, hold = `${tag}/${id}`;
+      h.onmouseenter = () => { for (const r of b.rings || []) r.userData.boost = r.userData.hold === hold ? 2 : 1; woke(); };
+      h.onmouseleave = () => { for (const r of b.rings || []) delete r.userData.boost; woke(); };
+      h.querySelector('.hrole').onchange = ev => send({ hold: { id, role: ev.target.value } });
+      h.querySelector('.hdrop')?.addEventListener('click', () => send({ hold: { id, drop: true } }));
+      h.querySelector('.hkeep')?.addEventListener('click', () => send({ hold: { id, keep: true } }));
+      h.querySelector('.hreset')?.addEventListener('click', () => send({ hold: { id, reset: true } }));
+    });
+  });
+  el.querySelectorAll('.bhold:not(.vholdlist .bhold)').forEach(row => {
     const i = +row.dataset.i, h = b.marked[i];
     row.onclick = ev => { if (ev.target.closest('select, button')) return; b.sel = b.sel === i ? null : i; drawBeta(); renderBetaPanel(); };
     row.querySelector('.role').onchange = ev => { h.role = ev.target.value; b.sel = i; saveMarked(); };
@@ -6797,7 +6828,7 @@ function labelOf(b, s){
   return s.anon_n ? `anonymous-${s.anon_n}` : s.author || 'the site';
 }
 // each video's holds, as a set of their own (as if each were someone's): by its uploader, else video-N
-const videoSets = b => (b?.found?.videos || []).filter(v => v.holds?.length).map((v, i) => ({ id: 'video:' + v.tag, tag: v.tag, video: v, label: v.uploader || `video-${i + 1}` }));
+const videoSets = b => (b?.found?.videos || []).filter(v => v.holds?.length).map((v, i) => ({ id: 'video:' + v.tag, tag: v.tag, video: v, label: v.label || v.uploader || `video-${i + 1}` }));
 // A video's holds that are its climb's, and those found over a reach from its climb's line (the server marks them off,
 // and gives the rest their roles from what's left: backend/betalines.py): shown, and hidden unless asked for
 const onLine = v => (v.holds || []).filter(h => !h.off), offLine = v => (v.holds || []).filter(h => h.off);

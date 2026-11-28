@@ -190,6 +190,9 @@ with tempfile.TemporaryDirectory() as tmp:
         assert req(B, "DELETE", "/api/campaigns/abcdef", headers=AUTH)[0] == 200, "the owner may"
         theirs = req(B, "POST", "/api/projects", {"name": "the site's"}, AUTH)[2]["id"]
         own = req(B, "POST", "/api/projects", {"name": "Ana's"}, ANA)[2]["id"]
+        st, _, r = req(B, "POST", f"/api/projects/{theirs}/reconstruct", {}, ANA)
+        assert st == 403 and "owner" in r["error"], (st, r)
+        assert req(B, "POST", f"/api/projects/{own}/reconstruct", {}, ANA)[0] != 403, "its own"
         assert req(B, "DELETE", f"/api/projects/{theirs}", headers=ANA)[0] == 403, "another's project is the owner's to delete"
         st, _, r = req(B, "DELETE", f"/api/projects/{own}", headers=ANA)
         assert st == 200 and req(B, "GET", f"/api/projects/{own}", headers=AUTH)[2].get("deleted_at"), "its own, only marked"
@@ -224,6 +227,29 @@ with tempfile.TemporaryDirectory() as tmp:
         log = admin("changes", {})[2]["changes"]
         assert [c["who"] for c in log[:2]] == ["the owner (admin page)"] * 2 and all(c["revertable"] for c in log[:2]), log[:4]
         assert {log[2]["reverted_by"], log[3]["reverted_by"]} == {log[0]["id"], log[1]["id"]}, "each says what put it back"
+        # a video's beta as found, changed by an editor: renamed, a hold's role, a hold left out, hidden; each put back
+        holds = [{"id": 0, "p": [0, 0, 0], "role": "start"}, {"id": 1, "p": [0, 1, 0], "role": "hand"}, {"id": 2, "p": [0, 2, 0], "role": "foot", "off": True}]
+        beta.save(tmp / "data" / "meshes" / mid, {"status": "done", "videos": [{"url": "https://youtu.be/abcdefghijk", "tag": "0123abcd", "holds": holds, "frames": 1},
+                                                                             {"url": "https://youtu.be/bbcdefghijk", "tag": "4567abcd", "holds": holds[:1], "frames": 1}]})
+        vid = f"/api/meshes/{mid}/beta/videos/0123abcd"
+        found = lambda h=None: {v["tag"]: v for v in req(B, "GET", f"/api/meshes/{mid}/beta", headers=h)[2]["found"]["videos"]}     # noqa: E731
+        assert req(B, "POST", vid, {"name": "Ana Climber"}, ANA)[0] == 200
+        assert req(B, "POST", vid, {"hold": {"id": 1, "role": "finish"}}, ANA)[0] == 200
+        assert req(B, "POST", vid, {"hold": {"id": 0, "drop": True}}, ANA)[0] == 200
+        assert req(B, "POST", vid, {"hold": {"id": 2, "keep": True}}, ANA)[0] == 200
+        assert req(B, "POST", vid, {"hold": {"id": 9, "role": "hand"}}, ANA)[0] == 400
+        assert req(B, "POST", vid, {"name": "x"}, {"Authorization": "Bearer nobody"})[0] == 401
+        v = found()["0123abcd"]
+        assert v["label"] == "Ana Climber" and [(h["id"], h["role"], bool(h.get("off"))) for h in v["holds"]] == [(1, "finish", False), (2, "foot", False)], v
+        assert [h.get("dropped") for h in found(AUTH)["0123abcd"]["holds"]] == [True, None, None], "editors see what's left out"
+        assert req(B, "POST", vid, {"hidden": True}, ANA)[0] == 200
+        assert "0123abcd" not in found() and found(AUTH)["0123abcd"]["hidden"], "hidden from visitors, not editors"
+        bv = [c for c in admin("changes", {"kind": "beta-video"})[2]["changes"]]
+        assert len(bv) == 5 and all(c["who"] == "Ana" for c in bv) and "hidden" in bv[0]["what"], bv
+        admin("change-revert", {"id": bv[0]["id"]})
+        assert "0123abcd" in found(), "shown again"
+        admin("change-revert", {"id": bv[-1]["id"]})
+        assert "label" not in found()["0123abcd"] and found()["0123abcd"]["holds"] == holds, "back to before the rename: no edits at all"
         admin("user-change", {"id": ana["user"]["id"], "role": "moderator"})
         admin("user-change", {"id": ana["user"]["id"], "disabled": True})
         assert req(B, "GET", "/api/account", headers=ANA)[2]["user"] is None and req(B, "DELETE", f"/api/meshes/{mid}/beta/sets/{mine['id']}", headers=ANA)[0] == 401

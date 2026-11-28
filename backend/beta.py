@@ -19,6 +19,8 @@ never rose are marked off ("stray"), as the viewer hides those off their climbs'
                  in pieces with spikes taken out, and how far it got
   beta_<tag>.jpg the video's placed frame most matched, with the tracks and holds drawn on it
   holds.json     holds marked by hand in the viewer: [{p: [x, y, z], role}]
+  beta_edits.json editors' changes to what was found, by video (apply_edits()): its name in lists, hidden, and its
+                 holds' roles, left out, or kept though set aside; kept apart so that finding beta again keeps them
   beta_poses.json per video, each frame's climber: {t, kp, sc, ref, H}, all their keypoints and scores,
                  the placed frame it matched and the homography into it, which scale.py measures them by
 
@@ -1139,6 +1141,108 @@ def find(mesh_dir: Path, photos: Path, log: Log, report: Callable[[str, dict], N
 # a video's climber was found to use. They're kept together in SETS_FILE. Before there were sets a mesh had one lot of
 # hand-marked holds (HOLDS_FILE): that reads as its first set, and becomes one in SETS_FILE when anything is changed.
 SETS_FILE = "betasets.json"
+EDITS_FILE = "beta_edits.json"
+EDIT_NAME_MAX = 60
+
+
+def load_edits(mesh_dir: Path) -> dict[str, dict]:
+    """Editors' changes to a mesh's beta from videos: {video tag: {name?, hidden?, holds?: {hold id: {role} | {drop} |
+    {keep}}}}."""
+    try:
+        got = json.loads((mesh_dir / EDITS_FILE).read_text())
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def put_edit(mesh_dir: Path, tag: str, entry: dict | None) -> dict | None:
+    """Make a video's edits entry (None or empty: none), as it is; returns it."""
+    edits = load_edits(mesh_dir)
+    if entry:
+        edits[tag] = entry
+    else:
+        edits.pop(tag, None)
+    tmp = mesh_dir / (EDITS_FILE + ".partial")
+    tmp.write_text(json.dumps(edits))
+    tmp.replace(mesh_dir / EDITS_FILE)
+    return edits.get(tag)
+
+
+def edit_video(mesh_dir: Path, tag: str, changes: dict, by: str | None = None) -> dict | None:
+    """Change a video's beta as an editor: {name: its name in lists (null: as found), hidden: bool, hold: {id, role} |
+    {id, drop: true} (left out) | {id, keep: true} (shown though set aside) | {id, reset: true} (as found)}. Returns its
+    edits entry.
+
+    Raises:
+        ValueError: no such video, or not such a change.
+    """
+    record = load(mesh_dir) or {}
+    video = next((v for v in record.get("videos") or [] if v.get("tag") == tag), None)
+    if video is None:
+        raise ValueError("there's no such video in this mesh's beta")
+    entry = dict(load_edits(mesh_dir).get(tag) or {})
+    holds = dict(entry.get("holds") or {})
+    if "name" in changes:
+        name = " ".join(str(changes["name"] or "").split())[:EDIT_NAME_MAX]
+        entry["name"] = name or None
+    if "hidden" in changes:
+        entry["hidden"] = bool(changes["hidden"])
+    if "hold" in changes:
+        one = changes["hold"] if isinstance(changes["hold"], dict) else {}
+        hid = str(one.get("id"))
+        if not any(str(h.get("id")) == hid for h in video.get("holds") or []):
+            raise ValueError("there's no such hold in that video's beta")
+        if one.get("reset"):
+            holds.pop(hid, None)
+        elif one.get("drop"):
+            holds[hid] = {"drop": True}
+        elif one.get("keep"):
+            holds[hid] = {"keep": True}
+        elif one.get("role") in ROLES:
+            holds[hid] = {"role": one["role"]}
+        else:
+            raise ValueError("a hold's change: role (" + ", ".join(ROLES) + "), drop, keep or reset")
+    entry["holds"] = holds
+    entry = {k: v for k, v in entry.items() if v} or None
+    if entry:
+        entry.update(by=by, at=time.time())
+    return put_edit(mesh_dir, tag, entry)
+
+
+def apply_edits(record: dict | None, edits: dict[str, dict], editor: bool = False) -> dict | None:
+    """A mesh's beta with editors' changes (load_edits()) made to it, in place: a video renamed (label; its name as
+    found kept as found_label), hidden (left out, or for an editor marked hidden), and its holds' roles changed
+    (found_role kept), left out (for an editor, marked dropped and off) or kept though set aside (off no more)."""
+    if not record or not edits:
+        return record
+    kept = []
+    for v in record.get("videos") or []:
+        e = edits.get(v.get("tag")) or {}
+        if e.get("hidden") and not editor:
+            continue
+        kept.append(v)
+        if e.get("name"):
+            v["found_label"], v["label"] = v.get("label"), e["name"]
+        if e.get("hidden"):
+            v["hidden"] = True
+        changes = e.get("holds") or {}
+        if changes:
+            out = []
+            for h in v.get("holds") or []:
+                c = changes.get(str(h.get("id")))
+                if c and c.get("drop"):
+                    if not editor:
+                        continue
+                    h.update(dropped=True, off=True)
+                elif c and c.get("keep"):
+                    h.update(off=False, kept=True)
+                elif c and c.get("role"):
+                    h.setdefault("found_role", h.get("role"))
+                    h["role"], h["edited"] = c["role"], True
+                out.append(h)
+            v["holds"] = out
+    record["videos"] = kept
+    return record
 SET_NAME_MAX, SET_AUTHOR_MAX, SETS_MOST, SET_HOLDS_MOST = 60, 40, 60, 100
 SETS_PER_USER = 10          # sets of beta one account may have on a mesh
 
