@@ -1132,11 +1132,32 @@ def hide_mesh(mid: str, why: str | None) -> tuple[dict, int]:
         q("UPDATE campaign_items SET note=? WHERE mesh_id=? AND status='hidden'", HIDDEN_NOTE + why, mid, write=True)
         q("UPDATE campaign_items SET status='hidden', note=?, updated=? WHERE mesh_id=? AND status='done'", HIDDEN_NOTE + why, time.time(),
           mid, write=True)
+        reopen_limited({r["campaign_id"] for r in q("SELECT DISTINCT campaign_id FROM campaign_items WHERE mesh_id=?", mid)})
     else:
         n = q("SELECT COUNT(*) n FROM campaign_items WHERE mesh_id=? AND status='hidden'", mid, one=True)["n"]
         q("UPDATE campaign_items SET status='done', note=NULL, updated=? WHERE mesh_id=? AND status='hidden'", time.time(), mid, write=True)
     meshes_changed()
     return {"hidden": why, "climbs": n}, 200
+
+
+def reopen_limited(camp_ids: set[str] | None = None) -> list[str]:
+    """Run again the areas done within a limit (max_meshes) that now have climbs to go within it: a mesh of theirs hidden
+    as a failure no longer counts towards the limit, which brings in the next (limit_scope()). Until Nov 27 they stayed
+    done with those climbs counted as to go (Magic Wood's 17, after 4 of its meshes were hidden).
+
+    Args:
+        camp_ids: only these areas; all, if None.
+
+    Returns:
+        The names of those run again.
+    """
+    camps = q("SELECT * FROM campaigns WHERE status='done' AND max_meshes IS NOT NULL AND max_meshes>0")
+    names = []
+    for camp in camps:
+        if (camp_ids is None or camp["id"] in camp_ids) and ordered_pending(camp):
+            q("UPDATE campaigns SET status='running', only_retries=0, note=NULL WHERE id=? AND status='done'", camp["id"], write=True)
+            names.append(camp["name"])
+    return names
 
 
 def mesh_count(no_old: bool = False) -> str:
@@ -17518,6 +17539,10 @@ def main() -> None:
     settled = settle_too_few_placed()
     if settled:
         print(f"{settled} area climb(s) that failed as COLMAP placed too few photos now count as skipped, as they would now", flush=True)
+    reopened = reopen_limited()
+    if reopened:
+        print(f"area(s) with climbs to go within their limit, as some of their meshes were hidden, run again: {', '.join(reopened)}",
+              flush=True)
     apply_settings()
     if not diagnostics.allow_tracing():     # so that py-spy can attach to it, from a stall's dump or inside its container
         print("diagnostics: couldn't let py-spy attach to this process; a thread dump will only have Python's side", flush=True)

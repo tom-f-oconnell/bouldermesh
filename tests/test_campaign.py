@@ -97,6 +97,8 @@ server.pipeline.steps = lambda: []
 # machine (a tmpfs on hal) has more or less room as others use it, and stopped areas mid-test now and then
 server.CAMPAIGN_MIN_FREE = 0
 server.init_db()
+with server.db() as con:    # readable links' tables, as main() makes them: the climbs list gives each climb's slug
+    server.links_mod.init(con)
 server.settings().update({"areas.meshes": "climbs"})    # each climb meshed on its own, but in "a boulder's climbs meshed together"
 
 
@@ -4335,6 +4337,26 @@ finally:
     server.q("DELETE FROM campaigns WHERE id='hd0000000001'", write=True)
     server.q("DELETE FROM meshes WHERE id='hm0000000001'", write=True)
 print("a mesh hidden as a failure OK")
+# an area done within its limit, one of whose meshes is hidden: the next climb comes within its limit, so it runs again
+server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status,max_meshes) VALUES('hl0000000001','Hide Limit','0','popularity',?,'done',1)",
+         time.time(), write=True)
+server.q("INSERT INTO meshes(id,name,filename,source,created) VALUES('hm0000000002','Lim','m.glb','project:hp0000000002',?)", time.time(), write=True)
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status,mesh_id) VALUES('hl0000000001','l1',1,'L1','done','hm0000000002')",
+         write=True)
+server.q("INSERT INTO campaign_items(campaign_id,source_id,rank,name,status) VALUES('hl0000000001','l2',2,'L2','pending')", write=True)
+limit_status = lambda: server.q("SELECT status FROM campaigns WHERE id='hl0000000001'", one=True)["status"]
+try:
+    assert server.reopen_limited() == [] and limit_status() == "done", "nothing to go within its limit: still done"
+    server.hide_mesh("hm0000000002", "a card")
+    assert limit_status() == "running", "its next climb is within its limit now"
+    assert [i["source_id"] for i in server.ordered_pending(server.q("SELECT * FROM campaigns WHERE id='hl0000000001'", one=True))] == ["l2"]
+    server.q("UPDATE campaigns SET status='done' WHERE id='hl0000000001'", write=True)    # as before Nov 27: the server starting runs it
+    assert server.reopen_limited() == ["Hide Limit"] and limit_status() == "running"
+finally:
+    server.q("DELETE FROM campaign_items WHERE campaign_id='hl0000000001'", write=True)
+    server.q("DELETE FROM campaigns WHERE id='hl0000000001'", write=True)
+    server.q("DELETE FROM meshes WHERE id='hm0000000002'", write=True)
+print("an area done within its limit, with a mesh hidden, runs again OK")
 # an area at low priority: its projects' jobs here go after everyone else's, and after regular areas' climbs; its
 # projects' jobs waiting on machines, and those made later, go after the others there; kept in the database
 server.q("INSERT INTO campaigns(id,name,area_id,ord,created,status) VALUES('lw0000000001','Low Area','0','popularity',?,'stopped')",
