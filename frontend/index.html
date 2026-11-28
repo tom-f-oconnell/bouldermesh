@@ -1872,19 +1872,33 @@ function showObject(obj, label, plainBacks = false){
 let pieces = null;
 let indexEdits = 0;
 const hiddenMaterial = new THREE.MeshBasicMaterial({ color: 0xff5544, transparent: true, opacity: .4, side: THREE.DoubleSide, depthWrite: false });
-// lod: the mesh is a copy packed for viewing (backend/glbpack.py), whose faces are in another order, and fewer in a
-// preview: the server puts its pieces in that order, as many for each primitive as it has. v: the mesh's version.
-async function attachPieces(gltf, id, lod = null, v = null){
-  const res = await fetch(`/api/meshes/${id}/cleanup`);
-  if (res.status === 404) { pieces = { id, deleted: true, never: true }; return ''; }   // an upload, which is only cleaned up if asked
-  if (!res.ok) return '';
-  const record = await res.json();
-  if (record.deleted) { pieces = { id, deleted: true, undo: record.undo }; return ''; }
+// A mesh's cleanup and its faces' pieces for a copy of it (lod), fetched: {never} for an upload that has none, {none}
+// if the server has none to give, {record} for one deleted, {error} if they wouldn't load, else {record, all}
+async function fetchPieces(id, lod = null, v = null){
   try {
+    const res = await fetch(`/api/meshes/${id}/cleanup`);
+    if (res.status === 404) return { never: true };     // an upload, which is only cleaned up if asked
+    if (!res.ok) return { none: true };
+    const record = await res.json();
+    if (record.deleted) return { record };
     const bin = await fetch(`/meshes/${id}/cleanup_faces.bin?${[lod ? `lod=${lod}` : '', v ? `v=${v}` : ''].filter(Boolean).join('&')}`);
     if (!bin.ok) throw new Error(`the server answered ${bin.status}`);
-    const buf = await bin.arrayBuffer(), all = record.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf);
-    const meshes = new Map();
+    const buf = await bin.arrayBuffer();
+    return { record, all: record.label_bytes === 2 ? new Uint16Array(buf) : new Uint32Array(buf) };
+  } catch (error) { return { error }; }
+}
+// lod: the mesh is a copy packed for viewing (backend/glbpack.py), whose faces are in another order, and fewer in a
+// preview: the server puts its pieces in that order, as many for each primitive as it has. v: the mesh's version.
+// got: what fetchPieces() gave, if it's been fetched already
+async function attachPieces(gltf, id, lod = null, v = null, got = null){
+  got ||= await fetchPieces(id, lod, v);
+  if (got.never) { pieces = { id, deleted: true, never: true }; return ''; }
+  if (got.none) { pieces = null; return ''; }
+  const record = got.record;
+  if (record?.deleted) { pieces = { id, deleted: true, undo: record.undo }; return ''; }
+  try {
+    if (got.error) throw got.error;
+    const all = got.all, meshes = new Map();
     gltf.scene.traverse(o => { const at = o.isMesh && !o.userData.hiddenPieces && gltf.parser.associations.get(o); if (at) meshes.set(`${at.meshes}/${at.primitives}`, o); });
     let start = 0;
     const slices = record.primitives.map(p => {
@@ -1902,8 +1916,27 @@ async function attachPieces(gltf, id, lod = null, v = null){
     });
     pieces = { id, record, parts, editing: false, lod, total: all.length };
     applyPieces();
+    if (!editor) slimPieces();
     return '';
   } catch (e) { pieces = null; return `Showing the whole mesh, as its list of stray pieces wouldn't load: ${e.message}`; }
+}
+// What only editing needs, let go once a visitor's faces are hidden, as a visitor never edits: the copy's own order of
+// its faces, each one's piece, and which of them each drawn face is (18 bytes a face, 56 MB of Spots of Time's 3.1M).
+// The faces drawn and those hidden are all that's kept. Editing opens the mesh again.
+function slimPieces(){
+  for (const part of pieces.parts) {
+    part.faces = part.labels = null;
+    part.mesh.userData.faceList = part.hidden.userData.faceList = null;
+  }
+  pieces.slim = true;
+}
+// What GLTFLoader keeps of a file it's read, once its meshes are made: the file itself, and what was read of it, such
+// as the faces as they came, which hiding pieces replaces (the whole of a mesh loaded unpacked, 90 MB for Spots of Time)
+function forgetLoad(gltf){
+  const parser = gltf?.parser;
+  if (!parser) return;
+  parser.cache.removeAll(); parser.primitiveCache = {};
+  if (parser.extensions?.KHR_binary_glTF) parser.extensions.KHR_binary_glTF.body = null;
 }
 function applyPieces(){
   const hide = new Set(pieces.record.removed);
@@ -1930,6 +1963,7 @@ function applyPieces(){
     part.hidden.geometry.setIndex(new THREE.BufferAttribute(hidden, 1));
     part.hidden.userData.faceList = hiddenFaces;
     part.hidden.visible = pieces.editing;
+    part.middles = null;     // onHiddenFace()'s, in the order drawn
   }
   if (betaState?.group) drawBeta();     // holds on faces hidden now go with them, and those shown again come back
   refreshLines();     // its climbs' lines are laid on what shows
@@ -1951,12 +1985,15 @@ function renderPieces(){
   const pct = 100 * hiddenFaces / r.faces, what = r.removed.length ? `${r.removed.length} stray piece${r.removed.length === 1 ? '' : 's'} hidden, ${pct < 0.1 ? 'under 0.1' : pct.toFixed(1)}% of faces.` : 'No pieces hidden.';
   if (!pieces.editing) {
     el.innerHTML = `${what}<div class="row"><button class="sm sec edit">Edit</button><button class="sm sec del" title="Show the whole mesh again. Its files were never changed.">Remove cleanup</button></div>`;
-    el.querySelector('.edit').onclick = () => { pieces.editing = true; applyPieces(); renderPieces(); };     // the view stays as it is: See everything frames it all
+    el.querySelector('.edit').onclick = () => {     // the view stays as it is: See everything frames it all
+      if (pieces.slim) return viewMesh(pieces.id);     // opened as a visitor: again, with what editing needs (slimPieces())
+      pieces.editing = true; applyPieces(); renderPieces();
+    };
     el.querySelector('.del').onclick = deleteCleanup;
     return;
   }
   const tools = Object.entries(TOOLS).map(([k, t]) => `<button data-tool="${k}" class="${editTool === k ? 'on' : ''}" title="${esc(t.help)}">${t.label}</button>`).join('');
-  const needsAll = editTool !== 'move' && pieces.lod === 'preview';
+  const needsAll = editTool !== 'move' && simplifiedCopy(pieces.lod);
   el.innerHTML = `${pieces.busy ? '<b>Working on it…</b>' : esc(TOOLS[editTool].help)}<br>${what}
     <div class="row"><span class="seg tools">${tools}</span>${editTool === 'hide' ? `<label title="Also hide the faces behind the nearest surface, inside the line"><input type="checkbox" class="behind" ${hideBehind ? 'checked' : ''}> and what's behind</label>` : ''}</div>
     ${needsAll ? '<div class="row"><small>This needs every face, and only a simplified copy is loaded.</small><button class="sm sec all">Load all faces</button></div>' : ''}
@@ -1966,7 +2003,7 @@ function renderPieces(){
   el.querySelector('.undo').onclick = undoCleanup;
   el.querySelector('.fit').onclick = fitEverything;
   el.querySelector('.redo').onclick = redoCleanup;
-  el.querySelector('.all')?.addEventListener('click', () => { if (detailLoad?.id === pieces.id && detailLoad.steps?.length) fetchDetail(detailLoad); else toast('Open the mesh again with Detail set to Full', 6000); });
+  el.querySelector('.all')?.addEventListener('click', () => { if (detailLoad?.id === pieces.id && detailLoad.steps) allFaces(detailLoad); else toast('Open the mesh again with Detail set to Full', 6000); });
   el.querySelector('.behind')?.addEventListener('change', ev => { hideBehind = ev.target.checked; });
   el.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => { editTool = b.dataset.tool; renderPieces(); });
   el.querySelectorAll('[data-piece]').forEach(b => b.onclick = () => togglePiece(+b.dataset.piece));
@@ -2014,6 +2051,7 @@ const TOOLS = {
   show: { label: 'Show area', help: 'Draw around hidden (red) faces to show them again, whatever is in front of them.' },
 };
 let editTool = 'move', hideBehind = false;
+const simplifiedCopy = lod => lod === 'preview' || lod === 'middle';    // fewer faces than the mesh has: not for editing
 const drawing = () => !!pieces?.editing && editTool !== 'move';
 function syncTool(){
   controls.enableRotate = !drawing();     // a finger or the left button draws; right-drag, the wheel and two fingers still move the view
@@ -2055,7 +2093,7 @@ for (const t of ['pointerup', 'pointercancel']) renderer.domElement.addEventList
 async function finishStroke(s){
   const op = editTool;
   try {
-    if (pieces.lod === 'preview') throw new Error('That needs every face: press "Load all faces" first');
+    if (simplifiedCopy(pieces.lod)) throw new Error('That needs every face: press "Load all faces" first');
     if (op !== 'cut' && s.points.length < 3) throw new Error('Draw all the way around the faces');
     pieces.busy = true; renderPieces();
     await new Promise(r => requestAnimationFrame(() => setTimeout(r)));    // the panel says so before the work starts
@@ -2768,6 +2806,7 @@ async function loadMeshUrl(url, filename, label, id, local = false){
       }
       const { gltf, note: textureNote } = got;
       const piecesNote = id ? await attachPieces(gltf, id, lod, v) : '';
+      forgetLoad(gltf);
       obj = gltf.scene; note = [textureNote, piecesNote].filter(Boolean).join(' ');
       if (pk) detail = { id, pk, v, gltf, base, url, lod, first, began, firstBytes: pk[lod] + (first && pk.texture.bytes[first] || 0) };
     }
@@ -2822,9 +2861,9 @@ let detailChoice = 'auto'; try { detailChoice = localStorage.getItem('bm_detail'
 let detailLoad = null;    // {id, pk, gltf, base, url, lod, first, began, firstBytes, steps, abort, fetching}: what's to come of the mesh in view
 // a phone or tablet, or a device short of memory, gets no more than 4096: its screen shows no more, and an 8192 texture
 // takes 256 MB of its graphics memory
+const smallDevice = () => phone.matches || matchMedia('(pointer:coarse)').matches || (navigator.deviceMemory || 8) <= 4;
 function deviceSide(){
-  const small = phone.matches || matchMedia('(pointer:coarse)').matches || (navigator.deviceMemory || 8) <= 4;
-  return Math.min(renderer.capabilities.maxTextureSize, small ? 4096 : 8192);
+  return Math.min(renderer.capabilities.maxTextureSize, smallDevice() ? 4096 : 8192);
 }
 // Graphics memory the mesh in view takes, roughly, from its list's pack: its textures' pixels at 4 bytes and a third
 // more for mipmaps, and each face's share of positions, normals, texture coordinates and indices. An iPhone or iPad
@@ -2887,8 +2926,13 @@ function moreDetail(d){
     if (want > fit) over.push({ kind: 'texture', side: want, bytes: t.bytes[want] || 0, gpu: cost(want, d.lod) });
   }
   if (d.lod === 'preview') {
-    const fits = cost(side, 'full') <= budget;
-    (fits ? steps : over).push({ kind: 'shape', bytes: d.pk.full, gpu: cost(fits ? side : over[0]?.side || side, 'full') });
+    // a phone gets a big mesh's middle copy (glbpack.py) in place of every face, as does a device that hasn't room for
+    // every face; every face is offered on the button then
+    const shape = (lod, at = side) => ({ kind: 'shape', lod, bytes: d.pk[lod], gpu: cost(at, lod) });
+    const mine = smallDevice() && d.pk.middle ? 'middle' : 'full';
+    if (cost(side, mine) <= budget) steps.push(shape(mine));
+    else if (d.pk.middle && mine === 'full' && cost(side, 'middle') <= budget) steps.push(shape('middle'));
+    if (!steps.some(s => s.lod === 'full')) over.push(shape('full', over[0]?.side || side));
   }
   Object.assign(d, { steps, over, abort: new AbortController() });
   detailLoad = d;
@@ -2896,6 +2940,13 @@ function moreDetail(d){
   const bytes = steps.reduce((n, s) => n + s.bytes, 0), rate = linkRate(d);
   if (detailChoice === 'full' || (detailChoice === 'auto' && !slowLink() && bytes / rate < DETAIL_SECONDS)) return fetchDetail(d);
   showDetail(`Full detail (${mb(bytes)} MB)`, () => fetchDetail(d));
+}
+// Every face, for editing: the texture still to come, if any, and every face in place of the copy shown
+function allFaces(d){
+  const full = { kind: 'shape', lod: 'full', bytes: d.pk.full, gpu: (d.gpu || 0) + ((d.pk.faces?.full || 0) - (d.pk.faces?.[d.lod] || 0)) * GPU_FACE_BYTES };
+  d.steps = [...d.steps.filter(s => s.kind === 'texture' && !s.done), full];
+  d.over = (d.over || []).filter(s => s.kind !== 'shape');
+  fetchDetail(d);
 }
 // More than this device is taken to have room for, if it's asked for (and if it drops the view, its budget falls)
 function offerOver(d){
@@ -2915,7 +2966,8 @@ async function fetchDetail(d){
   for (const step of d.steps) {
     progress(0);
     try {
-      await (step.kind === 'texture' ? sharpenTexture : fullShape)(d, step, progress);
+      await (step.kind === 'texture' ? sharpenTexture : moreShape)(d, step, progress);
+      step.done = true;
     } catch (e) {
       if (detailLoad !== d) return done();
       reportError('mesh-detail', e, { mesh: d.id });
@@ -2976,10 +3028,13 @@ async function sharpenTexture(d, step, progress){
     old.dispose(); old.image?.close?.();
   }
 }
-// Every face, in place of the preview's: each of its meshes takes the new one's shape, keeping its material (and texture)
-async function fullShape(d, step, progress){
-  const buf = await (await fetchBlob(`${d.url}?lod=full${d.v ? `&v=${d.v}` : ''}`, progress, d.abort.signal)).arrayBuffer();
-  const full = await gltfLoader(0, true).parseAsync(buf, d.base), shapes = new Map();
+// More faces (step.lod: every face, or a big mesh's middle copy), in place of those shown: each of its meshes takes the
+// new one's shape, keeping its material (and texture). Its pieces come with it, so the new shape is hidden in the same
+// frame it's put in: fetched after, its stray pieces showed for as long as that took.
+async function moreShape(d, step, progress){
+  const lod = step.lod || 'full', cleanup = pieces?.id === d.id && pieces.parts ? fetchPieces(d.id, lod, d.v) : null;
+  const buf = await (await fetchBlob(`${d.url}?lod=${lod}${d.v ? `&v=${d.v}` : ''}`, progress, d.abort.signal)).arrayBuffer();
+  const full = await gltfLoader(0, true).parseAsync(buf, d.base), shapes = new Map(), got = await cleanup;
   full.scene.traverse(o => { const at = o.isMesh && full.parser.associations.get(o); if (at) shapes.set(`${at.meshes}/${at.primitives}`, o.geometry); });
   const taken = new Set();
   if (detailLoad === d) {
@@ -2993,9 +3048,9 @@ async function fullShape(d, step, progress){
       if (!g.attributes.normal) g.computeVertexNormals();
       delete o.userData.faceList; delete o.userData.part;
     });
-    d.lod = 'full';
+    d.lod = lod;
     if (pieces?.id === d.id && pieces.parts) {
-      const note = await attachPieces(d.gltf, d.id, 'full', d.v);
+      const note = await attachPieces(d.gltf, d.id, lod, d.v, got);
       if (note) viewNote(note);
       if (editing && pieces?.parts) { pieces.editing = true; applyPieces(); }
       renderPieces();
@@ -6127,23 +6182,27 @@ const REACH = (() => {      // a sphere of radius 1 as three circles, one about 
   return new THREE.BufferGeometry().setFromPoints(pts);
 })();
 // Whether a hold (a point in the node's coordinates, as beta.json has it) is on a face the cleanup hides: the face
-// nearest it, by its middle. Each part's face middles are worked out once.
+// nearest it, by its middle, of those drawn and those hidden. Each part's face middles are worked out once, in that
+// order (applyPieces() forgets them), so the faces drawn and hidden are all it needs.
 function onHiddenFace(p, node){
   if (!pieces?.parts || !pieces.record?.removed?.length) return false;
-  const hide = new Set(pieces.record.removed), world = node.localToWorld(new THREE.Vector3().fromArray(p));
+  const world = node.localToWorld(new THREE.Vector3().fromArray(p));
   let best = Infinity, hidden = false;
   for (const part of pieces.parts) {
-    const pos = part.mesh.geometry.attributes.position, F = part.faces, n = part.labels.length;
+    const pos = part.mesh.geometry.attributes.position, shown = part.mesh.geometry.index.array, gone = part.hidden.geometry.index.array;
+    const split = shown.length / 3, n = split + gone.length / 3;
     if (!part.middles) {
       part.middles = new Float32Array(n * 3);
       const at = (v, k) => k === 0 ? pos.getX(v) : k === 1 ? pos.getY(v) : pos.getZ(v);     // packed copies are quantized
-      for (let f = 0; f < n; f++) for (let k = 0; k < 3; k++)
-        part.middles[3 * f + k] = (at(F[3 * f], k) + at(F[3 * f + 1], k) + at(F[3 * f + 2], k)) / 3;
+      for (let f = 0; f < n; f++) {
+        const F = f < split ? shown : gone, o = 3 * (f < split ? f : f - split);
+        for (let k = 0; k < 3; k++) part.middles[3 * f + k] = (at(F[o], k) + at(F[o + 1], k) + at(F[o + 2], k)) / 3;
+      }
     }
     const q = part.mesh.worldToLocal(world.clone()), M = part.middles;
     for (let f = 0; f < n; f++) {
       const dx = M[3 * f] - q.x, dy = M[3 * f + 1] - q.y, dz = M[3 * f + 2] - q.z, d = dx * dx + dy * dy + dz * dz;
-      if (d < best) { best = d; hidden = hide.has(part.labels[f]); }
+      if (d < best) { best = d; hidden = f >= split; }
     }
   }
   return hidden;

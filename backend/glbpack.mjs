@@ -1,6 +1,6 @@
 // Packs a reconstruction's GLB for the viewer to download (glbpack.py says what for, and runs this with node or deno):
 //
-//     glbpack.mjs <source.glb> <out dir> <preview faces> <make a preview from faces>
+//     glbpack.mjs <source.glb> <out dir> <preview faces> <make a preview from faces> [<middle faces> <make a middle from faces>]
 //
 // writes into <out dir>
 //   full.glb             the same meshes, primitives and faces, compressed with meshoptimizer (EXT_meshopt_compression):
@@ -11,7 +11,9 @@
 //   preview.glb          if <preview faces> isn't 0 and the source has at least <make a preview from> faces: simplified to
 //                        about <preview faces>,
 //   preview.faces.bin    and for each of its faces a source face it shares a corner with, so in the same piece
-// (the preview's record has "error": the most any of its primitives was moved, as a share of that one's size)
+//   middle.glb           likewise, if <middle faces> isn't 0 and the source has at least <make a middle from> faces: for
+//   middle.faces.bin     phones, which get it in place of every face (a third of Spots of Time's 3.1M)
+// (a simplified copy's record has "error": the most any of its primitives was moved, as a share of that one's size)
 // and prints what it made as JSON. It decodes what it wrote and checks it against the source before it says so.
 import fs from 'node:fs';
 import { MeshoptEncoder as E } from './vendor/meshoptimizer/meshopt_encoder.mjs';
@@ -20,6 +22,7 @@ import { MeshoptDecoder as D } from './vendor/meshoptimizer/meshopt_decoder.mjs'
 
 const POSITION_BITS = 16, NORMAL_BITS = 12;
 const PREVIEW_ERROR = 0.01;      // the most a preview may differ from the source, as a share of its size
+const MIDDLE_ERROR = 0.002;      // and the middle copy, which is looked at as closely as every face
 const GLB = 0x46546c67, JSON_CHUNK = 0x4e4f534a, BIN_CHUNK = 0x004e4942;
 const TYPES = { 5126: Float32Array, 5125: Uint32Array, 5123: Uint16Array, 5121: Uint8Array };
 const WIDTH = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
@@ -211,8 +214,8 @@ function check(glb, checks, exact) {
 }
 
 async function main() {
-  const [path, outDir, previewArg, previewFromArg] = process.argv.slice(2);
-  if (!path || !outDir) throw new Error('usage: glbpack.mjs <source.glb> <out dir> [preview faces] [make a preview from faces]');
+  const [path, outDir, previewArg, previewFromArg, middleArg, middleFromArg] = process.argv.slice(2);
+  if (!path || !outDir) throw new Error('usage: glbpack.mjs <source.glb> <out dir> [preview faces] [make a preview from faces] [middle faces] [make a middle from faces]');
   await Promise.all([E.ready, S.ready, D.ready]);
   const started = performance.now();
   const src = readGlb(fs.readFileSync(path)), { json } = src;
@@ -245,21 +248,25 @@ async function main() {
   const full = pack(src, prim => ({ faces: prim.faces, origin: Uint32Array.from({ length: prim.faces.length / 3 }, (_, i) => i) }), 'full');
   check(full.glb, full.checks, true);
   write('full', full);
-  if (previewFaces > 0 && offset >= previewFrom) {
-    const share = previewFaces / offset;
+  // a copy simplified to about `want` faces, each primitive by the same share, moving none more than maxError of its size
+  const simpler = (lod, want, maxError) => {
+    const share = want / offset;
     let worst = 0;
-    const preview = pack(src, prim => {
+    const r = pack(src, prim => {
       const target = Math.max(3, Math.floor(prim.faces.length * share / 3) * 3);
-      const [faces, error] = S.simplify(prim.faces, prim.attributes.POSITION.values, 3, target, PREVIEW_ERROR, []);
+      const [faces, error] = S.simplify(prim.faces, prim.attributes.POSITION.values, 3, target, maxError, []);
       worst = Math.max(worst, error);
       const corner = new Uint32Array(prim.vertices);      // for each vertex, a face it's a corner of
       for (let i = 0; i < prim.faces.length; i++) corner[prim.faces[i]] = Math.floor(i / 3);
       return { faces, origin: Uint32Array.from({ length: faces.length / 3 }, (_, j) => corner[faces[3 * j]]) };
-    }, 'preview');
-    check(preview.glb, preview.checks, false);
-    write('preview', preview);
-    made.preview.error = worst;
-  }
+    }, lod);
+    check(r.glb, r.checks, false);
+    write(lod, r);
+    made[lod].error = worst;
+  };
+  if (previewFaces > 0 && offset >= previewFrom) simpler('preview', previewFaces, PREVIEW_ERROR);
+  const middleFaces = +(middleArg || 0), middleFrom = middleFromArg === undefined ? 2 * middleFaces : +middleFromArg;
+  if (middleFaces > 0 && offset >= middleFrom) simpler('middle', middleFaces, MIDDLE_ERROR);
   made.source_faces = offset;
   made.seconds = Math.round((performance.now() - started) / 100) / 10;
   console.log(JSON.stringify(made));

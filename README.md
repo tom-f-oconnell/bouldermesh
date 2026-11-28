@@ -675,7 +675,9 @@ OpenMVS's 11-photo sample set takes 3-4 minutes, and a 100-photo harvest about a
 A large mesh shows within seconds, as a simplified copy (about 150,000 faces, which the admin page changes, or turns off
 with 0) with its texture at 2048 pixels; then its
 texture as sharp as the device can use (4096 on phones and tablets, up to 8192 elsewhere) and all its faces come in the
-background, and *Loading detail…* in the view's bar says how far that's got. ⚙ *Detail* chooses:
+background, and *Loading detail…* in the view's bar says how far that's got. A phone or tablet gets a mesh of 2 million
+faces or more (the hardest climbs' mostly) as a copy of about a million in place of all of them, with all of them on
+the bar's *More detail* button; editing its stray pieces loads all of them first. ⚙ *Detail* chooses:
 *Auto* (the default) fetches the rest at once unless the connection is slow (data saving on, or the preview came too
 slowly for the rest to take under 30 s), when the bar offers *Full detail (N MB)* instead; *Full* always fetches it, and
 *Preview* only on that button. The server makes these copies itself for every GLB mesh, new or old (`backend/glbpack.py`,
@@ -791,8 +793,9 @@ click any piece to hide or show it (resting the mouse on one tints it first), an
 mesh again. While editing, *Cut* draws a line that cuts through everything under it, splitting any piece it crosses
 from edge to edge into parts to hide or show; *Hide area* hides the faces you draw around (only the nearest surface,
 unless *and what's behind* is ticked); *Show area* shows hidden ones again; *Undo* takes back the last 20 changes, any
-of these, *Back to automatic* or *Remove cleanup*. Cuts and areas need every face loaded, not a preview. The download
-button leaves out whatever is hidden. It needs numpy, and only works on GLB meshes.
+of these, *Back to automatic* or *Remove cleanup*. Cuts and areas need every face loaded, not a simplified copy
+(*Load all faces* fetches them). The download button leaves out whatever is hidden. It needs numpy, and only works
+on GLB meshes.
 
 Rock no photo saw can hide rock that was photographed: the inside of an arch is all most photos show, and from
 outside only its grey back is seen. With ⚙ *Walls in the way: See-through* (the default), a mesh's grey backs show
@@ -1668,11 +1671,11 @@ accepted. `GET /api/status` says which (`editing`: open, token or none, and `edi
     POST /worker/api/jobs/{id}/{log,output,done} · GET /worker/api/jobs/{id}/output (how much has come)
     GET  /api/geojson · GET /meshes/{id}/{file} · GET /photos/{pid}/{file} · GET /photos/{pid}/rejected/{file}
     GET  /meshes/{id}/{texture}?max=2048|4096|8192       a texture as a JPEG at most that many pixels across
-    GET  /meshes/{id}/{glb}?lod=full|preview             its copy packed for viewing, all its faces or simplified (404 until
+    GET  /meshes/{id}/{glb}?lod=full|middle|preview      its copy packed for viewing, all its faces or simplified (404 until
                                                         made; GET /api/meshes says which there are, as "pack", with sizes)
     GET  /meshes/{id}/{file}?v=<version>                 kept a year (textures and splats a day) if that's the mesh's version
                                                         now (its "v" in GET /api/meshes), else not kept
-    GET  /meshes/{id}/cleanup_faces.bin?lod=full|preview  its cleanup's piece of each face, in that copy's order
+    GET  /meshes/{id}/cleanup_faces.bin?lod=full|middle|preview  its cleanup's piece of each face, in that copy's order
     GET  /api/meshes/{id}/nearby?radius=50               the meshes within that many metres (5-1000), nearest first, 40 at
                                                         most: east_m, north_m, metres_per_unit, heading, pack, v each
     GET  /api/meshes/{id}/terrain?radius=50              the ground around it: {source, nx, ny, west_m, north_m (its NW

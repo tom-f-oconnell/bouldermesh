@@ -5,6 +5,8 @@ everything else on the server. glbpack.mjs makes them with meshoptimizer, run by
   packed/<stem>.preview.glb       for a mesh of at least twice the faces a preview is to have (the admin page's
                                   viewer.preview_faces, PREVIEW_FACES by default), simplified to about that many
                                   (Caveman, to 150,000: 1.1 MB), to show while the rest comes
+  packed/<stem>.middle.glb        for a mesh of at least twice MIDDLE_FACES, simplified to about that many: what phones
+                                  get in place of every face (only big meshes need it: 19 of 836 on Nov 27)
   packed/<stem>.<lod>.faces.bin   which of the GLB's own faces each of a packed one's comes from, so its cleanup applies
   packed/<stem>.json              what was made, from which version of the GLB: written last, so it says the rest is there
 
@@ -23,9 +25,10 @@ from typing import Callable
 
 Log = Callable[[str], None]
 VERSION = 1
-LODS = ("full", "preview")
+LODS = ("full", "middle", "preview")
 DIR = "packed"
 PREVIEW_FACES = 150_000     # about 1 MB; 0: no previews
+MIDDLE_FACES = 1_000_000    # 40 MB of a phone's graphics memory, against 124 MB for Spots of Time's 3.1M
 SCRIPT = Path(__file__).with_name("glbpack.mjs")
 
 
@@ -61,14 +64,17 @@ def record(src: Path) -> dict | None:
     return r if r.get("version") == VERSION and r.get("source") == now else None
 
 
-def made_for(rec: dict, preview_faces: int) -> bool:
-    """Whether a record's copies were made for previews of preview_faces faces (or for none, if 0)."""
-    return rec.get("preview_target", PREVIEW_FACES) == preview_faces
+def made_for(rec: dict, preview_faces: int, middle_faces: int = MIDDLE_FACES) -> bool:
+    """Whether a record's copies were made for previews of preview_faces faces (or for none, if 0), and for middle
+    copies of middle_faces, if the mesh is big enough to have one (those packed before they were made have none)."""
+    small = not middle_faces or rec.get("source_faces", 0) < 2 * middle_faces
+    middle_ok = rec.get("middle_target") == middle_faces or (small and "middle" not in rec)
+    return rec.get("preview_target", PREVIEW_FACES) == preview_faces and middle_ok
 
 
 def path(src: Path, lod: str, faces: bool = False) -> Path | None:
-    """A packed copy of src (lod "full" or "preview"), or with faces its faces' origins; None if there's none for this
-    version of src."""
+    """A packed copy of src (lod "full", "middle" or "preview"), or with faces its faces' origins; None if there's none
+    for this version of src."""
     r = record(src)
     if not r or not r.get(lod):
         return None
@@ -86,15 +92,18 @@ def image_files(src: Path) -> list[str]:
     return [i["uri"] for i in j.get("images", []) if i.get("uri") and not i["uri"].startswith("data:") and "/" not in i["uri"]]
 
 
-def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float = 900, preview_faces: int = PREVIEW_FACES) -> dict:
+def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float = 900, preview_faces: int = PREVIEW_FACES,
+         middle_faces: int = MIDDLE_FACES) -> dict:
     """Make src's packed copies, replacing any from before, at a low priority.
 
     Args:
         extra: kept in the record too (the server's sizes of its textures).
         preview_faces: about how many faces a preview has, made only for a mesh of at least twice as many; 0: none.
+        middle_faces: the same for the middle copy, which phones get in place of every face.
 
     Returns:
-        The record: {"full": {"bytes", "faces"}, "preview": the same or absent, "source_faces", "seconds", ...}.
+        The record: {"full": {"bytes", "faces"}, "preview" and "middle": the same, with "error", or absent,
+        "source_faces", "seconds", ...}.
     """
     cmd = runtime()
     if not cmd:
@@ -107,8 +116,9 @@ def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float 
     made_from = stamp(src)
     try:
         nice = ["nice", "-n", "15"] if shutil.which("nice") else []
-        r = subprocess.run([*nice, *cmd, str(src), str(tmp), str(preview_faces), str(2 * preview_faces)], capture_output=True,
-                           text=True, timeout=timeout, env={**os.environ, "DENO_NO_UPDATE_CHECK": "1"})
+        r = subprocess.run([*nice, *cmd, str(src), str(tmp), str(preview_faces), str(2 * preview_faces), str(middle_faces),
+                            str(2 * middle_faces)], capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, "DENO_NO_UPDATE_CHECK": "1"})
         if r.returncode:
             raise RuntimeError((r.stderr.strip().splitlines() or [f"exit status {r.returncode}"])[-1])
         made = json.loads(r.stdout.strip().splitlines()[-1])
@@ -120,12 +130,14 @@ def pack(src: Path, log: Log = print, extra: dict | None = None, timeout: float 
                     f.replace(dst)
                 else:
                     dst.unlink(missing_ok=True)
-        rec = {"version": VERSION, "source": made_from, "made": time.time(), "preview_target": preview_faces, **made, **(extra or {})}
+        rec = {"version": VERSION, "source": made_from, "made": time.time(), "preview_target": preview_faces,
+               "middle_target": middle_faces, **made, **(extra or {})}
         partial = out / f"{src.stem}.json.partial"
         partial.write_text(json.dumps(rec))
         partial.replace(_record_file(src))
         log(f"packed for viewing: {made['full']['bytes'] / 1e6:.1f} MB"
             + (f", and a preview of {made['preview']['faces']:,} faces, {made['preview']['bytes'] / 1e6:.1f} MB" if made.get("preview") else "")
+            + (f", and for phones {made['middle']['faces']:,} faces, {made['middle']['bytes'] / 1e6:.1f} MB" if made.get("middle") else "")
             + f" (from {src.stat().st_size / 1e6:.1f} MB, in {made['seconds']:.0f} s)")
         return rec
     finally:

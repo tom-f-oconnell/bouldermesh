@@ -160,6 +160,25 @@ with tempfile.TemporaryDirectory() as td:
     assert "preview" not in rec and glbpack.made_for(rec, 0), "0: no previews"
     print("repacking OK")
 
+    # --- the middle copy phones get, only for a mesh of at least twice its faces; one packed before middle copies were
+    # made, or for another size of them, is packed again, unless it's too small to have one
+    assert "middle" not in rec and glbpack.made_for(rec, 0) and glbpack.path(src, "middle") is None, "too small for one by default"
+    lines = []
+    rec = glbpack.pack(src, lines.append, preview_faces=1000, middle_faces=2000)
+    mid = rec["middle"]
+    assert 1600 <= mid["faces"] <= 2400 and rec["preview"]["faces"] < mid["faces"] and 0 < mid["error"] <= 0.002, mid
+    assert mid["bytes"] < rec["full"]["bytes"] and "for phones" in lines[0], lines
+    morigin = np.frombuffer(glbpack.path(src, "middle", faces=True).read_bytes(), "<u4")
+    assert len(morigin) == mid["faces"] and morigin.max() < FACES
+    ml = np.frombuffer(glbpack.labels(src, "middle", d / meshclean.FACES_FILE, 2), "<u2")
+    assert len(ml) == mid["faces"] and set(ml.tolist()) <= {0, 1, 2}
+    assert glbpack.made_for(rec, 1000, 2000) and not glbpack.made_for(rec, 1000, 3000) and not glbpack.made_for(rec, 1000)
+    old = {k: v for k, v in rec.items() if k not in ("middle", "middle_target")}
+    assert not glbpack.made_for(old, 1000, 2000) and glbpack.made_for(old, 1000, FACES // 2 + 1), "made before them: again if big enough"
+    rec = glbpack.pack(src, lambda line: None, preview_faces=1000, middle_faces=FACES // 2 + 1)
+    assert "middle" not in rec and glbpack.path(src, "middle") is None and not (d / glbpack.DIR / "mesh.middle.glb").exists()
+    print("middle copy OK")
+
     # --- a copy simplified for comparing two meshes: written where asked, with how far it moved the surface; a mesh
     # under twice as many faces is packed whole
     got = glbpack.simplified(src, d / "cmp" / "a.glb", 1000)

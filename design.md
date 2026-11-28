@@ -452,6 +452,22 @@ own files) showed in 28 s, where its own files would take almost 4 minutes, and 
   device*. A device that loses its view, or whose page goes while detail comes in (without leaving it), keeps 70% of
   what it had (or was getting) as its budget from then on, and reports it (`gpu-budget`), so a device the defaults
   are too much for finds its own.
+- **A middle copy for phones.** A mesh of 2M faces or more (19 of 836 on Nov 27, mostly the hardest climbs') also gets
+  one simplified to about 1M faces (`glbpack.MIDDLE_FACES`, moving the surface at most 0.2% of its size: Spots of Time's
+  3.1M became 1.0M, 5.8 MB, moved at most 0.011%), which a phone or tablet fetches in place of every face: 40 MB of
+  graphics memory where all of Spots of Time's take 124 MB. Every face is on the *More detail* button, and editing
+  stray pieces fetches it first. In headless Chromium as a Pixel 7, Spots of Time's page took 62 MB of JavaScript memory
+  with it, against 132 MB with every face. Meshes packed before middle copies were made are packed again, those big
+  enough to have one only.
+- **Swapping in more faces.** The new shape's pieces are fetched alongside it, and it's hidden in the frame it's put
+  in. They used to be fetched after, so a mesh's stray pieces showed for as long as that took, every time detail came
+  in (on 212347b42c3c, 30% of whose faces are hidden, 4% of the view changed for those frames).
+- **A visitor's memory.** Hiding pieces needs the copy's own order of faces, each face's piece, and which of them each
+  face drawn is; only editing needs them after, so a visitor's page lets them go (18 bytes a face), as it does what
+  three's GLTFLoader keeps of a file it's read. Whether a beta hold is on a hidden face is worked out from the faces
+  drawn and hidden instead. On Spots of Time (3.1M faces) in headless Chromium with hal's GPU, a visitor's page took
+  132 MB of JavaScript memory rather than 201 MB, its renderer 639 MB rather than 700, its GPU process 328 MB rather
+  than 402 (one run each). An editor's page keeps them, as before.
 - **When.** Each new mesh is packed as it's made, and any mesh the list of meshes shows unpacked is queued, so old
   meshes catch up once someone opens the site; one at a time, at the lowest CPU priority. The admin page sets the
   preview's size (`viewer.preview_faces`, 150,000 by default, 0 for none): a change queues every mesh again, and each

@@ -3222,7 +3222,9 @@ def pack_info(r: dict) -> dict | None:
             pixels[s] = pixels.get(s, 0) + min(t["side"], int(s)) ** 2
     textures = rec.get("textures") or {}
     return {"full": rec["full"]["bytes"], "preview": (rec.get("preview") or {}).get("bytes"),
-            "faces": {"full": rec["full"].get("faces"), "preview": (rec.get("preview") or {}).get("faces")},
+            "middle": (rec.get("middle") or {}).get("bytes"),
+            "faces": {"full": rec["full"].get("faces"), "preview": (rec.get("preview") or {}).get("faces"),
+                      "middle": (rec.get("middle") or {}).get("faces")},
             "texture": {"side": max(t["side"] for t in textures.values()), "bytes": sides, "pixels": pixels}
             if textures else None}
 
