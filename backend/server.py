@@ -13048,32 +13048,36 @@ def _list_mark(key) -> str:
     return "" if key == "campaigns" else meshes_mark()
 
 
-def _mesh_list_for(key, ttl: float, make: Callable[[], object], who=None) -> bytes:
+def _mesh_list_for(key, ttl: float, make: Callable[[], object], who=None, current: bool = False) -> bytes:
     """key's list: its kept copy while fresh (the same meshes_mark(), within ttl seconds, and begun since any change);
     once it isn't, still that copy, while it's made again in the background, so that no one waits for its making (~10 s
-    on the server's 2 busy cores, Nov 2026). Only those with no copy wait (a start with none saved), and who made a
-    change (forget_mesh_list()) until there's a copy begun since; those waiting at once share one making."""
+    on the server's 2 busy cores, Nov 2026). Only those with no copy wait (a start with none saved), who made a change
+    (forget_mesh_list()) until there's a copy begun since, and with current, those whose copy lacks a mesh made, deleted
+    or replaced since (a different meshes_mark()) until there's one that hasn't; those waiting at once share one making.
+
+    current is for a page that didn't find a mesh it was told of (a climb's View): after a start, the saved copies given
+    can be hours old, and making them again took ~5 min while the start's work held the CPU (Nov 2026)."""
     mark, need = _list_mark(key), _mesh_list_changes.get(who, 0.0) if who is not None else 0.0
     counted = key != "campaigns"
     with _mesh_list_lock:
         kept = _mesh_lists_kept.get(key)
-        if kept and kept.began >= need:
+        if kept and kept.began >= need and not (current and kept.mark != mark):
             fresh = kept.mark == mark and kept.began >= _mesh_list_stale and time.time() - kept.when < ttl
             if not fresh and key not in _mesh_lists_making:
                 began, fut = time.time(), concurrent.futures.Future()
-                _mesh_lists_making[key] = (began, fut)
+                _mesh_lists_making[key] = (began, fut, mark)
                 threading.Thread(target=_remake_mesh_list, args=(key, make, began, fut), daemon=True).start()
             if counted:
                 _count_mesh_list("fresh" if fresh else "older")
             return kept.body
         making = _mesh_lists_making.get(key)
-        mine = not (making and making[0] >= need)
+        mine = not (making and making[0] >= need and not (current and making[2] != mark))
         if mine:
-            making = _mesh_lists_making[key] = (time.time(), concurrent.futures.Future())
+            making = _mesh_lists_making[key] = (time.time(), concurrent.futures.Future(), mark)
     if counted:
         _count_mesh_list("waited")
     if mine:
-        _make_mesh_list(key, make, *making)
+        _make_mesh_list(key, make, making[0], making[1])
     return making[1].result().body
 
 
@@ -13222,18 +13226,19 @@ def list_who(editor: bool, me: dict | None):
     return ("editor" if editor else "account", (me or {}).get("id")) if editor or me else None
 
 
-def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str] | None = None) -> bytes:
+def kept_mesh_list(editor: bool, me: dict | None, waiting: dict[str, str] | None = None, current: bool = False) -> bytes:
     """/api/meshes as someone sees it (mesh_list()), as JSON: kept for each of mesh_list_key()'s, made at most once in its
     time (MESH_LIST_TTL for visitors; EDITOR_LIST_TTL for editors, so that what's worked out in the background shows
     soon), and again as soon as meshes_mark() changes or anything changes through the site (_mesh_list_for()). Every
     page asks for it as it opens, and making it took ~2 CPU-seconds warm, 10-15 cold, of the server's 2 cores (Nov 2026);
     made afresh for every asking, 20 visitors arriving together waited up to a minute. What only shows in it (a rating,
-    a mesh hidden or linked) reaches others once it's made again, though who changed it waits to see it at once."""
+    a mesh hidden or linked) reaches others once it's made again, though who changed it waits to see it at once. With
+    current (?current=1), a copy lacking meshes made, deleted or replaced since is waited past (_mesh_list_for())."""
     waiting = unapproved_meshes() if waiting is None else waiting
     key = mesh_list_key(editor, me, waiting)
     if key is None:
-        return _mesh_list_for(None, MESH_LIST_TTL, lambda: mesh_list(False, None, unapproved_meshes()), list_who(editor, me))
-    return _mesh_list_for(key, EDITOR_LIST_TTL, lambda: mesh_list(editor, me, unapproved_meshes()), list_who(editor, me))
+        return _mesh_list_for(None, MESH_LIST_TTL, lambda: mesh_list(False, None, unapproved_meshes()), list_who(editor, me), current)
+    return _mesh_list_for(key, EDITOR_LIST_TTL, lambda: mesh_list(editor, me, unapproved_meshes()), list_who(editor, me), current)
 
 
 def visitors_mesh_list() -> bytes:
@@ -15172,7 +15177,8 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/meshes/mark":     # cheap to ask often: changes when /api/meshes would (a mesh made, gone, replaced)
                 return self.send_json({"mark": meshes_mark()})
             if p == "/api/meshes":
-                return self.send_bytes(kept_mesh_list(self.is_editor(), self.who()), "application/json", "no-cache")
+                return self.send_bytes(kept_mesh_list(self.is_editor(), self.who(), current=bool(qs.get("current"))),
+                                       "application/json", "no-cache")
             if p == "/api/capture/meshes":   # for the phone apps: the meshes a capture can add to
                 return self.send_json(capture_meshes())
             if p == "/api/capture/fresh":   # for the phone apps: whether the meshes they keep changed, or were rebuilt (?ids=a,b,…)

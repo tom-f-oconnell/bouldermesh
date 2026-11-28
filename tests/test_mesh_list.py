@@ -74,6 +74,30 @@ def main() -> None:
     assert get() == b'{"n": 3}', "the making begun before the change isn't kept over the one begun since"
     assert server._mesh_lists_kept[None].began >= server._mesh_list_changes[("editor", "e1")]
 
+    # a page that didn't find a mesh it was told of (current): a copy lacking meshes made since is waited past, through
+    # the making under way if it began since, or one of its own
+    server.MESH_LIST_TTL = 60
+    time.sleep(0.2)     # the making begun before the editor's change, no longer listed, ends
+    had, n = get(), len(made)
+    mark[0] = "3"
+    release.clear()
+    assert get(slow=True) == had, "others get the older copy"
+    release.set()
+    got = server._mesh_list_for(None, server.MESH_LIST_TTL, make, None, current=True)
+    assert got == json.dumps({"n": n + 1}).encode() and len(made) == n + 1, ("the making under way", got, made)
+    mark[0] = "4"
+    release.clear()
+    assert get(slow=True) == got
+    mark[0] = "5"      # changed again since that making began: one of its own
+    mine = server._mesh_list_for(None, server.MESH_LIST_TTL, make, None, current=True)
+    assert mine == json.dumps({"n": n + 2}).encode(), (mine, made)
+    release.set()
+    for _ in range(100):
+        if not server._mesh_lists_making:
+            break
+        time.sleep(0.02)
+    assert server._mesh_list_for(None, 60, make, None, current=True) == mine, "a current copy at once"
+
     # rows for links, and a copy saved and read back by the next start
     server.MESH_LIST_SAVE_EVERY = 0
     rows = [{"id": "a1", "climbs": [{"id": "c1"}]}, {"id": "b2", "adds_to": "a1", "boulder_climbs": [{"id": "c2"}]}]

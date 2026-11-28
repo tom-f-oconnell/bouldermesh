@@ -3746,8 +3746,11 @@ async function viewClimbMesh(id, via = 'climb', hide = {}){
 }
 // its mesh asked for, once the list has it: {pending: its load}, or null if it has none
 async function startClimbMesh(id, via, hide){
-  const card = pickClimbMesh(id, hide) ? null : await listedWithCard('its mesh');
+  let card = pickClimbMesh(id, hide) ? null : await listedWithCard('its mesh');
   try {
+    // still none: the server's kept list may lack meshes made since (after a start, one saved hours before), so one
+    // that has them, waited for if need be (?current=1)
+    if (!pickClimbMesh(id, hide)) { if (!card) { card = loading('its mesh'); listCardSeq = loadSeq; } await refreshMeshes(true); }
     const p = pickClimbMesh(id, hide);
     if (!p) { toast('No mesh is linked to this climb yet.'); return null; }
     return { pending: viewMesh(p.id, p.from, via, id) };
@@ -5055,10 +5058,11 @@ function viewMeshPressed(ev, id, from = null, via = '', climb = null){
 let meshesFetch = null;     // the list's fetch under way, if one is: resolves once meshesById has it, before it's drawn
 let meshesGot = false;      // whether it's come once
 let pageListed = null;      // the page's first lists of meshes and climbs, as it opens
-async function refreshMeshes(){
+// current: one with every mesh made, deleted or replaced, waited for if the server's kept copy isn't
+async function refreshMeshes(current = false){
   hideSourceTip();
   setListPhase('Waiting for the server\'s list of meshes…');
-  const f = meshesFetch = api('/api/meshes', { got: listGot })
+  const f = meshesFetch = api(current ? '/api/meshes?current=1' : '/api/meshes', { got: listGot })
     .then(list => { meshesCache = list; meshesById = Object.fromEntries(list.map(m => [m.id, m])); meshesGot = true; });
   try { await f; } finally { if (meshesFetch === f) meshesFetch = null; }
   listSeconds ??= performance.now() / 1000;
