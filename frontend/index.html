@@ -5542,6 +5542,9 @@ $('#b-legend').onclick = () => { const n = $('#b-legend-note'); n.textContent = 
 $('#b-legend').innerHTML = Object.values(ROLES).map(r => `<span><span class="swatch" style="background:${r.color}"></span>${r.name}</span>`).join('');
 function videoCount(m){ return m.sources?.sources?.find(x => x.source === 'youtube')?.videos || 0; }
 const hhmm = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+// what of its beta anyone may see (the server's beta_public): the holds a visitor is shown, from how many betas (its
+// videos and shared sets with any), leaving out what editors hid or left out and what's set aside
+const holdsFrom = m => { const p = m.beta_public || { holds: 0, betas: 0 }; return `${plural(p.holds, 'hold')} from ${plural(p.betas, 'beta')}`; };
 function betaLine(m){
   const b = m.beta, n = videoCount(m);
   // what's found so far, while more is to come (the videos here are done first): then why it waits, in yellow
@@ -5551,7 +5554,7 @@ function betaLine(m){
   if (b?.status === 'queued' && b.waiting) return wait(`waiting: YouTube is refusing this server's downloads until about ${hhmm(b.waiting)}`);
   if (b?.status === 'queued') return sofar + 'queued to find its beta';
   if (b?.status === 'running') return sofar + (betaAt(m) ? `finding its beta${betaAt(m).where === 'machine' ? ' on a machine' : ''}` : `finding its beta: ${esc(b.progress || '')}`);
-  if (b?.status === 'done') return b.note ? esc(b.note) : `${b.holds} holds found in ${videosHtml(m, b.videos)}`;
+  if (b?.status === 'done') return b.note ? esc(b.note) : holdsFrom(m);
   if (b) return esc(b.status);
   if (!m.source.startsWith('project:')) return 'an upload: holds can only be marked by hand';
   if (!m.cameras_kept) return 'rebuild it to find beta in its videos: where its photos were placed wasn\'t kept';
@@ -5645,7 +5648,7 @@ function renderBetaList(){
   renderBetaAll();
   // only meshes with beta: most holds marked by hand first, then most found in videos, then newest
   const all = (meshesCache || []).filter(m => !m.replaced_by);
-  const list = all.filter(m => m.marked || m.beta?.holds)
+  const list = all.filter(m => editor ? m.marked || m.beta?.holds : m.beta_public?.holds)
     .sort((a, b) => (b.marked || 0) - (a.marked || 0) || (b.beta?.holds || 0) - (a.beta?.holds || 0));
   $('#b-count').textContent = betaCounts(all);
   el.innerHTML = list.length ? '' : `<div class="status">${all.length ? 'No meshes have holds marked or found yet.' : 'No meshes yet.'}</div>`;
@@ -5653,7 +5656,7 @@ function renderBetaList(){
     const d = document.createElement('div'); d.className = 'card mesh' + (betaState?.mid === m.id ? ' active' : '');
     const canFind = m.source.startsWith('project:') && m.cameras_kept && videoCount(m) && !['queued', 'running'].includes(m.beta?.status);
     d.innerHTML = `<div class="grow"><span class="name">${esc(meshTitle(m))}</span><br>
-        <small>${m.marked ? `${m.marked} hold${m.marked === 1 ? '' : 's'} marked · ` : ''}${betaLine(m)}</small>
+        <small>${m.beta?.status === 'done' && !m.beta.note || !m.beta_public?.betas ? '' : holdsFrom(m) + ' · '}${betaLine(m)}</small>
         ${m.beta?.status === 'running' ? `<div data-bbar="${esc(m.id)}">${betaBarHtml(betaAt(m))}</div>` : ''}</div>
       <div class="row" style="flex-direction:column;align-items:stretch;gap:4px"><button class="sm open">Beta</button>
         ${canFind ? `<button class="sm sec find">${m.beta?.status === 'done' ? 'Find again' : 'Find beta'}</button>` : ''}</div>`;
@@ -6115,14 +6118,14 @@ addEventListener('keydown', ev => {
   if (ev.key === ',' || ev.key === '.') { ev.preventDefault(); debugStep(ev.key === ',' ? -1 : 1); }
   else if (ev.key === 'Escape') closeBetaDebug();
 });
-const hasBeta = m => !!(m && (m.marked || m.beta?.holds));
+const hasBeta = m => !!(m && (editor ? m.marked || m.beta?.holds : m.beta_public?.holds));
 // how many sets of beta the view's Beta button counts: the shared sets and the videos holds were found in (the
 // mesh's own as loaded, once its beta's shown)
 function betaN(m){
   const b = m && betaState?.mid === m.id && !betaState.loading ? betaState : null;
-  if (b) return b.sets.filter(s => s.shared !== false || maySet(s)).length + (b.found?.videos || []).filter(v => v.holds?.length).length;
+  if (b) return b.sets.filter(s => s.shared !== false || maySet(s)).length + (b.found?.videos || []).filter(v => !v.hidden && v.holds?.some(h => !h.off)).length;
   const drafts = m ? (appBeta?.kept(m.id) || []).filter(d => !d.deleted && isDraftOnly(d)).length : 0;     // made with no signal, not sent yet
-  return (m?.beta_sets ?? (m?.marked ? 1 : 0)) + (m?.beta?.listed || 0) + drafts;
+  return (m?.beta_public ? m.beta_public.betas : (m?.beta_sets ?? (m?.marked ? 1 : 0)) + (m?.beta?.listed || 0)) + drafts;
 }
 // the view's Beta button, with how many sets of beta the mesh has (none: it does nothing), and beside it '+' for whoever
 // may add beta (an editor, or an account: from an invite), which marks holds on the rock, in a set of their own

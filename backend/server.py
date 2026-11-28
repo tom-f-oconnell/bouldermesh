@@ -2989,7 +2989,7 @@ def lines_worker() -> None:
             print(f"climbs' lines for mesh {mid} failed ({type(e).__name__}: {e})", flush=True)
 
 
-def beta_shown(mid: str, record: dict | None) -> dict | None:
+def beta_shown(mid: str, record: dict | None, want: bool = True) -> dict | None:
     """A mesh's beta as it's shown (betalines.shown()): its record, changed in place, with the holds its climbs' lines
     leave out marked off and the rest's roles as the lines give them. Only by lines made from that beta, its climbs'
     videos, its cleanup and its scale as they are now: otherwise it's as found, and the lines are made again
@@ -2999,9 +2999,19 @@ def beta_shown(mid: str, record: dict | None) -> dict | None:
     kept = betalines.load(MESHES / mid)
     if kept and kept.get("key") == _lines_key(mid, record, lines_of(mid, record)):
         return betalines.shown(record, kept)
-    if record.get("status") != "running":
+    if want and record.get("status") != "running":
         want_lines(mid)
     return record
+
+
+def beta_public(mid: str, record: dict | None, sets: list[dict]) -> dict:
+    """What of a mesh's beta anyone may see, for its card: {holds, betas}, the holds a visitor is shown (its videos'
+    not set aside by their lines, nor left out or hidden by an editor; its shared sets'), and how many betas they're
+    from (videos and shared sets with any). Not asking for lines to be made: as found, until they are."""
+    shown = beta_mod.apply_edits(beta_shown(mid, record, want=False), beta_mod.load_edits(MESHES / mid)) or {}
+    vids = [sum(1 for h in v.get("holds") or [] if not h.get("off")) for v in shown.get("videos") or []]
+    own = [len(one.get("holds") or []) for one in beta_mod.visible(sets)]
+    return {"holds": sum(vids) + sum(own), "betas": sum(1 for k in vids + own if k)}
 
 
 def mesh_lines(mid: str, editor: bool = True) -> dict:
@@ -6023,7 +6033,7 @@ def timings_existing_meshes() -> None:
 # MESH_ROW_TTL. The list (/api/meshes) read every file of every mesh each time, 15 s on the public server on Nov 16, 2026.
 _mesh_rows: dict[str, tuple] = {}
 MESH_ROW_TTL = 600
-MESH_ROW_FIELDS = ("texture", "cleanup", "orientation", "sources", "beta", "marked", "scale", "tie", "cameras_kept", "timings",
+MESH_ROW_FIELDS = ("texture", "cleanup", "orientation", "sources", "beta", "beta_public", "marked", "scale", "tie", "cameras_kept", "timings",
                    "metrics", "check", "splat", "pano", "pack", "v", "thumb")
 
 
@@ -6052,8 +6062,10 @@ def mesh_files_fields(r: dict) -> None:
         r["cleanup"] = meshclean.summary(meshclean.load(served_dir(r["id"], r["texture"])))
         r["orientation"] = orientation.load(MESHES / r["id"])
         r["sources"] = provenance.summary(mesh_record(MESHES / r["id"], copied=False))
-        r["beta"] = beta_mod.summary(beta_mod.load(MESHES / r["id"]))
+        record = beta_mod.load(MESHES / r["id"])
+        r["beta"] = beta_mod.summary(record)
         sets = beta_mod.load_sets(MESHES / r["id"])
+        r["beta_public"] = beta_public(r["id"], record, sets)
         r["marked"] = sum(len(one["holds"]) for one in sets)
         r["beta_sets"] = len(beta_mod.visible(sets))     # shared ones: the view's Beta (n) counts these and videos with holds
         r["scale"] = scale_mod.summary(scale_mod.load(MESHES / r["id"]))

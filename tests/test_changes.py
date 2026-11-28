@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 tmp = tempfile.mkdtemp(prefix="bouldermesh-changes-")
 os.environ["DATA_DIR"] = tmp
 
+import beta  # noqa: E402
 import betalines  # noqa: E402
 import server  # noqa: E402
 
@@ -90,4 +91,22 @@ assert q("SELECT replaced_by FROM meshes WHERE id='cccccccccccc'", one=True)["re
 listed = server.admin_changes({})["changes"]
 assert all(r["revertable"] for r in listed if r["kind"] in ("line", "climb", "mesh", "current")) and "Ana" in server.admin_changes({})["people"]
 print("versions put back OK")
+
+# --- a card's beta: only the holds a visitor sees, from the betas they're in (videos and shared sets)
+d = server.MESHES / "aaaaaaaaaaaa"
+hs = [{"id": i, "p": [0, i, 0], "role": "hand"} for i in range(4)]
+beta.save(d, {"status": "done", "videos": [{"url": "u1", "tag": "11111111", "holds": hs[:2] + [{**hs[2], "off": True}]},
+                                          {"url": "u2", "tag": "22222222", "holds": hs[:3]},
+                                          {"url": "u3", "tag": "33333333", "holds": [{**hs[0], "off": True}]},
+                                          {"url": "u4", "tag": "44444444", "holds": []}]})
+sets = [{"id": "s1", "holds": hs[:2], "shared": True}, {"id": "s2", "holds": hs, "shared": False}, {"id": "s3", "holds": [], "shared": True}]
+pub = lambda: server.beta_public("aaaaaaaaaaaa", beta.load(d), sets)    # noqa: E731
+assert pub() == {"holds": 2 + 3 + 2, "betas": 3}, pub()
+beta.edit_video(d, "22222222", {"hidden": True})
+beta.edit_video(d, "11111111", {"hold": {"id": 0, "drop": True}})
+assert pub() == {"holds": 1 + 2, "betas": 2}, pub()
+beta.edit_video(d, "11111111", {"hold": {"id": 2, "keep": True}})
+beta.edit_video(d, "33333333", {"hold": {"id": 0, "keep": True}})
+assert pub() == {"holds": 2 + 1 + 2, "betas": 3}, pub()
+print("cards' beta OK")
 print("ALL CHANGES TESTS PASSED")
